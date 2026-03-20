@@ -14,11 +14,11 @@ from pathlib import Path
 import sys
 
 # 项目内模块：配置加载
-from mvp_pipeline.config import AppConfig, load_config
+from music_video_pipeline.config import AppConfig, load_config
 # 项目内模块：日志初始化
-from mvp_pipeline.logging_utils import setup_logging
+from music_video_pipeline.logging_utils import setup_logging
 # 项目内模块：流水线调度器
-from mvp_pipeline.pipeline import PipelineRunner
+from music_video_pipeline.pipeline import PipelineRunner
 
 
 def main() -> None:

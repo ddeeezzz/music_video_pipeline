@@ -17,9 +17,9 @@ import shutil
 import pytest
 
 # 项目内模块：配置数据类
-from mvp_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
 # 项目内模块：流水线调度器
-from mvp_pipeline.pipeline import PipelineRunner
+from music_video_pipeline.pipeline import PipelineRunner
 
 
 @pytest.mark.smoke

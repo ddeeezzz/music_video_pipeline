@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any
 
 # 项目内模块：运行上下文定义
-from mvp_pipeline.context import RuntimeContext
+from music_video_pipeline.context import RuntimeContext
 # 项目内模块：JSON 工具
-from mvp_pipeline.io_utils import read_json
+from music_video_pipeline.io_utils import read_json
 
 
 def run_module_d(context: RuntimeContext) -> Path:

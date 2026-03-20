@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any
 
 # 项目内模块：提供模块顺序与状态常量
-from mvp_pipeline.constants import MODULE_ORDER, TASK_STATES
+from music_video_pipeline.constants import MODULE_ORDER, TASK_STATES
 
 
 def _local_now_text() -> str:

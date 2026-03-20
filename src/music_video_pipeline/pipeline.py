@@ -14,17 +14,17 @@ from pathlib import Path
 from typing import Callable
 
 # 项目内模块：配置类型
-from mvp_pipeline.config import AppConfig
+from music_video_pipeline.config import AppConfig
 # 项目内模块：运行上下文
-from mvp_pipeline.context import RuntimeContext
+from music_video_pipeline.context import RuntimeContext
 # 项目内模块：常量定义
-from mvp_pipeline.constants import MODULE_ORDER, VALID_MODULES
+from music_video_pipeline.constants import MODULE_ORDER, VALID_MODULES
 # 项目内模块：目录工具
-from mvp_pipeline.io_utils import ensure_dir
+from music_video_pipeline.io_utils import ensure_dir
 # 项目内模块：模块执行函数
-from mvp_pipeline.modules import run_module_a, run_module_b, run_module_c, run_module_d
+from music_video_pipeline.modules import run_module_a, run_module_b, run_module_c, run_module_d
 # 项目内模块：状态存储
-from mvp_pipeline.state_store import StateStore
+from music_video_pipeline.state_store import StateStore
 
 ModuleRunner = Callable[[RuntimeContext], Path]
 

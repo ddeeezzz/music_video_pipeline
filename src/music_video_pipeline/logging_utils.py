@@ -25,4 +25,4 @@ def setup_logging(level: str = "INFO") -> logging.Logger:
         level=log_level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-    return logging.getLogger("mvp_pipeline")
+    return logging.getLogger("music_video_pipeline")

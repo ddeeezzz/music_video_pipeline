@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：状态存储实现
-from mvp_pipeline.state_store import StateStore
+from music_video_pipeline.state_store import StateStore
 
 
 def test_state_store_should_follow_basic_flow(tmp_path: Path) -> None:
