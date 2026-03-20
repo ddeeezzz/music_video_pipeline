@@ -5,7 +5,7 @@
   },
   "paths": {
     "runs_dir": "runs",
-    "default_audio_path": "resources/juebieshu20s.mp3"
+    "default_audio_path": "resources/jieranduhuo.m4a"
   },
   "ffmpeg": {
     "ffmpeg_bin": "ffmpeg",
