@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.26.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mvp-pipeline"
+version = "0.1.0"
+description = "基于音频结构驱动的MVP音画同步流水线"
+readme = "docs/5分钟跑通指南.md"
+requires-python = ">=3.11"
+dependencies = [
+  "Pillow>=10.0.0",
+  "mutagen>=1.47.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0.0",
+]
+
+[project.scripts]
+mvp-pipeline = "mvp_pipeline.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"
+markers = [
+  "smoke: 需要本地可用 ffmpeg 的冒烟测试",
+]

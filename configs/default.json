@@ -1,0 +1,25 @@
+{
+  "mode": {
+    "script_generator": "mock",
+    "frame_generator": "mock"
+  },
+  "paths": {
+    "runs_dir": "runs",
+    "default_audio_path": "resources/juebieshu20s.mp3"
+  },
+  "ffmpeg": {
+    "ffmpeg_bin": "ffmpeg",
+    "ffprobe_bin": "ffprobe",
+    "video_codec": "libx264",
+    "audio_codec": "aac",
+    "fps": 24
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "mock": {
+    "beat_interval_seconds": 0.5,
+    "video_width": 1280,
+    "video_height": 720
+  }
+}
