@@ -17,11 +17,11 @@ from typing import Any
 from mutagen import File as MutagenFile
 
 # 项目内模块：运行上下文定义
-from mvp_pipeline.context import RuntimeContext
+from music_video_pipeline.context import RuntimeContext
 # 项目内模块：JSON 写入工具
-from mvp_pipeline.io_utils import write_json
+from music_video_pipeline.io_utils import write_json
 # 项目内模块：契约校验函数
-from mvp_pipeline.types import validate_module_a_output
+from music_video_pipeline.types import validate_module_a_output
 
 
 def run_module_a(context: RuntimeContext) -> Path:

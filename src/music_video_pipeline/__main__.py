@@ -1,5 +1,5 @@
 """
-文件用途：支持 `python -m mvp_pipeline` 启动命令行入口。
+文件用途：支持 `python -m music_video_pipeline` 启动命令行入口。
 核心流程：转发至 CLI 主函数。
 输入输出：读取命令行参数并执行流水线子命令。
 依赖说明：依赖项目内 cli 模块。
@@ -7,7 +7,7 @@
 """
 
 # 项目内模块：提供命令行主入口
-from mvp_pipeline.cli import main
+from music_video_pipeline.cli import main
 
 
 def run() -> None:

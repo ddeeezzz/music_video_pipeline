@@ -3,7 +3,7 @@ requires = ["hatchling>=1.26.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mvp-pipeline"
+name = "music-video-pipeline"
 version = "0.1.0"
 description = "基于音频结构驱动的MVP音画同步流水线"
 readme = "docs/5分钟跑通指南.md"
@@ -19,7 +19,8 @@ test = [
 ]
 
 [project.scripts]
-mvp-pipeline = "mvp_pipeline.cli:main"
+music-video-pipeline = "music_video_pipeline.cli:main"
+mvpl = "music_video_pipeline.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

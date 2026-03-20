@@ -7,8 +7,8 @@
 """
 
 # 项目内模块：导出关键帧生成器工厂
-from mvp_pipeline.generators.frame_generator import FrameGenerator, build_frame_generator
+from music_video_pipeline.generators.frame_generator import FrameGenerator, build_frame_generator
 # 项目内模块：导出分镜生成器工厂
-from mvp_pipeline.generators.script_generator import ScriptGenerator, build_script_generator
+from music_video_pipeline.generators.script_generator import ScriptGenerator, build_script_generator
 
 __all__ = ["FrameGenerator", "ScriptGenerator", "build_frame_generator", "build_script_generator"]

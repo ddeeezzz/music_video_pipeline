@@ -12,19 +12,19 @@ import logging
 from pathlib import Path
 
 # 项目内模块：配置数据类
-from mvp_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
 # 项目内模块：运行上下文
-from mvp_pipeline.context import RuntimeContext
+from music_video_pipeline.context import RuntimeContext
 # 项目内模块：目录工具
-from mvp_pipeline.io_utils import read_json
+from music_video_pipeline.io_utils import read_json
 # 项目内模块：模块实现
-from mvp_pipeline.modules.module_a import run_module_a
+from music_video_pipeline.modules.module_a import run_module_a
 # 项目内模块：模块实现
-from mvp_pipeline.modules.module_b import run_module_b
+from music_video_pipeline.modules.module_b import run_module_b
 # 项目内模块：状态存储
-from mvp_pipeline.state_store import StateStore
+from music_video_pipeline.state_store import StateStore
 # 项目内模块：契约校验
-from mvp_pipeline.types import validate_module_a_output, validate_module_b_output
+from music_video_pipeline.types import validate_module_a_output, validate_module_b_output
 
 
 def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:

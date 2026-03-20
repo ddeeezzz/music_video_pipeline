@@ -14,9 +14,9 @@ import logging
 from pathlib import Path
 
 # 项目内模块：提供配置类型
-from mvp_pipeline.config import AppConfig
+from music_video_pipeline.config import AppConfig
 # 项目内模块：提供状态存储类型
-from mvp_pipeline.state_store import StateStore
+from music_video_pipeline.state_store import StateStore
 
 
 @dataclass

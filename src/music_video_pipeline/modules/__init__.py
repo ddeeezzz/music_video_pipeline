@@ -7,12 +7,12 @@
 """
 
 # 项目内模块：导出模块 A 执行函数
-from mvp_pipeline.modules.module_a import run_module_a
+from music_video_pipeline.modules.module_a import run_module_a
 # 项目内模块：导出模块 B 执行函数
-from mvp_pipeline.modules.module_b import run_module_b
+from music_video_pipeline.modules.module_b import run_module_b
 # 项目内模块：导出模块 C 执行函数
-from mvp_pipeline.modules.module_c import run_module_c
+from music_video_pipeline.modules.module_c import run_module_c
 # 项目内模块：导出模块 D 执行函数
-from mvp_pipeline.modules.module_d import run_module_d
+from music_video_pipeline.modules.module_d import run_module_d
 
 __all__ = ["run_module_a", "run_module_b", "run_module_c", "run_module_d"]

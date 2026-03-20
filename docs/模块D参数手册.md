@@ -19,8 +19,8 @@
 
 代码读取位置：
 
-- `src/mvp_pipeline/config.py`
-- `src/mvp_pipeline/modules/module_d.py`
+- `src/music_video_pipeline/config.py`
+- `src/music_video_pipeline/modules/module_d.py`
 
 ---
 
@@ -104,7 +104,7 @@
 1. 跑通一次全链路：
 
 ```powershell
-uv run mvp-pipeline run --task-id param_check --config configs/default.json
+uv run mvpl run --task-id param_check --config configs/default.json
 ```
 
 2. 用 ffprobe 核验分辨率与时长：
@@ -152,3 +152,6 @@ ffprobe -v error -show_entries stream=duration -select_streams a:0 -of json "run
 ## 8. 变更记录
 
 - 2026-03-20：建立本手册，收录模块 D 的速度/质量参数基线与调参建议。
+
+
+> 正式全名命令：uv run music-video-pipeline ...（与 uv run mvpl ... 等价）。

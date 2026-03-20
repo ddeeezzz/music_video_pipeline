@@ -10,13 +10,13 @@
 from pathlib import Path
 
 # 项目内模块：运行上下文定义
-from mvp_pipeline.context import RuntimeContext
+from music_video_pipeline.context import RuntimeContext
 # 项目内模块：关键帧生成器工厂
-from mvp_pipeline.generators import build_frame_generator
+from music_video_pipeline.generators import build_frame_generator
 # 项目内模块：JSON 工具
-from mvp_pipeline.io_utils import read_json, write_json
+from music_video_pipeline.io_utils import read_json, write_json
 # 项目内模块：契约校验
-from mvp_pipeline.types import validate_module_b_output
+from music_video_pipeline.types import validate_module_b_output
 
 
 def run_module_c(context: RuntimeContext) -> Path:
