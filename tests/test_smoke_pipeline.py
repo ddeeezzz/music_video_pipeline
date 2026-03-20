@@ -43,7 +43,15 @@ def test_smoke_run_should_generate_playable_mp4(tmp_path: Path) -> None:
     config = AppConfig(
         mode=ModeConfig(script_generator="mock", frame_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path=str(audio_path)),
-        ffmpeg=FfmpegConfig(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe", video_codec="libx264", audio_codec="aac", fps=24),
+        ffmpeg=FfmpegConfig(
+            ffmpeg_bin="ffmpeg",
+            ffprobe_bin="ffprobe",
+            video_codec="libx264",
+            audio_codec="aac",
+            fps=24,
+            video_preset="veryfast",
+            video_crf=30,
+        ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
     )

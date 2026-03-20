@@ -56,6 +56,8 @@ class FfmpegConfig:
     - video_codec: 输出视频编码。
     - audio_codec: 输出音频编码。
     - fps: 输出帧率。
+    - video_preset: 视频编码预设（速度/压缩率权衡）。
+    - video_crf: 视频 CRF 质量参数（越大越快、体积越小）。
     返回值：不适用。
     异常说明：不适用。
     边界条件：ffmpeg 缺失时在模块 D 抛出运行错误。
@@ -66,6 +68,8 @@ class FfmpegConfig:
     video_codec: str
     audio_codec: str
     fps: int
+    video_preset: str
+    video_crf: int
 
 
 @dataclass(frozen=True)
@@ -151,9 +155,17 @@ def _merge_defaults(raw_data: dict) -> dict:
     default_data = {
         "mode": {"script_generator": "mock", "frame_generator": "mock"},
         "paths": {"runs_dir": "runs", "default_audio_path": "resources/juebieshu20s.mp3"},
-        "ffmpeg": {"ffmpeg_bin": "ffmpeg", "ffprobe_bin": "ffprobe", "video_codec": "libx264", "audio_codec": "aac", "fps": 24},
+        "ffmpeg": {
+            "ffmpeg_bin": "ffmpeg",
+            "ffprobe_bin": "ffprobe",
+            "video_codec": "libx264",
+            "audio_codec": "aac",
+            "fps": 24,
+            "video_preset": "veryfast",
+            "video_crf": 30,
+        },
         "logging": {"level": "INFO"},
-        "mock": {"beat_interval_seconds": 0.5, "video_width": 1280, "video_height": 720},
+        "mock": {"beat_interval_seconds": 0.5, "video_width": 960, "video_height": 540},
     }
 
     merged = default_data
