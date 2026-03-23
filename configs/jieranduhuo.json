@@ -1,4 +1,4 @@
-{
+﻿{
   "mode": {
     "script_generator": "mock",
     "frame_generator": "mock"
@@ -23,5 +23,14 @@
     "beat_interval_seconds": 0.5,
     "video_width": 960,
     "video_height": 540
+  },
+  "module_a": {
+    "mode": "real_auto",
+    "lyric_beat_snap_threshold_ms": 200,
+    "instrumental_labels": ["intro", "outro", "inst"],
+    "fallback_enabled": true,
+    "device": "auto",
+    "whisper_model": "base",
+    "demucs_model": "htdemucs"
   }
 }

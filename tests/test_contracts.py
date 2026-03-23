@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
 # 项目内模块：运行上下文
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：目录工具
@@ -59,11 +59,16 @@ def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
     module_a_output = read_json(module_a_path)
     validate_module_a_output(module_a_output)
     assert module_a_output["task_id"] == "contract_task"
+    assert isinstance(module_a_output["big_segments"], list)
+    assert len(module_a_output["big_segments"]) > 0
+    assert isinstance(module_a_output["segments"], list)
+    assert len(module_a_output["segments"]) > 0
+    assert "big_segment_id" in module_a_output["segments"][0]
 
     module_b_path = run_module_b(context)
     module_b_output = read_json(module_b_path)
     validate_module_b_output(module_b_output)
-    assert len(module_b_output) > 0
+    assert len(module_b_output) == len(module_a_output["segments"])
 
 
 def _build_test_config(tmp_path: Path) -> AppConfig:
@@ -90,4 +95,5 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
         ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
+        module_a=ModuleAConfig(mode="fallback_only"),
     )
