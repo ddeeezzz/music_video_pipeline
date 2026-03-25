@@ -18,7 +18,7 @@ from music_video_pipeline.context import RuntimeContext
 # 项目内模块：JSON 读取工具
 from music_video_pipeline.io_utils import read_json
 # 项目内模块：模块A实现
-from music_video_pipeline.modules.module_a import run_module_a
+from music_video_pipeline.modules.module_a import _rms_delta_at, _select_small_timestamps, run_module_a
 # 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
 
@@ -99,3 +99,76 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
         module_a=ModuleAConfig(mode="fallback_only"),
     )
+
+
+def test_module_a_instrumental_should_prefer_rms_delta_peak() -> None:
+    """
+    功能说明：验证器乐段在可用 onset 候选下优先选择能量突变最大的时间点。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：通过清空 beat 候选避免附加节拍干扰断言。
+    """
+    timestamps = _select_small_timestamps(
+        duration_seconds=4.0,
+        big_segments=[
+            {
+                "segment_id": "big_001",
+                "start_time": 0.0,
+                "end_time": 4.0,
+                "label": "intro",
+            }
+        ],
+        beat_candidates=[],
+        onset_candidates=[1.0, 2.0, 3.0],
+        rms_times=[0.9, 1.0, 1.9, 2.0, 2.9, 3.0],
+        rms_values=[0.1, 0.3, 0.2, 1.2, 1.7, 1.8],
+        lyric_sentence_starts=[],
+        instrumental_labels=["intro"],
+        snap_threshold_ms=200,
+    )
+    assert 2.0 in timestamps
+
+
+def test_module_a_instrumental_should_fallback_to_rms_peak_when_delta_is_zero() -> None:
+    """
+    功能说明：验证器乐段在无明显突变时会回退到绝对能量峰值策略。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：delta 近似 0 时通过峰值差异断言回退行为。
+    """
+    timestamps = _select_small_timestamps(
+        duration_seconds=3.0,
+        big_segments=[
+            {
+                "segment_id": "big_001",
+                "start_time": 0.0,
+                "end_time": 3.0,
+                "label": "inst",
+            }
+        ],
+        beat_candidates=[],
+        onset_candidates=[1.0, 2.0],
+        rms_times=[1.0, 2.0],
+        rms_values=[0.2, 0.9],
+        lyric_sentence_starts=[],
+        instrumental_labels=["inst"],
+        snap_threshold_ms=200,
+    )
+    assert 2.0 in timestamps
+    assert 1.0 not in [item for item in timestamps if item not in {0.0, 3.0}]
+
+
+def test_rms_delta_should_only_keep_positive_change() -> None:
+    """
+    功能说明：验证 RMS 落差函数只返回正向增量，不返回负值。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：窗口前后值相等或下降时结果应为 0。
+    """
+    rms_times = [0.0, 0.1, 0.2, 0.3]
+    rms_values = [0.2, 0.2, 0.5, 0.1]
+    assert _rms_delta_at(0.2, rms_times, rms_values, window_ms=100.0) > 0.0
+    assert _rms_delta_at(0.3, rms_times, rms_values, window_ms=100.0) == 0.0

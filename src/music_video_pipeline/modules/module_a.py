@@ -460,13 +460,16 @@ def _select_small_timestamps(
 
         if label in instrumental_set:
             if onset_in_segment:
-                peak_onset = max(onset_in_segment, key=lambda item: _rms_value_at(item, rms_times, rms_values))
+                peak_onset = max(onset_in_segment, key=lambda item: _rms_delta_at(item, rms_times, rms_values))
+                peak_delta = _rms_delta_at(peak_onset, rms_times, rms_values)
+                if peak_delta <= 1e-6:
+                    peak_onset = max(onset_in_segment, key=lambda item: _rms_value_at(item, rms_times, rms_values))
                 timestamps.append(peak_onset)
             elif beat_in_segment:
                 timestamps.append(beat_in_segment[len(beat_in_segment) // 2])
             else:
                 timestamps.append((start_time + end_time) / 2.0)
-            timestamps.extend(beat_in_segment[::4])
+            timestamps.extend(beat_in_segment[::2] if len(beat_in_segment) > 4 else beat_in_segment)
             continue
 
         lyric_in_segment = [value for value in lyric_sentence_starts if start_time <= value <= end_time]
@@ -738,6 +741,32 @@ def _rms_value_at(time_value: float, rms_times: list[float], rms_values: list[fl
     right_gap = abs(rms_times[index] - time_value)
     target_index = index - 1 if left_gap <= right_gap else index
     return float(rms_values[target_index])
+
+
+def _rms_delta_at(
+    time_value: float,
+    rms_times: list[float],
+    rms_values: list[float],
+    window_ms: float = 100.0,
+) -> float:
+    """
+    功能说明：计算目标时间点前后的能量正向落差（瞬态爆发强度）。
+    参数说明：
+    - time_value: 目标时间戳（秒）。
+    - rms_times: RMS 时间序列。
+    - rms_values: RMS 数值序列。
+    - window_ms: 回看时间窗口（毫秒），默认 100ms。
+    返回值：
+    - float: 正向能量落差值，越大代表突变越明显。
+    异常说明：无。
+    边界条件：当 RMS 数据为空或出现能量下降时返回 0.0。
+    """
+    if not rms_times or not rms_values:
+        return 0.0
+    window_seconds = max(0.0, window_ms / 1000.0)
+    current_rms = _rms_value_at(time_value, rms_times, rms_values)
+    previous_rms = _rms_value_at(time_value - window_seconds, rms_times, rms_values)
+    return max(0.0, current_rms - previous_rms)
 
 
 def _slice_rms(start_time: float, end_time: float, rms_times: list[float], rms_values: list[float]) -> list[float]:
