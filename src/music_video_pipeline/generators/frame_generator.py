@@ -18,6 +18,9 @@ from typing import Any
 # 第三方库：用于创建占位图像与加载字体
 from PIL import Image, ImageDraw, ImageFont
 
+UNKNOWN_LYRIC_TEXT = "[未识别歌词]"
+CHANT_LYRIC_TEXT = "吟唱"
+
 
 class FrameGenerator(ABC):
     """
@@ -139,7 +142,7 @@ class MockFrameGenerator(FrameGenerator):
         - body_font_size: 正文字号（像素）。
         返回值：无。
         异常说明：文件写入失败时抛 OSError。
-        边界条件：scene 文本按像素宽度自动换行，最多 3 行并追加省略号。
+        边界条件：段落/scene/lyrics 文本按像素宽度自动换行，超限时追加省略号。
         """
         background_color = (26, 51, 77)
         image = Image.new(mode="RGB", size=(width, height), color=background_color)
@@ -147,6 +150,7 @@ class MockFrameGenerator(FrameGenerator):
         text_color = (255, 255, 255)
         margin = max(24, int(width * 0.04))
         line_gap = max(8, int(body_font_size * 0.45))
+        line_height = body_font_size + line_gap
         max_text_width = width - margin * 2
         cursor_y = margin
 
@@ -159,7 +163,38 @@ class MockFrameGenerator(FrameGenerator):
             fill=text_color,
             font=body_font_obj,
         )
-        cursor_y += body_font_size + line_gap
+        cursor_y += line_height
+
+        big_segment_text = _extract_big_segment_display_for_shot(shot=shot)
+        big_segment_line = _wrap_text_by_pixel_width(
+            drawer=drawer,
+            text=f"大段落：{big_segment_text}",
+            font_obj=body_font_obj,
+            max_width=max_text_width,
+            max_lines=1,
+        )
+        drawer.text((margin, cursor_y), big_segment_line[0], fill=text_color, font=body_font_obj)
+        cursor_y += line_height
+
+        role_text = _extract_audio_role_display_for_shot(shot=shot)
+        role_line = _wrap_text_by_pixel_width(
+            drawer=drawer,
+            text=f"段落类型：{role_text}",
+            font_obj=body_font_obj,
+            max_width=max_text_width,
+            max_lines=1,
+        )
+        drawer.text((margin, cursor_y), role_line[0], fill=text_color, font=body_font_obj)
+        cursor_y += line_height
+
+        footer_rows = 2
+        footer_reserved_height = footer_rows * body_font_size + (footer_rows - 1) * line_gap
+        lyric_min_reserved_height = line_height
+        scene_available_height = max(
+            line_height,
+            height - margin - footer_reserved_height - lyric_min_reserved_height - cursor_y,
+        )
+        max_scene_lines = max(1, min(3, scene_available_height // line_height))
 
         scene_text = f"场景：{str(shot['scene_desc'])}"
         scene_lines = _wrap_text_by_pixel_width(
@@ -167,15 +202,33 @@ class MockFrameGenerator(FrameGenerator):
             text=scene_text,
             font_obj=body_font_obj,
             max_width=max_text_width,
-            max_lines=3,
+            max_lines=max_scene_lines,
         )
         for line in scene_lines:
             drawer.text((margin, cursor_y), line, fill=text_color, font=body_font_obj)
-            cursor_y += body_font_size + line_gap
+            cursor_y += line_height
 
-        drawer.text((margin, cursor_y), f"运镜：{shot['camera_motion']}", fill=text_color, font=body_font_obj)
-        cursor_y += body_font_size + line_gap
-        drawer.text((margin, cursor_y), f"转场：{shot['transition']}", fill=text_color, font=body_font_obj)
+        lyric_text = _extract_lyric_text_for_shot(shot=shot)
+        lyric_render_text = f"歌词：{lyric_text}" if lyric_text else "歌词：<无>"
+        footer_y = height - margin - footer_reserved_height
+        lyric_available_height = max(
+            line_height,
+            footer_y - cursor_y - line_gap,
+        )
+        max_lyric_lines = max(1, min(4, lyric_available_height // line_height))
+        lyric_lines = _wrap_text_by_pixel_width(
+            drawer=drawer,
+            text=lyric_render_text,
+            font_obj=body_font_obj,
+            max_width=max_text_width,
+            max_lines=max_lyric_lines,
+        )
+        for line in lyric_lines:
+            drawer.text((margin, cursor_y), line, fill=text_color, font=body_font_obj)
+            cursor_y += line_height
+
+        drawer.text((margin, footer_y), f"运镜：{shot['camera_motion']}", fill=text_color, font=body_font_obj)
+        drawer.text((margin, footer_y + line_height), f"转场：{shot['transition']}", fill=text_color, font=body_font_obj)
         image.save(image_path)
 
 
@@ -385,3 +438,86 @@ def _append_ellipsis_to_line(
     while trimmed_text and _measure_text_pixel_width(drawer, f"{trimmed_text}{suffix}", font_obj) > max_width:
         trimmed_text = trimmed_text[:-1]
     return f"{trimmed_text}{suffix}" if trimmed_text else suffix
+
+
+def _extract_lyric_text_for_shot(shot: dict[str, Any]) -> str:
+    """
+    功能说明：从分镜中提取歌词展示文本，兼容新旧字段结构。
+    参数说明：
+    - shot: 分镜字典。
+    返回值：
+    - str: 可渲染的歌词文本；无歌词时返回空字符串。
+    异常说明：无。
+    边界条件：优先使用 lyric_text，缺失时尝试从 lyric_units 聚合。
+    """
+    lyric_text = str(shot.get("lyric_text", "")).strip()
+    if lyric_text:
+        return lyric_text
+
+    lyric_units = shot.get("lyric_units", [])
+    if not isinstance(lyric_units, list):
+        return ""
+
+    reliable_text_items: list[str] = []
+    has_unknown = False
+    has_chant = False
+    for item in lyric_units:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        if text == UNKNOWN_LYRIC_TEXT:
+            has_unknown = True
+            continue
+        if text == CHANT_LYRIC_TEXT:
+            has_chant = True
+            continue
+        reliable_text_items.append(text)
+
+    if reliable_text_items:
+        return " ".join(reliable_text_items)
+    if has_unknown:
+        return UNKNOWN_LYRIC_TEXT
+    if has_chant:
+        return CHANT_LYRIC_TEXT
+    return ""
+
+
+def _extract_big_segment_display_for_shot(shot: dict[str, Any]) -> str:
+    """
+    功能说明：提取分镜对应的大段落展示文本（标签+ID）。
+    参数说明：
+    - shot: 分镜字典。
+    返回值：
+    - str: 大段落展示字符串。
+    异常说明：无。
+    边界条件：缺失字段时返回“<未知>”。
+    """
+    big_label = str(shot.get("big_segment_label", "")).strip()
+    big_id = str(shot.get("big_segment_id", "")).strip()
+    if big_label and big_id:
+        return f"{big_label} ({big_id})"
+    if big_label:
+        return big_label
+    if big_id:
+        return big_id
+    return "<未知>"
+
+
+def _extract_audio_role_display_for_shot(shot: dict[str, Any]) -> str:
+    """
+    功能说明：提取分镜对应的段落类型展示文本。
+    参数说明：
+    - shot: 分镜字典。
+    返回值：
+    - str: 段落类型（器乐段/人声段/<未知>）。
+    异常说明：无。
+    边界条件：字段缺失或非法值时返回“<未知>”。
+    """
+    audio_role = str(shot.get("audio_role", "")).strip().lower()
+    if audio_role == "instrumental":
+        return "器乐段"
+    if audio_role == "vocal":
+        return "人声段"
+    return "<未知>"

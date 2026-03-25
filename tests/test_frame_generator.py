@@ -15,6 +15,9 @@ from PIL import Image, ImageDraw
 # 项目内模块：占位图生成器实现与内部排版工具
 from music_video_pipeline.generators.frame_generator import (
     MockFrameGenerator,
+    _extract_audio_role_display_for_shot,
+    _extract_big_segment_display_for_shot,
+    _extract_lyric_text_for_shot,
     _load_chinese_font,
     _measure_text_pixel_width,
     _wrap_text_by_pixel_width,
@@ -50,6 +53,104 @@ def test_mock_frame_generator_should_render_chinese_scene_text(tmp_path: Path) -
 
     image = Image.open(frame_path)
     assert image.size == (960, 540)
+
+
+def test_mock_frame_generator_should_render_lyrics_text_with_new_fields(tmp_path: Path) -> None:
+    """
+    功能说明：验证分镜包含歌词扩展字段时，占位图可正常生成。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：歌词超长时应通过自动换行与截断处理。
+    """
+    generator = MockFrameGenerator()
+    shots = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 3.0,
+            "scene_desc": "雨夜下的城市街口，镜头缓慢推进",
+            "camera_motion": "zoom_in",
+            "transition": "crossfade",
+            "lyric_text": "这是很长的一句歌词用于测试自动换行与布局保护 这是第二句歌词继续测试",
+            "lyric_units": [
+                {"start_time": 0.1, "end_time": 1.2, "text": "这是很长的一句歌词用于测试自动换行与布局保护", "confidence": 0.9},
+                {"start_time": 1.3, "end_time": 2.7, "text": "这是第二句歌词继续测试", "confidence": 0.85},
+            ],
+            "big_segment_id": "big_003",
+            "big_segment_label": "chorus",
+            "segment_label": "chorus",
+            "audio_role": "vocal",
+        }
+    ]
+
+    frame_items = generator.generate(shots=shots, output_dir=tmp_path / "frames", width=960, height=540)
+    assert len(frame_items) == 1
+    assert Path(frame_items[0]["frame_path"]).exists()
+
+
+def test_extract_lyric_text_for_shot_should_fallback_to_lyric_units() -> None:
+    """
+    功能说明：验证当 lyric_text 为空时可从 lyric_units 聚合展示文本。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：lyric_units 中空文本会被忽略。
+    """
+    shot = {
+        "lyric_text": "",
+        "lyric_units": [
+            {"text": "第一句"},
+            {"text": "  "},
+            {"text": "第二句"},
+        ],
+    }
+    assert _extract_lyric_text_for_shot(shot=shot) == "第一句 第二句"
+
+
+def test_extract_lyric_text_for_shot_should_return_unknown_marker_when_no_reliable_text() -> None:
+    """
+    功能说明：验证 lyric_units 仅包含未识别标记时，返回“未识别歌词”。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：兼容 lyric_text 缺失的旧分镜结构。
+    """
+    shot = {
+        "lyric_units": [
+            {"text": "吟唱"},
+            {"text": "[未识别歌词]"},
+        ],
+    }
+    assert _extract_lyric_text_for_shot(shot=shot) == "[未识别歌词]"
+
+
+def test_extract_big_segment_display_for_shot_should_format_label_and_id() -> None:
+    """
+    功能说明：验证大段落展示文本按“标签+ID”格式输出。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：字段缺失时应返回“<未知>”。
+    """
+    assert _extract_big_segment_display_for_shot(
+        shot={"big_segment_label": "chorus", "big_segment_id": "big_003"}
+    ) == "chorus (big_003)"
+    assert _extract_big_segment_display_for_shot(shot={}) == "<未知>"
+
+
+def test_extract_audio_role_display_for_shot_should_map_role_text() -> None:
+    """
+    功能说明：验证 audio_role 到中文段落类型文案的映射。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：非法值应降级为“<未知>”。
+    """
+    assert _extract_audio_role_display_for_shot(shot={"audio_role": "instrumental"}) == "器乐段"
+    assert _extract_audio_role_display_for_shot(shot={"audio_role": "vocal"}) == "人声段"
+    assert _extract_audio_role_display_for_shot(shot={"audio_role": "other"}) == "<未知>"
 
 
 def test_load_chinese_font_should_prioritize_repo_bundled_font() -> None:
@@ -89,4 +190,3 @@ def test_wrap_text_by_pixel_width_should_clip_to_max_lines_with_ellipsis() -> No
     assert len(lines) == 3
     assert lines[-1].endswith("...")
     assert all(_measure_text_pixel_width(drawer, line, font_obj) <= max_width for line in lines)
-

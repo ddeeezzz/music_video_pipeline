@@ -7,7 +7,7 @@
 """
 
 # 标准库：用于声明结构化类型
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 TaskState = Literal["pending", "running", "done", "failed"]
@@ -125,6 +125,12 @@ class ModuleBOutputItem(TypedDict):
     camera_motion: str
     transition: str
     constraints: dict[str, bool]
+    lyric_text: NotRequired[str]
+    lyric_units: NotRequired[list[dict]]
+    big_segment_id: NotRequired[str]
+    big_segment_label: NotRequired[str]
+    segment_label: NotRequired[str]
+    audio_role: NotRequired[str]
 
 
 ModuleBOutput = list[ModuleBOutputItem]
@@ -256,13 +262,14 @@ def validate_module_b_output(data: list[dict]) -> None:
     异常说明：
     - ValueError: 输出不是列表或列表为空。
     - KeyError: 任一分镜缺失必填字段。
-    边界条件：仅校验最小字段，不校验语义质量。
+    边界条件：兼容旧产物，歌词扩展字段允许缺失。
     """
     if not isinstance(data, list) or not data:
         raise ValueError("ModuleBOutput 必须是非空 list")
 
     required_keys = {"shot_id", "start_time", "end_time", "scene_desc", "image_prompt", "camera_motion", "transition"}
     valid_camera_motion = {"slow_pan", "zoom_in", "shake", "push_pull", "none"}
+    valid_audio_role = {"instrumental", "vocal"}
 
     for index, item in enumerate(data):
         missing_keys = required_keys.difference(item.keys())
@@ -275,3 +282,57 @@ def validate_module_b_output(data: list[dict]) -> None:
                 f"ModuleBOutput[{index}].camera_motion 非法: {camera_motion}，"
                 f"合法值: {sorted(valid_camera_motion)}"
             )
+
+        if "lyric_text" in item and not isinstance(item["lyric_text"], str):
+            raise TypeError(f"ModuleBOutput[{index}].lyric_text 必须是 str")
+
+        for optional_key in ["big_segment_id", "big_segment_label", "segment_label"]:
+            if optional_key in item and not isinstance(item[optional_key], str):
+                raise TypeError(f"ModuleBOutput[{index}].{optional_key} 必须是 str")
+
+        if "audio_role" in item:
+            if not isinstance(item["audio_role"], str):
+                raise TypeError(f"ModuleBOutput[{index}].audio_role 必须是 str")
+            audio_role = str(item["audio_role"]).strip()
+            if audio_role not in valid_audio_role:
+                raise ValueError(
+                    f"ModuleBOutput[{index}].audio_role 非法: {audio_role}，"
+                    f"合法值: {sorted(valid_audio_role)}"
+                )
+
+        if "lyric_units" in item:
+            lyric_units = item["lyric_units"]
+            if not isinstance(lyric_units, list):
+                raise TypeError(f"ModuleBOutput[{index}].lyric_units 必须是 list")
+
+            for lyric_index, lyric_item in enumerate(lyric_units):
+                if not isinstance(lyric_item, dict):
+                    raise TypeError(f"ModuleBOutput[{index}].lyric_units[{lyric_index}] 必须是 dict")
+
+                for key in ["start_time", "end_time", "text", "confidence"]:
+                    if key not in lyric_item:
+                        raise KeyError(
+                            f"ModuleBOutput[{index}].lyric_units[{lyric_index}] 缺失字段: {key}"
+                        )
+
+                start_time = _safe_float(
+                    lyric_item["start_time"],
+                    f"ModuleBOutput[{index}].lyric_units[{lyric_index}].start_time",
+                )
+                end_time = _safe_float(
+                    lyric_item["end_time"],
+                    f"ModuleBOutput[{index}].lyric_units[{lyric_index}].end_time",
+                )
+                if end_time < start_time:
+                    raise ValueError(
+                        f"ModuleBOutput[{index}].lyric_units[{lyric_index}] 时间区间非法"
+                    )
+
+                if not isinstance(lyric_item["text"], str):
+                    raise TypeError(
+                        f"ModuleBOutput[{index}].lyric_units[{lyric_index}].text 必须是 str"
+                    )
+                _safe_float(
+                    lyric_item["confidence"],
+                    f"ModuleBOutput[{index}].lyric_units[{lyric_index}].confidence",
+                )
