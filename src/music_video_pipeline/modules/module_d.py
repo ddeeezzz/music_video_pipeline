@@ -8,6 +8,8 @@
 
 # 标准库：用于子进程命令执行
 import subprocess
+# 标准库：用于日志对象类型提示
+import logging
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于类型提示
@@ -40,6 +42,11 @@ def run_module_d(context: RuntimeContext) -> Path:
     segments_dir = context.artifacts_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
 
+    audio_duration = _probe_media_duration(
+        media_path=context.audio_path,
+        ffprobe_bin=context.config.ffmpeg.ffprobe_bin,
+    )
+
     segment_paths = _render_segment_videos(
         frame_items=frame_items,
         segments_dir=segments_dir,
@@ -48,11 +55,8 @@ def run_module_d(context: RuntimeContext) -> Path:
         video_codec=context.config.ffmpeg.video_codec,
         video_preset=context.config.ffmpeg.video_preset,
         video_crf=context.config.ffmpeg.video_crf,
-    )
-
-    audio_duration = _probe_media_duration(
-        media_path=context.audio_path,
-        ffprobe_bin=context.config.ffmpeg.ffprobe_bin,
+        audio_duration=audio_duration,
+        logger=context.logger,
     )
 
     output_video_path = context.task_dir / "final_output.mp4"
@@ -82,6 +86,8 @@ def _render_segment_videos(
     video_codec: str,
     video_preset: str,
     video_crf: int,
+    audio_duration: float,
+    logger: logging.Logger,
 ) -> list[Path]:
     """
     功能说明：将每个静态帧渲染成独立的小视频片段。
@@ -93,15 +99,31 @@ def _render_segment_videos(
     - video_codec: 视频编码器。
     - video_preset: 视频编码预设。
     - video_crf: 视频 CRF 参数。
+    - audio_duration: 原音轨时长（秒）。
+    - logger: 日志对象。
     返回值：
     - list[Path]: 已生成的小视频片段路径数组。
     异常说明：ffmpeg 调用失败时抛 RuntimeError。
-    边界条件：duration 最低限制为 0.1 秒，避免无效片段。
+    边界条件：使用全局帧分配，保证各片段总帧数与音频目标帧数一致。
     """
+    allocated_frames = _allocate_segment_frames_by_timeline(
+        frame_items=frame_items,
+        audio_duration=audio_duration,
+        fps=fps,
+    )
+    target_total_frames = max(1, round(audio_duration * fps))
+    allocated_total_frames = sum(allocated_frames)
+    logger.info(
+        "模块D帧分配汇总，目标总帧=%s，分配总帧=%s，片段数=%s",
+        target_total_frames,
+        allocated_total_frames,
+        len(allocated_frames),
+    )
+
     segment_paths: list[Path] = []
     for index, item in enumerate(frame_items, start=1):
         frame_path = Path(str(item["frame_path"]))
-        duration = round(max(0.1, float(item.get("duration", 0.1))), 3)
+        exact_frames = allocated_frames[index - 1]
         segment_path = segments_dir / f"segment_{index:03d}.mp4"
 
         command = [
@@ -111,8 +133,8 @@ def _render_segment_videos(
             "1",
             "-i",
             str(frame_path),
-            "-t",
-            f"{duration:.3f}",
+            "-frames:v",
+            str(exact_frames),
             "-r",
             str(fps),
             "-c:v",
@@ -126,9 +148,110 @@ def _render_segment_videos(
             "-an",
             str(segment_path),
         ]
-        _run_ffmpeg_command(command=command, command_name=f"渲染小片段 segment_{index:03d}")
+        try:
+            _run_ffmpeg_command(command=command, command_name=f"渲染小片段 segment_{index:03d}")
+        except RuntimeError as error:
+            detail_lines = _build_frame_allocation_detail_lines(frame_items=frame_items, allocated_frames=allocated_frames, fps=fps)
+            detail_text = "\n".join(detail_lines)
+            raise RuntimeError(f"{error}\n模块D逐段帧分配明细：\n{detail_text}") from error
         segment_paths.append(segment_path)
     return segment_paths
+
+
+def _allocate_segment_frames_by_timeline(
+    frame_items: list[dict[str, Any]],
+    audio_duration: float,
+    fps: int,
+) -> list[int]:
+    """
+    功能说明：根据全局时间轴为每个片段分配绝对帧数，消除累积舍入误差。
+    参数说明：
+    - frame_items: 模块 C 产出的帧清单，需包含 start_time/end_time。
+    - audio_duration: 原音轨时长（秒）。
+    - fps: 输出帧率。
+    返回值：
+    - list[int]: 与 frame_items 一一对应的片段帧数。
+    异常说明：输入非法或无法满足最小帧分配时抛 RuntimeError。
+    边界条件：每个片段至少分配 1 帧，总帧数严格等于 round(audio_duration * fps)。
+    """
+    if not frame_items:
+        raise RuntimeError("模块D帧分配失败：frame_items 为空。")
+    if fps <= 0:
+        raise RuntimeError(f"模块D帧分配失败：fps 非法，fps={fps}")
+
+    safe_audio_duration = max(0.1, float(audio_duration))
+    target_total_frames = max(1, round(safe_audio_duration * fps))
+    segment_count = len(frame_items)
+    if segment_count > target_total_frames:
+        raise RuntimeError(
+            f"模块D帧分配失败：片段数大于目标总帧数，segment_count={segment_count}, target_total_frames={target_total_frames}"
+        )
+
+    normalized_end_frames: list[int] = []
+    last_start_time = 0.0
+    for index, item in enumerate(frame_items, start=1):
+        start_time = float(item.get("start_time", 0.0))
+        if "end_time" in item:
+            end_time = float(item["end_time"])
+        else:
+            end_time = start_time + max(0.1, float(item.get("duration", 0.1)))
+
+        if end_time < start_time:
+            raise RuntimeError(f"模块D帧分配失败：片段时间区间非法，index={index}, start={start_time}, end={end_time}")
+        if start_time < last_start_time:
+            raise RuntimeError(
+                f"模块D帧分配失败：片段开始时间未按升序，index={index}, previous_start={last_start_time}, start={start_time}"
+            )
+        last_start_time = start_time
+
+        clamped_end = max(0.0, min(safe_audio_duration, end_time))
+        normalized_end_frames.append(round(clamped_end * fps))
+
+    allocated_frames: list[int] = []
+    previous_end_frame = 0
+    for index, raw_end_frame in enumerate(normalized_end_frames, start=1):
+        remaining_segments = segment_count - index
+        min_end_frame = previous_end_frame + 1
+        max_end_frame = target_total_frames - remaining_segments
+        clamped_end_frame = min(max(raw_end_frame, min_end_frame), max_end_frame)
+        current_frames = clamped_end_frame - previous_end_frame
+        allocated_frames.append(current_frames)
+        previous_end_frame = clamped_end_frame
+
+    if sum(allocated_frames) != target_total_frames:
+        raise RuntimeError(
+            f"模块D帧分配失败：总帧数不一致，allocated={sum(allocated_frames)}, target={target_total_frames}"
+        )
+    if any(frame_count <= 0 for frame_count in allocated_frames):
+        raise RuntimeError("模块D帧分配失败：存在非正帧片段。")
+    return allocated_frames
+
+
+def _build_frame_allocation_detail_lines(frame_items: list[dict[str, Any]], allocated_frames: list[int], fps: int) -> list[str]:
+    """
+    功能说明：构建逐段帧分配明细文本，用于失败排障。
+    参数说明：
+    - frame_items: 帧清单数组。
+    - allocated_frames: 已分配帧数组。
+    - fps: 输出帧率。
+    返回值：
+    - list[str]: 可直接拼接输出的明细行。
+    异常说明：无。
+    边界条件：若字段缺失则使用默认值，不中断明细输出。
+    """
+    lines: list[str] = []
+    cumulative_frames = 0
+    for index, (item, frame_count) in enumerate(zip(frame_items, allocated_frames, strict=True), start=1):
+        start_time = float(item.get("start_time", 0.0))
+        end_time = float(item.get("end_time", start_time))
+        cumulative_frames += frame_count
+        lines.append(
+            (
+                f"- segment_{index:03d}: start={start_time:.3f}s, end={end_time:.3f}s, "
+                f"frames={frame_count}, cumulative_frames={cumulative_frames}, fps={fps}"
+            )
+        )
+    return lines
 
 
 def _concat_segment_videos(
