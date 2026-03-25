@@ -13,6 +13,9 @@ import logging
 # 标准库：类型提示
 from typing import Any
 
+UNKNOWN_LYRIC_TEXT = "[未识别歌词]"
+CHANT_LYRIC_TEXT = "吟唱"
+
 
 class ScriptGenerator(ABC):
     """分镜生成器接口定义。"""
@@ -31,10 +34,12 @@ class MockScriptGenerator(ScriptGenerator):
         segments = module_a_output["segments"]
         big_segments = module_a_output.get("big_segments", [])
         energy_features = module_a_output["energy_features"]
+        lyric_units = module_a_output.get("lyric_units", [])
 
         big_segment_label_map = {
             str(item.get("segment_id", "")): str(item.get("label", "unknown")) for item in big_segments
         }
+        lyric_units_map = self._build_lyric_index_by_segment(lyric_units=lyric_units)
 
         shots: list[dict[str, Any]] = []
         for index, segment in enumerate(segments):
@@ -47,6 +52,9 @@ class MockScriptGenerator(ScriptGenerator):
             big_segment_id = str(segment.get("big_segment_id", ""))
             big_label = big_segment_label_map.get(big_segment_id, str(segment.get("label", "unknown")))
             small_label = str(segment.get("label", "unknown"))
+            segment_id = str(segment.get("segment_id", ""))
+            shot_lyric_units = lyric_units_map.get(segment_id, [])
+            lyric_text = self._build_lyric_text(shot_lyric_units)
 
             shots.append(
                 {
@@ -58,6 +66,8 @@ class MockScriptGenerator(ScriptGenerator):
                     "camera_motion": camera_motion,
                     "transition": transition,
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+                    "lyric_text": lyric_text,
+                    "lyric_units": shot_lyric_units,
                 }
             )
 
@@ -72,6 +82,8 @@ class MockScriptGenerator(ScriptGenerator):
                     "camera_motion": "slow_pan",
                     "transition": "crossfade",
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+                    "lyric_text": "",
+                    "lyric_units": [],
                 }
             )
         return shots
@@ -87,6 +99,56 @@ class MockScriptGenerator(ScriptGenerator):
         if energy_level == "mid":
             return "zoom_in"
         return "slow_pan"
+
+    def _build_lyric_index_by_segment(self, lyric_units: Any) -> dict[str, list[dict[str, Any]]]:
+        """按 segment_id 聚合歌词单元，并按 start_time 升序排列。"""
+        if not isinstance(lyric_units, list):
+            return {}
+
+        lyric_units_map: dict[str, list[dict[str, Any]]] = {}
+        for item in lyric_units:
+            if not isinstance(item, dict):
+                continue
+            segment_id = str(item.get("segment_id", "")).strip()
+            if not segment_id:
+                continue
+            normalized_item = {
+                "segment_id": segment_id,
+                "start_time": float(item.get("start_time", 0.0)),
+                "end_time": float(item.get("end_time", item.get("start_time", 0.0))),
+                "text": str(item.get("text", "")).strip(),
+                "confidence": float(item.get("confidence", 0.0)),
+            }
+            lyric_units_map.setdefault(segment_id, []).append(normalized_item)
+
+        for segment_id in lyric_units_map:
+            lyric_units_map[segment_id].sort(key=lambda unit: float(unit.get("start_time", 0.0)))
+        return lyric_units_map
+
+    def _build_lyric_text(self, lyric_units: list[dict[str, Any]]) -> str:
+        """将歌词单元文本按优先级聚合为分镜展示文案。"""
+        reliable_text_items: list[str] = []
+        has_unknown = False
+        has_chant = False
+        for item in lyric_units:
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            if text == UNKNOWN_LYRIC_TEXT:
+                has_unknown = True
+                continue
+            if text == CHANT_LYRIC_TEXT:
+                has_chant = True
+                continue
+            reliable_text_items.append(text)
+
+        if reliable_text_items:
+            return " ".join(reliable_text_items)
+        if has_unknown:
+            return UNKNOWN_LYRIC_TEXT
+        if has_chant:
+            return CHANT_LYRIC_TEXT
+        return ""
 
 
 class LlmScriptGenerator(ScriptGenerator):
