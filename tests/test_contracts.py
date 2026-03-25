@@ -11,6 +11,9 @@ import logging
 # 标准库：用于路径处理
 from pathlib import Path
 
+# 第三方库：用于异常断言
+import pytest
+
 # 项目内模块：配置数据类
 from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
 # 项目内模块：运行上下文
@@ -69,6 +72,128 @@ def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
     module_b_output = read_json(module_b_path)
     validate_module_b_output(module_b_output)
     assert len(module_b_output) == len(module_a_output["segments"])
+    assert "lyric_text" in module_b_output[0]
+    assert "lyric_units" in module_b_output[0]
+    assert isinstance(module_b_output[0]["lyric_text"], str)
+    assert isinstance(module_b_output[0]["lyric_units"], list)
+    assert "big_segment_id" in module_b_output[0]
+    assert "big_segment_label" in module_b_output[0]
+    assert "segment_label" in module_b_output[0]
+    assert "audio_role" in module_b_output[0]
+
+    instrumental_set = {item.lower() for item in config.module_a.instrumental_labels}
+    for shot in module_b_output:
+        assert isinstance(shot["big_segment_id"], str)
+        assert isinstance(shot["big_segment_label"], str)
+        assert isinstance(shot["segment_label"], str)
+        assert shot["audio_role"] in {"instrumental", "vocal"}
+        if str(shot["segment_label"]).lower() in instrumental_set:
+            assert shot["audio_role"] == "instrumental"
+        else:
+            assert shot["audio_role"] == "vocal"
+
+
+def test_validate_module_b_output_should_be_forward_compatible_for_legacy_items() -> None:
+    """
+    功能说明：验证模块B契约校验兼容旧版无歌词字段分镜。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅保留最低必填字段。
+    """
+    legacy_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "image_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+        }
+    ]
+    validate_module_b_output(legacy_output)
+
+
+def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
+    """
+    功能说明：验证模块B契约校验可识别歌词扩展字段的合法性。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：lyric_text 非字符串时应抛出 TypeError。
+    """
+    enhanced_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "image_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "lyric_text": "第一句 第二句",
+            "lyric_units": [
+                {"start_time": 0.1, "end_time": 0.6, "text": "第一句", "confidence": 0.9},
+                {"start_time": 0.7, "end_time": 1.1, "text": "第二句", "confidence": 0.8},
+            ],
+            "big_segment_id": "big_001",
+            "big_segment_label": "verse",
+            "segment_label": "verse",
+            "audio_role": "vocal",
+        }
+    ]
+    validate_module_b_output(enhanced_output)
+
+    invalid_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "image_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "lyric_text": 123,
+        }
+    ]
+    with pytest.raises(TypeError):
+        validate_module_b_output(invalid_output)
+
+    invalid_audio_role_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "image_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "audio_role": "unknown",
+        }
+    ]
+    with pytest.raises(ValueError):
+        validate_module_b_output(invalid_audio_role_output)
+
+    invalid_big_segment_id_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "image_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "big_segment_id": 123,
+        }
+    ]
+    with pytest.raises(TypeError):
+        validate_module_b_output(invalid_big_segment_id_output)
 
 
 def _build_test_config(tmp_path: Path) -> AppConfig:
@@ -95,5 +220,5 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
         ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
-        module_a=ModuleAConfig(mode="fallback_only"),
+        module_a=ModuleAConfig(whisper_language="auto", mode="fallback_only"),
     )
