@@ -109,6 +109,7 @@ class ModuleAConfig:
     """
     功能说明：定义模块 A 的真实链路配置。
     参数说明：
+    - whisper_language: Whisper 语言策略（auto 或语言代码，如 zh/en/ja）。
     - mode: 模式（real_auto/real_strict/fallback_only）。
     - lyric_beat_snap_threshold_ms: 歌词到节拍的吸附阈值（毫秒）。
     - instrumental_labels: 视为器乐段的标签集合。
@@ -121,6 +122,7 @@ class ModuleAConfig:
     边界条件：阈值建议大于等于 0。
     """
 
+    whisper_language: str
     mode: str = "real_auto"
     lyric_beat_snap_threshold_ms: int = 200
     instrumental_labels: list[str] = field(default_factory=lambda: ["intro", "outro", "inst"])
@@ -151,7 +153,7 @@ class AppConfig:
     ffmpeg: FfmpegConfig
     logging: LoggingConfig
     mock: MockConfig
-    module_a: ModuleAConfig = field(default_factory=ModuleAConfig)
+    module_a: ModuleAConfig = field(default_factory=lambda: ModuleAConfig(whisper_language="auto"))
 
 
 def _read_json_config(config_path: Path) -> dict:
