@@ -13,18 +13,25 @@ from pathlib import Path
 # 标准库：用于模块注入
 import sys
 
+# 第三方库：用于异常断言
+import pytest
+
 # 项目内模块：配置对象
 from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
 # 项目内模块：运行上下文
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：JSON 读取工具
 from music_video_pipeline.io_utils import read_json
+# 项目内模块：模块A命名空间（用于打桩）
+from music_video_pipeline.modules import module_a as module_a_impl
 # 项目内模块：模块A实现
 from music_video_pipeline.modules.module_a import (
     _attach_lyrics_to_segments,
     _build_segments_with_lyric_priority,
-    _clean_whisper_lyric_units,
-    _recognize_lyrics_with_whisper,
+    _build_visual_lyric_units,
+    _clean_lyric_units,
+    _recognize_lyrics_with_funasr,
+    _run_real_pipeline,
     _rms_delta_at,
     _select_small_timestamps,
     run_module_a,
@@ -107,7 +114,7 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
         ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
-        module_a=ModuleAConfig(whisper_language="auto", mode="fallback_only"),
+        module_a=ModuleAConfig(funasr_language="auto", mode="fallback_only"),
     )
 
 
@@ -184,47 +191,62 @@ def test_rms_delta_should_only_keep_positive_change() -> None:
     assert _rms_delta_at(0.3, rms_times, rms_values, window_ms=100.0) == 0.0
 
 
-def test_recognize_lyrics_with_whisper_should_not_pass_language_when_auto(monkeypatch) -> None:
+def test_recognize_lyrics_with_funasr_should_not_pass_language_when_auto(monkeypatch) -> None:
     """
-    功能说明：验证 whisper_language=auto 时调用 transcribe 不传 language 参数。
+    功能说明：验证 funasr_language=auto 时调用 generate 不传 language 参数。
     参数说明：
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：通过假 whisper 模块隔离外部依赖与模型加载。
+    边界条件：通过假 funasr 模块隔离外部依赖与模型加载。
     """
     captured_kwargs: dict[str, object] = {}
 
     class _FakeModel:
-        def transcribe(self, _audio_path: str, **kwargs):
+        def __init__(self, **kwargs):
+            captured_kwargs["model_kwargs"] = kwargs
+
+        def generate(self, **kwargs):
             captured_kwargs.update(kwargs)
-            return {"segments": [{"start": 0.0, "end": 0.5, "text": "测试歌词", "avg_logprob": -0.2}]}
+            return [
+                {
+                    "text": "テスト歌詞",
+                    "sentence_info": [
+                        {
+                            "text": "テスト歌詞",
+                            "start": 0,
+                            "end": 500,
+                            "timestamp": [[0, 240], [240, 500]],
+                            "score": 0.92,
+                        }
+                    ],
+                }
+            ]
 
-    class _FakeWhisperModule:
-        @staticmethod
-        def load_model(_model_name: str, device=None):
-            captured_kwargs["device"] = device
-            return _FakeModel()
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
 
-    monkeypatch.setitem(sys.modules, "whisper", _FakeWhisperModule())
-    sentence_starts, lyric_units = _recognize_lyrics_with_whisper(
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    sentence_starts, lyric_units = _recognize_lyrics_with_funasr(
         audio_path=Path("dummy.wav"),
-        model_name="base",
+        model_name="FunAudioLLM/Fun-ASR-Nano-2512",
         device="auto",
-        whisper_language="auto",
-        logger=logging.getLogger("whisper_auto_test"),
+        funasr_language="auto",
+        logger=logging.getLogger("funasr_auto_test"),
     )
 
     assert len(sentence_starts) == 1
     assert len(lyric_units) == 1
     assert "language" not in captured_kwargs
-    assert captured_kwargs["word_timestamps"] is False
-    assert captured_kwargs["device"] is None
+    assert "device" not in captured_kwargs["model_kwargs"]
+    assert set(captured_kwargs["model_kwargs"].keys()) == {"model", "vad_model", "vad_kwargs"}
+    assert captured_kwargs["model_kwargs"]["vad_model"] == "fsmn-vad"
+    assert lyric_units[0]["token_units"][0]["granularity"] == "char"
 
 
-def test_recognize_lyrics_with_whisper_should_pass_language_when_forced(monkeypatch) -> None:
+def test_recognize_lyrics_with_funasr_should_pass_language_when_forced(monkeypatch) -> None:
     """
-    功能说明：验证 whisper_language 指定时会透传 language 参数到 transcribe。
+    功能说明：验证 funasr_language 指定时会透传 language 参数到 generate。
     参数说明：
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
@@ -234,32 +256,39 @@ def test_recognize_lyrics_with_whisper_should_pass_language_when_forced(monkeypa
     captured_kwargs: dict[str, object] = {}
 
     class _FakeModel:
-        def transcribe(self, _audio_path: str, **kwargs):
+        def __init__(self, **kwargs):
+            captured_kwargs["model_kwargs"] = kwargs
+
+        def generate(self, **kwargs):
             captured_kwargs.update(kwargs)
-            return {"segments": [{"start": 0.0, "end": 0.5, "text": "lyrics", "avg_logprob": -0.2}]}
+            return [
+                {
+                    "text": "lyrics",
+                    "sentence_info": [
+                        {"text": "lyrics", "start": 0, "end": 500, "timestamp": [[0, 500]], "score": 0.6}
+                    ],
+                }
+            ]
 
-    class _FakeWhisperModule:
-        @staticmethod
-        def load_model(_model_name: str, device=None):
-            captured_kwargs["device"] = device
-            return _FakeModel()
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
 
-    monkeypatch.setitem(sys.modules, "whisper", _FakeWhisperModule())
-    _recognize_lyrics_with_whisper(
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    _recognize_lyrics_with_funasr(
         audio_path=Path("dummy.wav"),
-        model_name="base",
+        model_name="FunAudioLLM/Fun-ASR-Nano-2512",
         device="cpu",
-        whisper_language="JA",
-        logger=logging.getLogger("whisper_forced_test"),
+        funasr_language="JA",
+        logger=logging.getLogger("funasr_forced_test"),
     )
 
     assert captured_kwargs["language"] == "ja"
-    assert captured_kwargs["device"] == "cpu"
+    assert captured_kwargs["model_kwargs"]["device"] == "cpu"
 
 
-def test_recognize_lyrics_with_whisper_should_fallback_auto_when_language_invalid(monkeypatch, caplog) -> None:
+def test_recognize_lyrics_with_funasr_should_fallback_auto_when_language_invalid(monkeypatch, caplog) -> None:
     """
-    功能说明：验证非法 whisper_language 会告警并回退为自动检测。
+    功能说明：验证非法 funasr_language 会告警并回退为自动检测。
     参数说明：
     - monkeypatch: pytest 提供的补丁工具。
     - caplog: pytest 日志捕获夹具。
@@ -270,31 +299,292 @@ def test_recognize_lyrics_with_whisper_should_fallback_auto_when_language_invali
     captured_kwargs: dict[str, object] = {}
 
     class _FakeModel:
-        def transcribe(self, _audio_path: str, **kwargs):
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, **kwargs):
             captured_kwargs.update(kwargs)
-            return {"segments": [{"start": 0.0, "end": 0.5, "text": "lyrics", "avg_logprob": -0.2}]}
+            return [
+                {
+                    "text": "lyrics",
+                    "sentence_info": [
+                        {"text": "lyrics", "start": 0, "end": 500, "timestamp": [[0, 500]], "score": 0.6}
+                    ],
+                }
+            ]
 
-    class _FakeWhisperModule:
-        @staticmethod
-        def load_model(_model_name: str, device=None):
-            return _FakeModel()
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
 
-    monkeypatch.setitem(sys.modules, "whisper", _FakeWhisperModule())
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
     caplog.set_level(logging.WARNING)
 
-    _recognize_lyrics_with_whisper(
+    _recognize_lyrics_with_funasr(
         audio_path=Path("dummy.wav"),
-        model_name="base",
+        model_name="FunAudioLLM/Fun-ASR-Nano-2512",
         device="auto",
-        whisper_language="bad lang!",
-        logger=logging.getLogger("whisper_invalid_test"),
+        funasr_language="bad lang!",
+        logger=logging.getLogger("funasr_invalid_test"),
     )
 
-    assert "模块A-Whisper语言配置非法，已回退自动检测" in caplog.text
+    assert "模块A-FunASR语言配置非法，已回退自动检测" in caplog.text
     assert "language" not in captured_kwargs
 
 
-def test_clean_whisper_lyric_units_should_filter_noise_and_normalize_vocalise() -> None:
+def test_recognize_lyrics_with_funasr_should_build_units_from_timestamp_when_sentence_info_missing(monkeypatch) -> None:
+    """
+    功能说明：验证当 sentence_info 缺失时，可由 text + timestamp 回退生成句级歌词单元。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：timestamp 采用二维数组时应生成 token_units。
+    """
+    class _FakeModel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, **_kwargs):
+            return [{"text": "あいしてる。", "timestamp": [[0, 180], [180, 340], [340, 520], [520, 700], [700, 860], [860, 1000]]}]
+
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
+
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    _, lyric_units = _recognize_lyrics_with_funasr(
+        audio_path=Path("dummy.wav"),
+        model_name="FunAudioLLM/Fun-ASR-Nano-2512",
+        device="auto",
+        funasr_language="ja",
+        logger=logging.getLogger("funasr_timestamp_fallback_test"),
+    )
+    assert lyric_units
+    assert lyric_units[0]["text"] == "あいしてる。"
+    assert lyric_units[0]["token_units"]
+
+
+def test_recognize_lyrics_with_funasr_should_build_units_from_timestamps_dict(monkeypatch) -> None:
+    """
+    功能说明：验证 FunASR 返回 timestamps(dict[]) 时可正确生成句级歌词与 token_units。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：timestamps 键名为复数，且时间字段为 start_time/end_time。
+    """
+    class _FakeModel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, **_kwargs):
+            return [
+                {
+                    "text": "テスト。次の行。",
+                    "timestamps": [
+                        {"token": "テ", "start_time": 0.1, "end_time": 0.2, "score": 0.9},
+                        {"token": "ス", "start_time": 0.2, "end_time": 0.3, "score": 0.9},
+                        {"token": "ト", "start_time": 0.3, "end_time": 0.4, "score": 0.9},
+                        {"token": "。", "start_time": 0.4, "end_time": 0.5, "score": 0.9},
+                        {"token": "次", "start_time": 0.6, "end_time": 0.7, "score": 0.9},
+                        {"token": "の", "start_time": 0.7, "end_time": 0.8, "score": 0.9},
+                        {"token": "行", "start_time": 0.8, "end_time": 0.9, "score": 0.9},
+                        {"token": "。", "start_time": 0.9, "end_time": 1.0, "score": 0.9},
+                    ],
+                }
+            ]
+
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
+
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    _, lyric_units = _recognize_lyrics_with_funasr(
+        audio_path=Path("dummy.wav"),
+        model_name="FunAudioLLM/Fun-ASR-Nano-2512",
+        device="auto",
+        funasr_language="ja",
+        logger=logging.getLogger("funasr_timestamps_dict_test"),
+    )
+
+    assert len(lyric_units) == 2
+    assert lyric_units[0]["text"] == "テスト。"
+    assert lyric_units[0]["token_units"][0]["text"] == "テ"
+
+
+def test_recognize_lyrics_with_funasr_should_raise_when_text_without_timestamp(monkeypatch) -> None:
+    """
+    功能说明：验证 FunASR 返回文本但无可用时间戳时会抛异常。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：该行为用于 real_strict 的严格链路保障。
+    """
+    class _FakeModel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate(self, **_kwargs):
+            return [{"text": "有歌词但无时间戳"}]
+
+    class _FakeFunASRModule:
+        AutoModel = _FakeModel
+
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    with pytest.raises(RuntimeError):
+        _recognize_lyrics_with_funasr(
+            audio_path=Path("dummy.wav"),
+            model_name="FunAudioLLM/Fun-ASR-Nano-2512",
+            device="auto",
+            funasr_language="auto",
+            logger=logging.getLogger("funasr_no_timestamp_test"),
+        )
+
+
+def test_recognize_lyrics_with_funasr_should_raise_diagnostic_when_model_not_registered(monkeypatch) -> None:
+    """
+    功能说明：验证 Nano 未注册时会抛出包含版本信息的可执行诊断。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：该诊断用于引导切换到 README 对齐的 Git 锁定版依赖。
+    """
+    class _FakeFunASRModule:
+        __version__ = "1.3.1"
+
+        class AutoModel:
+            def __init__(self, **_kwargs):
+                raise AssertionError("FunASRNano is not registered")
+
+    monkeypatch.setitem(sys.modules, "funasr", _FakeFunASRModule())
+    with pytest.raises(RuntimeError, match="FunASRNano 未注册"):
+        _recognize_lyrics_with_funasr(
+            audio_path=Path("dummy.wav"),
+            model_name="FunAudioLLM/Fun-ASR-Nano-2512",
+            device="auto",
+            funasr_language="ja",
+            logger=logging.getLogger("funasr_not_registered_test"),
+        )
+
+
+def test_run_real_pipeline_should_degrade_lyrics_chain_when_not_strict(monkeypatch, tmp_path: Path) -> None:
+    """
+    功能说明：验证非 strict 模式下歌词识别失败会降级为空歌词链且不阻断真实链路输出。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅模拟歌词链失败，其他链路最小打桩。
+    """
+    monkeypatch.setattr(module_a_impl, "_separate_with_demucs", lambda *args, **kwargs: (Path("vocals.wav"), Path("inst.wav")))
+    monkeypatch.setattr(
+        module_a_impl,
+        "_detect_big_segments_with_allin1",
+        lambda *args, **kwargs: [{"segment_id": "big_001", "start_time": 0.0, "end_time": 4.0, "label": "verse"}],
+    )
+    monkeypatch.setattr(
+        module_a_impl,
+        "_extract_acoustic_candidates_with_librosa",
+        lambda *args, **kwargs: ([0.0, 2.0, 4.0], [1.0, 3.0], [0.0, 2.0, 4.0], [0.8, 0.9, 0.7]),
+    )
+    monkeypatch.setattr(
+        module_a_impl,
+        "_recognize_lyrics_with_funasr",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("FunASRNano 未注册")),
+    )
+    monkeypatch.setattr(module_a_impl, "_select_small_timestamps", lambda **kwargs: [0.0, 4.0])
+    monkeypatch.setattr(
+        module_a_impl,
+        "_build_segments_with_lyric_priority",
+        lambda **kwargs: [{"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 4.0, "label": "verse"}],
+    )
+    monkeypatch.setattr(
+        module_a_impl,
+        "_build_beats_from_segments",
+        lambda **kwargs: [{"time": 0.0, "type": "major", "source": "beat"}, {"time": 4.0, "type": "major", "source": "beat"}],
+    )
+    monkeypatch.setattr(module_a_impl, "_attach_lyrics_to_segments", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        module_a_impl,
+        "_build_energy_features",
+        lambda *args, **kwargs: [{"start_time": 0.0, "end_time": 4.0, "energy_level": "mid", "trend": "flat", "rhythm_tension": 0.5}],
+    )
+
+    output = _run_real_pipeline(
+        audio_path=tmp_path / "demo.wav",
+        duration_seconds=4.0,
+        work_dir=tmp_path / "work",
+        snap_threshold_ms=200,
+        instrumental_labels=["intro", "inst", "outro"],
+        device="auto",
+        funasr_model="FunAudioLLM/Fun-ASR-Nano-2512",
+        funasr_language="ja",
+        lyric_segment_policy="sentence_strict",
+        comma_pause_seconds=0.45,
+        long_pause_seconds=0.8,
+        merge_gap_seconds=0.25,
+        max_visual_unit_seconds=6.0,
+        demucs_model="htdemucs",
+        beat_interval_seconds=0.5,
+        strict_lyric_timestamps=False,
+        logger=logging.getLogger("run_real_pipeline_non_strict_test"),
+    )
+    assert output["lyric_units"] == []
+    assert output["segments"]
+    assert output["beats"]
+
+
+def test_run_real_pipeline_should_raise_when_strict_and_registration_failed(monkeypatch, tmp_path: Path) -> None:
+    """
+    功能说明：验证 strict 模式下歌词识别失败会直接抛错而非静默降级。
+    参数说明：
+    - monkeypatch: pytest 提供的补丁工具。
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：只验证 strict 分支错误传播，不依赖真实模型环境。
+    """
+    monkeypatch.setattr(module_a_impl, "_separate_with_demucs", lambda *args, **kwargs: (Path("vocals.wav"), Path("inst.wav")))
+    monkeypatch.setattr(
+        module_a_impl,
+        "_detect_big_segments_with_allin1",
+        lambda *args, **kwargs: [{"segment_id": "big_001", "start_time": 0.0, "end_time": 4.0, "label": "verse"}],
+    )
+    monkeypatch.setattr(
+        module_a_impl,
+        "_extract_acoustic_candidates_with_librosa",
+        lambda *args, **kwargs: ([0.0, 2.0, 4.0], [1.0, 3.0], [0.0, 2.0, 4.0], [0.8, 0.9, 0.7]),
+    )
+    monkeypatch.setattr(
+        module_a_impl,
+        "_recognize_lyrics_with_funasr",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("FunASRNano 未注册")),
+    )
+
+    with pytest.raises(RuntimeError, match="strict 模式要求歌词时间戳可用"):
+        _run_real_pipeline(
+            audio_path=tmp_path / "demo.wav",
+            duration_seconds=4.0,
+            work_dir=tmp_path / "work",
+            snap_threshold_ms=200,
+            instrumental_labels=["intro", "inst", "outro"],
+            device="auto",
+            funasr_model="FunAudioLLM/Fun-ASR-Nano-2512",
+            funasr_language="ja",
+            lyric_segment_policy="sentence_strict",
+            comma_pause_seconds=0.45,
+            long_pause_seconds=0.8,
+            merge_gap_seconds=0.25,
+            max_visual_unit_seconds=6.0,
+            demucs_model="htdemucs",
+            beat_interval_seconds=0.5,
+            strict_lyric_timestamps=True,
+            logger=logging.getLogger("run_real_pipeline_strict_test"),
+        )
+
+
+def test_clean_lyric_units_should_filter_noise_and_normalize_vocalise() -> None:
     """
     功能说明：验证歌词清洗会输出三态：未识别歌词/吟唱/正常歌词。
     参数说明：无。
@@ -314,7 +604,7 @@ def test_clean_whisper_lyric_units_should_filter_noise_and_normalize_vocalise() 
         {"start_time": 10.0, "end_time": 11.0, "text": "寂しいな", "confidence": 0.4, "no_speech_prob": 0.2},
     ]
 
-    cleaned = _clean_whisper_lyric_units(
+    cleaned = _clean_lyric_units(
         lyric_units_raw=raw_units,
         big_segments=big_segments,
         instrumental_labels=["intro", "inst", "outro"],
@@ -326,7 +616,7 @@ def test_clean_whisper_lyric_units_should_filter_noise_and_normalize_vocalise() 
     assert cleaned[2]["text"] == "寂しいな"
 
 
-def test_clean_whisper_lyric_units_should_mark_unknown_when_low_confidence_but_vocal() -> None:
+def test_clean_lyric_units_should_mark_unknown_when_low_confidence_but_vocal() -> None:
     """
     功能说明：验证低置信但疑似有人声时会标记为“未识别歌词”。
     参数说明：无。
@@ -334,7 +624,7 @@ def test_clean_whisper_lyric_units_should_mark_unknown_when_low_confidence_but_v
     异常说明：断言失败时抛 AssertionError。
     边界条件：no_speech_prob 低时应优先保留人声存在信号。
     """
-    cleaned = _clean_whisper_lyric_units(
+    cleaned = _clean_lyric_units(
         lyric_units_raw=[
             {"start_time": 3.0, "end_time": 3.8, "text": "？？", "confidence": 0.12, "no_speech_prob": 0.2},
         ],
@@ -344,6 +634,137 @@ def test_clean_whisper_lyric_units_should_mark_unknown_when_low_confidence_but_v
     )
     assert len(cleaned) == 1
     assert cleaned[0]["text"] == "[未识别歌词]"
+
+
+def test_build_visual_lyric_units_sentence_strict_should_keep_sentence_units() -> None:
+    """
+    功能说明：验证 sentence_strict 策略不会改变句级歌词单元边界。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅测试策略层，不依赖外部模型。
+    """
+    sentence_units = [
+        {
+            "start_time": 10.0,
+            "end_time": 11.2,
+            "text": "第一句。",
+            "confidence": 0.9,
+            "token_units": [
+                {"text": "第", "start_time": 10.0, "end_time": 10.2, "granularity": "char"},
+                {"text": "一", "start_time": 10.2, "end_time": 10.4, "granularity": "char"},
+                {"text": "句", "start_time": 10.4, "end_time": 10.8, "granularity": "char"},
+                {"text": "。", "start_time": 10.8, "end_time": 11.2, "granularity": "char"},
+            ],
+        }
+    ]
+    visual_units = _build_visual_lyric_units(
+        sentence_units=sentence_units,
+        big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 20.0, "label": "verse"}],
+        instrumental_labels=["intro", "inst", "outro"],
+        lyric_segment_policy="sentence_strict",
+        comma_pause_seconds=0.45,
+        long_pause_seconds=0.8,
+        merge_gap_seconds=0.25,
+        max_visual_unit_seconds=6.0,
+        logger=logging.getLogger("visual_unit_strict_test"),
+    )
+    assert len(visual_units) == 1
+    assert visual_units[0]["start_time"] == 10.0
+    assert visual_units[0]["end_time"] == 11.2
+    assert visual_units[0]["text"] == "第一句。"
+    assert visual_units[0]["source_sentence_index"] == 0
+    assert visual_units[0]["unit_transform"] == "original"
+
+
+def test_build_visual_lyric_units_adaptive_should_split_by_comma_pause() -> None:
+    """
+    功能说明：验证 adaptive_phrase 策略可按“逗号+停顿”将长句拆为多视觉单元。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：逗号前后停顿低于阈值时不应触发拆分。
+    """
+    sentence_units = [
+        {
+            "start_time": 0.0,
+            "end_time": 4.0,
+            "text": "甲乙、丙丁、戊己。",
+            "confidence": 0.8,
+            "token_units": [
+                {"text": "甲", "start_time": 0.0, "end_time": 0.3, "granularity": "char"},
+                {"text": "乙", "start_time": 0.3, "end_time": 0.6, "granularity": "char"},
+                {"text": "、", "start_time": 1.2, "end_time": 1.3, "granularity": "char"},
+                {"text": "丙", "start_time": 1.3, "end_time": 1.6, "granularity": "char"},
+                {"text": "丁", "start_time": 1.6, "end_time": 1.9, "granularity": "char"},
+                {"text": "、", "start_time": 2.5, "end_time": 2.6, "granularity": "char"},
+                {"text": "戊", "start_time": 2.6, "end_time": 2.9, "granularity": "char"},
+                {"text": "己", "start_time": 2.9, "end_time": 3.2, "granularity": "char"},
+                {"text": "。", "start_time": 3.2, "end_time": 4.0, "granularity": "char"},
+            ],
+        }
+    ]
+    visual_units = _build_visual_lyric_units(
+        sentence_units=sentence_units,
+        big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 10.0, "label": "verse"}],
+        instrumental_labels=["intro", "inst", "outro"],
+        lyric_segment_policy="adaptive_phrase",
+        comma_pause_seconds=0.45,
+        long_pause_seconds=0.8,
+        merge_gap_seconds=0.0,
+        max_visual_unit_seconds=6.0,
+        logger=logging.getLogger("visual_unit_split_test"),
+    )
+    assert len(visual_units) == 3
+    assert all(item["unit_transform"] == "split" for item in visual_units)
+    assert visual_units[0]["text"].endswith("、")
+    assert visual_units[-1]["text"].endswith("。")
+
+
+def test_build_visual_lyric_units_adaptive_should_merge_short_sentences() -> None:
+    """
+    功能说明：验证 adaptive_phrase 策略可合并相邻短句，减少碎片化镜头。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：间隔超过 merge_gap_seconds 时不应合并。
+    """
+    sentence_units = [
+        {
+            "start_time": 10.0,
+            "end_time": 11.0,
+            "text": "第一句。",
+            "confidence": 0.9,
+            "token_units": [
+                {"text": "第一句。", "start_time": 10.0, "end_time": 11.0, "granularity": "word"},
+            ],
+        },
+        {
+            "start_time": 11.1,
+            "end_time": 12.0,
+            "text": "第二句。",
+            "confidence": 0.85,
+            "token_units": [
+                {"text": "第二句。", "start_time": 11.1, "end_time": 12.0, "granularity": "word"},
+            ],
+        },
+    ]
+    visual_units = _build_visual_lyric_units(
+        sentence_units=sentence_units,
+        big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 20.0, "label": "verse"}],
+        instrumental_labels=["intro", "inst", "outro"],
+        lyric_segment_policy="adaptive_phrase",
+        comma_pause_seconds=0.45,
+        long_pause_seconds=0.8,
+        merge_gap_seconds=0.25,
+        max_visual_unit_seconds=6.0,
+        logger=logging.getLogger("visual_unit_merge_test"),
+    )
+    assert len(visual_units) == 1
+    assert visual_units[0]["unit_transform"] == "merged"
+    assert visual_units[0]["start_time"] == 10.0
+    assert visual_units[0]["end_time"] == 12.0
+    assert "第一句" in visual_units[0]["text"] and "第二句" in visual_units[0]["text"]
 
 
 def test_build_segments_with_lyric_priority_should_not_split_one_sentence() -> None:
@@ -470,7 +891,17 @@ def test_attach_lyrics_to_segments_should_choose_max_overlap_segment() -> None:
         {"segment_id": "seg_0002", "start_time": 22.250, "end_time": 26.000, "label": "verse"},
     ]
     lyric_units = [
-        {"start_time": 22.000, "end_time": 26.000, "text": "跨边界歌词", "confidence": 0.9},
+        {
+            "start_time": 22.000,
+            "end_time": 26.000,
+            "text": "跨边界歌词",
+            "confidence": 0.9,
+            "token_units": [
+                {"text": "跨", "start_time": 22.000, "end_time": 22.100, "granularity": "char"},
+                {"text": "边", "start_time": 22.100, "end_time": 22.200, "granularity": "char"},
+            ],
+        },
     ]
     attached = _attach_lyrics_to_segments(lyric_units_raw=lyric_units, segments=segments)
     assert attached[0]["segment_id"] == "seg_0002"
+    assert attached[0]["token_units"][0]["text"] == "跨"

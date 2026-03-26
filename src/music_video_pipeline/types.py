@@ -72,6 +72,9 @@ class LyricUnitItem(TypedDict):
     end_time: float
     text: str
     confidence: float
+    token_units: NotRequired[list[dict]]
+    source_sentence_index: NotRequired[int]
+    unit_transform: NotRequired[str]
 
 
 class EnergyFeatureItem(TypedDict):
@@ -251,6 +254,54 @@ def validate_module_a_output(data: dict) -> None:
         end_time = _safe_float(item["end_time"], f"lyric_units[{index}].end_time")
         if end_time < start_time:
             raise ValueError(f"ModuleAOutput.lyric_units[{index}] 时间区间非法")
+        if not isinstance(item["text"], str):
+            raise TypeError(f"ModuleAOutput.lyric_units[{index}].text 必须是 str")
+        _safe_float(item["confidence"], f"lyric_units[{index}].confidence")
+        if "token_units" in item:
+            token_units = item["token_units"]
+            if not isinstance(token_units, list):
+                raise TypeError(f"ModuleAOutput.lyric_units[{index}].token_units 必须是 list")
+            for token_index, token_item in enumerate(token_units):
+                if not isinstance(token_item, dict):
+                    raise TypeError(
+                        f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 必须是 dict"
+                    )
+                for token_key in ["text", "start_time", "end_time", "granularity"]:
+                    if token_key not in token_item:
+                        raise KeyError(
+                            f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 缺失字段: {token_key}"
+                        )
+                if not isinstance(token_item["text"], str):
+                    raise TypeError(
+                        f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].text 必须是 str"
+                    )
+                token_start = _safe_float(
+                    token_item["start_time"],
+                    f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].start_time",
+                )
+                token_end = _safe_float(
+                    token_item["end_time"],
+                    f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].end_time",
+                )
+                if token_end < token_start:
+                    raise ValueError(
+                        f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 时间区间非法"
+                    )
+                granularity = str(token_item["granularity"]).strip()
+                if granularity not in {"word", "char"}:
+                    raise ValueError(
+                        f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].granularity 非法: {granularity}"
+                    )
+        if "source_sentence_index" in item:
+            source_sentence_index = item["source_sentence_index"]
+            if not isinstance(source_sentence_index, int) or isinstance(source_sentence_index, bool) or source_sentence_index < 0:
+                raise TypeError(f"ModuleAOutput.lyric_units[{index}].source_sentence_index 必须是非负 int")
+        if "unit_transform" in item:
+            unit_transform = str(item["unit_transform"]).strip()
+            if unit_transform not in {"original", "split", "merged"}:
+                raise ValueError(
+                    f"ModuleAOutput.lyric_units[{index}].unit_transform 非法: {unit_transform}"
+                )
 
 
 def validate_module_b_output(data: list[dict]) -> None:

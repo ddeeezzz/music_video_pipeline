@@ -2,7 +2,7 @@
 文件用途：实现模块A（音乐理解）的真实链路与降级链路。
 核心流程：输出大时间戳与小时间戳，并将小段落作为最小视觉单元。
 输入输出：输入 RuntimeContext，输出 ModuleAOutput JSON 文件。
-依赖说明：mutagen + 可选 Demucs/Allin1/Librosa/Whisper。
+依赖说明：mutagen + 可选 Demucs/Allin1/Librosa/FunASR。
 维护说明：模型失败时必须可降级且不阻塞下游。
 """
 
@@ -60,10 +60,16 @@ def run_module_a(context: RuntimeContext) -> Path:
                 snap_threshold_ms=context.config.module_a.lyric_beat_snap_threshold_ms,
                 instrumental_labels=context.config.module_a.instrumental_labels,
                 device=context.config.module_a.device,
-                whisper_model=context.config.module_a.whisper_model,
-                whisper_language=context.config.module_a.whisper_language,
+                funasr_model=context.config.module_a.funasr_model,
+                funasr_language=context.config.module_a.funasr_language,
+                lyric_segment_policy=context.config.module_a.lyric_segment_policy,
+                comma_pause_seconds=context.config.module_a.comma_pause_seconds,
+                long_pause_seconds=context.config.module_a.long_pause_seconds,
+                merge_gap_seconds=context.config.module_a.merge_gap_seconds,
+                max_visual_unit_seconds=context.config.module_a.max_visual_unit_seconds,
                 demucs_model=context.config.module_a.demucs_model,
                 beat_interval_seconds=context.config.mock.beat_interval_seconds,
+                strict_lyric_timestamps=(mode == "real_strict"),
                 logger=context.logger,
             )
     except Exception as error:  # noqa: BLE001
@@ -100,10 +106,16 @@ def _run_real_pipeline(
     snap_threshold_ms: int,
     instrumental_labels: list[str],
     device: str,
-    whisper_model: str,
-    whisper_language: str,
+    funasr_model: str,
+    funasr_language: str,
+    lyric_segment_policy: str,
+    comma_pause_seconds: float,
+    long_pause_seconds: float,
+    merge_gap_seconds: float,
+    max_visual_unit_seconds: float,
     demucs_model: str,
     beat_interval_seconds: float,
+    strict_lyric_timestamps: bool,
     logger,
 ) -> dict[str, Any]:
     """真实模型优先链路。"""
@@ -133,26 +145,38 @@ def _run_real_pipeline(
         rms_times = beat_candidates.copy()
         rms_values = [1.0 for _ in rms_times]
 
-    lyric_sentence_starts: list[float] = []
     lyric_units_raw: list[dict[str, Any]] = []
     try:
-        lyric_sentence_starts, lyric_units_raw = _recognize_lyrics_with_whisper(
+        _, lyric_units_raw = _recognize_lyrics_with_funasr(
             vocals_path,
-            whisper_model,
+            funasr_model,
             device,
-            whisper_language,
+            funasr_language,
             logger,
         )
     except Exception as error:  # noqa: BLE001
-        logger.warning("模块A-Whisper失败，歌词链降级为空，错误=%s", error)
+        if strict_lyric_timestamps:
+            raise RuntimeError(f"模块A-FunASR失败且 strict 模式要求歌词时间戳可用: {error}") from error
+        logger.warning("模块A-FunASR失败，歌词链降级为空，错误=%s", error)
 
-    cleaned_lyric_units = _clean_whisper_lyric_units(
+    sentence_lyric_units = _clean_lyric_units(
         lyric_units_raw=lyric_units_raw,
         big_segments=big_segments,
         instrumental_labels=instrumental_labels,
         logger=logger,
     )
-    lyric_sentence_starts = [float(item["start_time"]) for item in cleaned_lyric_units]
+    visual_lyric_units = _build_visual_lyric_units(
+        sentence_units=sentence_lyric_units,
+        big_segments=big_segments,
+        instrumental_labels=instrumental_labels,
+        lyric_segment_policy=lyric_segment_policy,
+        comma_pause_seconds=comma_pause_seconds,
+        long_pause_seconds=long_pause_seconds,
+        merge_gap_seconds=merge_gap_seconds,
+        max_visual_unit_seconds=max_visual_unit_seconds,
+        logger=logger,
+    )
+    lyric_sentence_starts = [float(item["start_time"]) for item in visual_lyric_units]
     final_timestamps = _select_small_timestamps(
         duration_seconds=duration_seconds,
         big_segments=big_segments,
@@ -169,11 +193,11 @@ def _run_real_pipeline(
         big_segments=big_segments,
         beat_candidates=beat_candidates,
         onset_candidates=onset_candidates,
-        lyric_units=cleaned_lyric_units,
+        lyric_units=visual_lyric_units,
         instrumental_labels=instrumental_labels,
     )
     beats = _build_beats_from_segments(segments=segments, fallback_timestamps=final_timestamps)
-    lyric_units = _attach_lyrics_to_segments(cleaned_lyric_units, segments)
+    lyric_units = _attach_lyrics_to_segments(visual_lyric_units, segments)
     energy_features = _build_energy_features(segments, rms_times, rms_values, beat_candidates)
 
     if not big_segments or not segments or len(beats) < 2:
@@ -422,63 +446,321 @@ def _extract_acoustic_candidates_with_librosa(audio_path: Path, duration_seconds
     return beat_times, onset_times, rms_times, rms_values
 
 
-def _recognize_lyrics_with_whisper(
+def _recognize_lyrics_with_funasr(
     audio_path: Path,
     model_name: str,
     device: str,
-    whisper_language: str,
+    funasr_language: str,
     logger,
 ) -> tuple[list[float], list[dict[str, Any]]]:
-    """调用 Whisper 识别歌词并输出句首时间戳。"""
+    """调用 FunASR 识别歌词并输出句级歌词单元。"""
     try:
-        import whisper  # type: ignore
+        import funasr as funasr_pkg  # type: ignore
+        from funasr import AutoModel  # type: ignore
     except Exception as error:  # noqa: BLE001
-        raise RuntimeError(f"whisper 导入失败: {error}") from error
+        raise RuntimeError(f"funasr 导入失败: {error}") from error
 
-    normalized_language = _normalize_whisper_language(whisper_language=whisper_language, logger=logger)
+    normalized_language = _normalize_funasr_language(funasr_language=funasr_language, logger=logger)
     language_policy = "auto_detect" if normalized_language == "auto" else normalized_language
-    logger.info("模块A调用 Whisper 识别歌词，模型=%s，设备=%s，语言策略=%s", model_name, device, language_policy)
-    load_device = None if device == "auto" else device
-    model = whisper.load_model(model_name, device=load_device)
-    transcribe_kwargs: dict[str, Any] = {"word_timestamps": False}
-    if normalized_language != "auto":
-        transcribe_kwargs["language"] = normalized_language
-    result = model.transcribe(str(audio_path), **transcribe_kwargs)
+    logger.info("模块A调用 FunASR 识别歌词，模型=%s，设备=%s，语言策略=%s", model_name, device, language_policy)
 
-    sentence_starts: list[float] = []
+    model_kwargs: dict[str, Any] = {
+        "model": model_name,
+        "vad_model": "fsmn-vad",
+        "vad_kwargs": {"max_single_segment_time": 30000},
+    }
+    if str(device).strip().lower() != "auto":
+        model_kwargs["device"] = device
+
+    try:
+        model = AutoModel(**model_kwargs)
+    except Exception as error:  # noqa: BLE001
+        message = str(error)
+        if "is not registered" in message or "FunASRNano" in message:
+            funasr_version = str(getattr(funasr_pkg, "__version__", "unknown"))
+            raise RuntimeError(
+                f"FunASR 模型注册失败（FunASRNano 未注册），当前 funasr 版本={funasr_version}。"
+                "请使用 README 对齐的 Git 锁定版 FunASR 依赖。"
+            ) from error
+        raise RuntimeError(f"FunASR 模型初始化失败: {error}") from error
+    generate_kwargs: dict[str, Any] = {
+        "input": [str(audio_path)],
+        "cache": {},
+        "batch_size_s": 0,
+    }
+    if normalized_language != "auto":
+        generate_kwargs["language"] = normalized_language
+
+    result = model.generate(**generate_kwargs)
+    records = _extract_funasr_records(result=result)
+    if not records:
+        logger.warning("模块A-FunASR返回空结果，歌词链降级为空")
+        return [], []
+
+    time_scale = _infer_funasr_time_scale(records=records)
     lyric_units_raw: list[dict[str, Any]] = []
-    for segment in result.get("segments", []):
-        text = str(segment.get("text", "")).strip()
-        if not text:
+    for record in records:
+        sentence_units = _build_lyric_units_from_sentence_info(record=record, time_scale=time_scale)
+        if sentence_units:
+            lyric_units_raw.extend(sentence_units)
             continue
-        start_time = float(segment.get("start", 0.0))
-        end_time = float(segment.get("end", start_time))
-        avg_logprob = float(segment.get("avg_logprob", -1.0))
-        no_speech_prob = float(segment.get("no_speech_prob", 1.0))
-        confidence = max(0.0, min(1.0, 0.5 + avg_logprob / 5.0))
-        sentence_starts.append(start_time)
-        lyric_units_raw.append(
-            {
-                "start_time": _round_time(start_time),
-                "end_time": _round_time(max(start_time, end_time)),
-                "text": text,
-                "confidence": round(confidence, 3),
-                "avg_logprob": round(avg_logprob, 3),
-                "no_speech_prob": round(max(0.0, min(1.0, no_speech_prob)), 3),
-            }
-        )
+        fallback_units = _build_lyric_units_from_timestamp(record=record, time_scale=time_scale)
+        lyric_units_raw.extend(fallback_units)
+
+    lyric_units_raw = [item for item in lyric_units_raw if float(item.get("end_time", 0.0)) >= float(item.get("start_time", 0.0))]
+    lyric_units_raw.sort(key=lambda item: float(item.get("start_time", 0.0)))
+    if not lyric_units_raw and any(str(item.get("text", "")).strip() for item in records):
+        raise RuntimeError("FunASR 识别到文本但缺失可用时间戳")
+
+    sentence_starts = [float(item["start_time"]) for item in lyric_units_raw]
     return sentence_starts, lyric_units_raw
 
 
-def _normalize_whisper_language(whisper_language: str, logger) -> str:
-    """归一化 Whisper 语言配置，不合法时回退 auto。"""
-    normalized = str(whisper_language).strip().lower().replace("_", "-")
+def _normalize_funasr_language(funasr_language: str, logger) -> str:
+    """归一化 FunASR 语言配置，不合法时回退 auto。"""
+    normalized = str(funasr_language).strip().lower().replace("_", "-")
     if not normalized or normalized == "auto":
         return "auto"
     if re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})*", normalized):
         return normalized
-    logger.warning("模块A-Whisper语言配置非法，已回退自动检测，原始值=%s", whisper_language)
+    logger.warning("模块A-FunASR语言配置非法，已回退自动检测，原始值=%s", funasr_language)
     return "auto"
+
+
+def _extract_funasr_records(result: Any) -> list[dict[str, Any]]:
+    """将 FunASR 返回结果统一为记录列表。"""
+    if isinstance(result, list):
+        return [item for item in result if isinstance(item, dict)]
+    if isinstance(result, dict):
+        if isinstance(result.get("result"), list):
+            return [item for item in result["result"] if isinstance(item, dict)]
+        return [result]
+    return []
+
+
+def _infer_funasr_time_scale(records: list[dict[str, Any]]) -> float:
+    """推断 FunASR 时间单位倍率（毫秒->秒为 0.001，秒->秒为 1.0）。"""
+    values: list[float] = []
+    for record in records:
+        for sentence in record.get("sentence_info", []) if isinstance(record.get("sentence_info"), list) else []:
+            if not isinstance(sentence, dict):
+                continue
+            for key in ["start", "end"]:
+                value = sentence.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.append(float(value))
+            for token in sentence.get("timestamp", []) if isinstance(sentence.get("timestamp"), list) else []:
+                if isinstance(token, (list, tuple)) and len(token) >= 2:
+                    left_value = token[0]
+                    right_value = token[1]
+                    if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+                        values.extend([float(left_value), float(right_value)])
+                elif isinstance(token, dict):
+                    for key in ["start", "end", "begin", "finish"]:
+                        token_value = token.get(key)
+                        if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
+                            values.append(float(token_value))
+
+        for token in record.get("timestamp", []) if isinstance(record.get("timestamp"), list) else []:
+            if isinstance(token, (list, tuple)) and len(token) >= 2:
+                left_value = token[0]
+                right_value = token[1]
+                if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+                    values.extend([float(left_value), float(right_value)])
+            elif isinstance(token, dict):
+                for key in ["start", "end", "begin", "finish"]:
+                    token_value = token.get(key)
+                    if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
+                        values.append(float(token_value))
+        for token in record.get("timestamps", []) if isinstance(record.get("timestamps"), list) else []:
+            if isinstance(token, (list, tuple)) and len(token) >= 2:
+                left_value = token[0]
+                right_value = token[1]
+                if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+                    values.extend([float(left_value), float(right_value)])
+            elif isinstance(token, dict):
+                for key in ["start", "end", "begin", "finish", "start_time", "end_time"]:
+                    token_value = token.get(key)
+                    if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
+                        values.append(float(token_value))
+
+    if not values:
+        return 0.001
+
+    max_value = max(values)
+    has_fraction = any(abs(value - round(value)) > 1e-6 for value in values)
+    if max_value >= 500.0:
+        return 0.001
+    if has_fraction and max_value <= 600.0:
+        return 1.0
+    if max_value <= 60.0:
+        return 1.0
+    return 0.001
+
+
+def _build_lyric_units_from_sentence_info(record: dict[str, Any], time_scale: float) -> list[dict[str, Any]]:
+    """从 sentence_info 提取句级歌词单元。"""
+    sentence_info = record.get("sentence_info", [])
+    if not isinstance(sentence_info, list):
+        return []
+
+    sentence_units: list[dict[str, Any]] = []
+    for sentence in sentence_info:
+        if not isinstance(sentence, dict):
+            continue
+        text = str(sentence.get("text", "")).strip()
+        if not text:
+            continue
+
+        start_value = sentence.get("start", 0.0)
+        end_value = sentence.get("end", start_value)
+        if not isinstance(start_value, (int, float)) or not isinstance(end_value, (int, float)):
+            continue
+
+        start_time = _round_time(float(start_value) * time_scale)
+        end_time = _round_time(max(start_time, float(end_value) * time_scale))
+        token_units = _build_token_units_from_timestamp(
+            timestamp_items=sentence.get("timestamp", []),
+            text=text,
+            time_scale=time_scale,
+        )
+        confidence = _normalize_funasr_confidence(sentence.get("confidence", sentence.get("score", record.get("score"))))
+        sentence_units.append(
+            {
+                "start_time": start_time,
+                "end_time": end_time,
+                "text": text,
+                "confidence": confidence,
+                "no_speech_prob": 0.35,
+                "token_units": token_units,
+            }
+        )
+    return sentence_units
+
+
+def _build_lyric_units_from_timestamp(record: dict[str, Any], time_scale: float) -> list[dict[str, Any]]:
+    """从 text + timestamp 回退构建句级歌词单元。"""
+    text = str(record.get("text", "")).strip()
+    timestamp_items = record.get("timestamp", record.get("timestamps", []))
+    if not text or not isinstance(timestamp_items, list) or not timestamp_items:
+        return []
+
+    token_units = _build_token_units_from_timestamp(timestamp_items=timestamp_items, text=text, time_scale=time_scale)
+    if not token_units:
+        return []
+
+    sentence_units: list[dict[str, Any]] = []
+    current_tokens: list[dict[str, Any]] = []
+    for token in token_units:
+        current_tokens.append(token)
+        token_text = str(token.get("text", ""))
+        if re.search(r"[。！？!?；;]", token_text):
+            sentence_units.append(_build_sentence_unit_from_tokens(tokens=current_tokens, score=record.get("score")))
+            current_tokens = []
+
+    if current_tokens:
+        sentence_units.append(_build_sentence_unit_from_tokens(tokens=current_tokens, score=record.get("score")))
+    return [item for item in sentence_units if item]
+
+
+def _build_sentence_unit_from_tokens(tokens: list[dict[str, Any]], score: Any) -> dict[str, Any]:
+    """将 token 列表拼装为句级歌词单元。"""
+    if not tokens:
+        return {}
+    start_time = _round_time(float(tokens[0]["start_time"]))
+    end_time = _round_time(float(tokens[-1]["end_time"]))
+    text_parts = [str(item.get("text", "")) for item in tokens]
+    has_word_granularity = any(str(item.get("granularity", "")).strip().lower() == "word" for item in tokens)
+    compact_text = " ".join([item for item in text_parts if item]).strip() if has_word_granularity else "".join(text_parts).strip()
+    return {
+        "start_time": start_time,
+        "end_time": max(start_time, end_time),
+        "text": compact_text,
+        "confidence": _normalize_funasr_confidence(score),
+        "no_speech_prob": 0.35,
+        "token_units": tokens,
+    }
+
+
+def _build_token_units_from_timestamp(timestamp_items: Any, text: str, time_scale: float) -> list[dict[str, Any]]:
+    """将 FunASR timestamp 转换为统一 token_units 结构。"""
+    if not isinstance(timestamp_items, list) or not timestamp_items:
+        return []
+
+    if all(isinstance(item, dict) for item in timestamp_items):
+        token_units: list[dict[str, Any]] = []
+        for item in timestamp_items:
+            token_text = str(item.get("text", item.get("token", ""))).strip()
+            if not token_text:
+                continue
+            start_raw = item.get("start", item.get("begin", item.get("start_time", None)))
+            end_raw = item.get("end", item.get("finish", item.get("end_time", None)))
+            if not isinstance(start_raw, (int, float)) or not isinstance(end_raw, (int, float)):
+                continue
+            granularity_raw = str(item.get("granularity", item.get("type", "char"))).strip().lower()
+            granularity = "word" if granularity_raw == "word" else "char"
+            start_time = _round_time(float(start_raw) * time_scale)
+            end_time = _round_time(max(start_time, float(end_raw) * time_scale))
+            token_units.append(
+                {
+                    "text": token_text,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "granularity": granularity,
+                }
+            )
+        return token_units
+
+    if all(isinstance(item, (list, tuple)) and len(item) >= 2 for item in timestamp_items):
+        compact_text = str(text).strip()
+        token_texts = _split_text_for_timestamp(compact_text)
+        granularity = "word" if " " in compact_text.strip() else "char"
+        token_units = []
+        for index, item in enumerate(timestamp_items):
+            start_raw = item[0]
+            end_raw = item[1]
+            if not isinstance(start_raw, (int, float)) or not isinstance(end_raw, (int, float)):
+                continue
+            token_text = token_texts[index] if index < len(token_texts) else ""
+            start_time = _round_time(float(start_raw) * time_scale)
+            end_time = _round_time(max(start_time, float(end_raw) * time_scale))
+            token_units.append(
+                {
+                    "text": token_text,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "granularity": granularity,
+                }
+            )
+        return token_units
+    return []
+
+
+def _split_text_for_timestamp(text: str) -> list[str]:
+    """按空格优先切词，否则逐字符切分，便于与 timestamp 对齐。"""
+    if not text:
+        return []
+    if " " in text:
+        return [item for item in text.split(" ") if item]
+    return [item for item in text if item.strip()]
+
+
+def _normalize_funasr_confidence(raw_value: Any) -> float:
+    """将 FunASR 置信信号统一映射为 0~1。"""
+    if raw_value is None or isinstance(raw_value, bool):
+        return 0.65
+    try:
+        value = float(raw_value)
+    except Exception:  # noqa: BLE001
+        return 0.65
+
+    if 0.0 <= value <= 1.0:
+        return round(value, 3)
+    if 1.0 < value <= 100.0:
+        return round(max(0.0, min(1.0, value / 100.0)), 3)
+    if -20.0 <= value < 0.0:
+        return round(max(0.0, min(1.0, 1.0 + value / 20.0)), 3)
+    return 0.65
 
 def _select_small_timestamps(
     duration_seconds: float,
@@ -879,14 +1161,14 @@ def _merge_short_vocal_non_lyric_ranges(
     return _normalize_segment_ranges(range_items=merged_ranges, duration_seconds=duration_seconds)
 
 
-def _clean_whisper_lyric_units(
+def _clean_lyric_units(
     lyric_units_raw: list[dict[str, Any]],
     big_segments: list[dict[str, Any]],
     instrumental_labels: list[str],
     logger,
     min_confidence: float = 0.25,
 ) -> list[dict[str, Any]]:
-    """清洗 Whisper 原始结果：输出可靠歌词/未识别歌词/吟唱三态。"""
+    """清洗 ASR 原始结果：输出可靠歌词/未识别歌词/吟唱三态。"""
     if not lyric_units_raw:
         return []
 
@@ -900,7 +1182,8 @@ def _clean_whisper_lyric_units(
         end_time = _round_time(max(start_time, end_time))
         text = str(item.get("text", "")).strip()
         confidence = round(float(item.get("confidence", 0.0)), 3)
-        no_speech_prob = max(0.0, min(1.0, float(item.get("no_speech_prob", 1.0))))
+        no_speech_prob = max(0.0, min(1.0, float(item.get("no_speech_prob", 0.35))))
+        token_units = _normalize_token_units(item.get("token_units", []))
         if not text:
             continue
 
@@ -912,13 +1195,14 @@ def _clean_whisper_lyric_units(
 
         if _is_vocalise_text(text):
             cleaned_units.append(
-                {
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "text": "吟唱",
-                    "confidence": max(0.5, confidence),
-                }
-            )
+                    {
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "text": "吟唱",
+                        "confidence": max(0.5, confidence),
+                        "token_units": [],
+                    }
+                )
             continue
 
         if _is_obvious_noise_text(text=text, confidence=confidence, no_speech_prob=no_speech_prob):
@@ -938,6 +1222,7 @@ def _clean_whisper_lyric_units(
                         "end_time": end_time,
                         "text": unknown_text,
                         "confidence": max(0.2, confidence),
+                        "token_units": [],
                     }
                 )
             continue
@@ -950,6 +1235,7 @@ def _clean_whisper_lyric_units(
                         "end_time": end_time,
                         "text": unknown_text,
                         "confidence": max(0.2, confidence),
+                        "token_units": [],
                     }
                 )
             continue
@@ -960,12 +1246,357 @@ def _clean_whisper_lyric_units(
                 "end_time": end_time,
                 "text": text,
                 "confidence": confidence,
+                "token_units": token_units,
             }
         )
 
     cleaned_units.sort(key=lambda item: float(item["start_time"]))
-    logger.info("模块A-Whisper清洗完成，原始=%s，保留=%s", len(lyric_units_raw), len(cleaned_units))
+    logger.info("模块A-歌词清洗完成，原始=%s，保留=%s", len(lyric_units_raw), len(cleaned_units))
     return cleaned_units
+
+
+def _build_visual_lyric_units(
+    sentence_units: list[dict[str, Any]],
+    big_segments: list[dict[str, Any]],
+    instrumental_labels: list[str],
+    lyric_segment_policy: str,
+    comma_pause_seconds: float,
+    long_pause_seconds: float,
+    merge_gap_seconds: float,
+    max_visual_unit_seconds: float,
+    logger,
+) -> list[dict[str, Any]]:
+    """将句级歌词单元转换为视觉歌词单元（支持句级严格/自适应短句并拆）。"""
+    if not sentence_units:
+        return []
+
+    policy = _normalize_lyric_segment_policy(lyric_segment_policy=lyric_segment_policy, logger=logger)
+    comma_pause_seconds = _normalize_positive_threshold(
+        threshold_name="comma_pause_seconds",
+        value=comma_pause_seconds,
+        fallback=0.45,
+        logger=logger,
+    )
+    long_pause_seconds = _normalize_positive_threshold(
+        threshold_name="long_pause_seconds",
+        value=long_pause_seconds,
+        fallback=0.8,
+        logger=logger,
+    )
+    merge_gap_seconds = _normalize_non_negative_threshold(
+        threshold_name="merge_gap_seconds",
+        value=merge_gap_seconds,
+        fallback=0.25,
+        logger=logger,
+    )
+    max_visual_unit_seconds = _normalize_positive_threshold(
+        threshold_name="max_visual_unit_seconds",
+        value=max_visual_unit_seconds,
+        fallback=6.0,
+        logger=logger,
+    )
+
+    normalized_sentence_units: list[dict[str, Any]] = []
+    sorted_sentence_units = sorted(sentence_units, key=lambda item: float(item.get("start_time", 0.0)))
+    for sentence_index, item in enumerate(sorted_sentence_units):
+        normalized_item = {
+            "start_time": _round_time(float(item.get("start_time", 0.0))),
+            "end_time": _round_time(max(float(item.get("start_time", 0.0)), float(item.get("end_time", 0.0)))),
+            "text": str(item.get("text", "")).strip(),
+            "confidence": round(float(item.get("confidence", 0.0)), 3),
+            "token_units": _normalize_token_units(item.get("token_units", [])),
+            "source_sentence_index": sentence_index,
+            "unit_transform": "original",
+        }
+        if normalized_item["text"]:
+            normalized_sentence_units.append(normalized_item)
+
+    if policy == "sentence_strict":
+        logger.info("模块A-歌词视觉单元策略=%s，句级单元=%s，视觉单元=%s", policy, len(normalized_sentence_units), len(normalized_sentence_units))
+        return normalized_sentence_units
+
+    split_units: list[dict[str, Any]] = []
+    for item in normalized_sentence_units:
+        split_units.extend(
+            _split_sentence_unit_for_adaptive_policy(
+                sentence_unit=item,
+                comma_pause_seconds=comma_pause_seconds,
+                long_pause_seconds=long_pause_seconds,
+                max_visual_unit_seconds=max_visual_unit_seconds,
+            )
+        )
+
+    merged_units = _merge_adjacent_visual_lyric_units(
+        visual_units=split_units,
+        big_segments=big_segments,
+        instrumental_labels=instrumental_labels,
+        merge_gap_seconds=merge_gap_seconds,
+        max_visual_unit_seconds=max_visual_unit_seconds,
+    )
+    logger.info("模块A-歌词视觉单元策略=%s，句级单元=%s，视觉单元=%s", policy, len(normalized_sentence_units), len(merged_units))
+    return merged_units
+
+
+def _normalize_lyric_segment_policy(lyric_segment_policy: str, logger) -> str:
+    """归一化歌词视觉单元策略，不合法时回退 sentence_strict。"""
+    normalized = str(lyric_segment_policy).strip().lower()
+    if normalized in {"sentence_strict", "adaptive_phrase"}:
+        return normalized
+    logger.warning("模块A-歌词视觉单元策略非法，已回退 sentence_strict，原始值=%s", lyric_segment_policy)
+    return "sentence_strict"
+
+
+def _normalize_positive_threshold(threshold_name: str, value: float, fallback: float, logger) -> float:
+    """将阈值归一化为正数，不合法时回退默认值。"""
+    try:
+        normalized = float(value)
+    except Exception:  # noqa: BLE001
+        logger.warning("模块A-%s 配置非法，已回退默认值=%s，原始值=%s", threshold_name, fallback, value)
+        return fallback
+    if normalized <= 0.0:
+        logger.warning("模块A-%s 必须大于0，已回退默认值=%s，原始值=%s", threshold_name, fallback, value)
+        return fallback
+    return normalized
+
+
+def _normalize_non_negative_threshold(threshold_name: str, value: float, fallback: float, logger) -> float:
+    """将阈值归一化为非负数，不合法时回退默认值。"""
+    try:
+        normalized = float(value)
+    except Exception:  # noqa: BLE001
+        logger.warning("模块A-%s 配置非法，已回退默认值=%s，原始值=%s", threshold_name, fallback, value)
+        return fallback
+    if normalized < 0.0:
+        logger.warning("模块A-%s 不能为负，已回退默认值=%s，原始值=%s", threshold_name, fallback, value)
+        return fallback
+    return normalized
+
+
+def _split_sentence_unit_for_adaptive_policy(
+    sentence_unit: dict[str, Any],
+    comma_pause_seconds: float,
+    long_pause_seconds: float,
+    max_visual_unit_seconds: float,
+) -> list[dict[str, Any]]:
+    """将单句歌词按标点+停顿拆分为更稳定的视觉歌词单元。"""
+    token_units = _normalize_token_units(sentence_unit.get("token_units", []))
+    if len(token_units) <= 1:
+        return [dict(sentence_unit)]
+
+    split_slices: list[tuple[int, int]] = []
+    chunk_start_index = 0
+    for token_index in range(len(token_units) - 1):
+        current_token = token_units[token_index]
+        next_token = token_units[token_index + 1]
+        current_text = str(current_token.get("text", ""))
+        gap_after = float(next_token.get("start_time", 0.0)) - float(current_token.get("end_time", 0.0))
+        chunk_duration = float(current_token.get("end_time", 0.0)) - float(token_units[chunk_start_index].get("start_time", 0.0))
+        should_split = False
+
+        if re.search(r"[。！？!?；;]", current_text):
+            should_split = True
+        elif "、" in current_text:
+            prev_end = float(token_units[token_index - 1].get("end_time", current_token.get("start_time", 0.0))) if token_index > 0 else float(current_token.get("start_time", 0.0))
+            gap_before = float(current_token.get("start_time", 0.0)) - prev_end
+            if gap_before >= comma_pause_seconds or gap_after >= comma_pause_seconds:
+                should_split = True
+
+        if not should_split and gap_after >= long_pause_seconds:
+            should_split = True
+
+        if not should_split and chunk_duration >= max_visual_unit_seconds:
+            should_split = True
+
+        if should_split:
+            split_slices.append((chunk_start_index, token_index))
+            chunk_start_index = token_index + 1
+
+    if chunk_start_index <= len(token_units) - 1:
+        split_slices.append((chunk_start_index, len(token_units) - 1))
+
+    if len(split_slices) <= 1:
+        return [dict(sentence_unit)]
+
+    split_units: list[dict[str, Any]] = []
+    for left_index, right_index in split_slices:
+        token_slice = token_units[left_index : right_index + 1]
+        split_unit = _build_visual_unit_from_token_slice(
+            token_slice=token_slice,
+            source_unit=sentence_unit,
+            unit_transform="split",
+        )
+        if split_unit:
+            split_units.append(split_unit)
+    return split_units if split_units else [dict(sentence_unit)]
+
+
+def _build_visual_unit_from_token_slice(
+    token_slice: list[dict[str, Any]],
+    source_unit: dict[str, Any],
+    unit_transform: str,
+) -> dict[str, Any]:
+    """将 token 切片构建为视觉歌词单元。"""
+    if not token_slice:
+        return {}
+
+    start_time = _round_time(float(token_slice[0]["start_time"]))
+    end_time = _round_time(float(token_slice[-1]["end_time"]))
+    text_parts = [str(item.get("text", "")) for item in token_slice]
+    has_word_granularity = any(str(item.get("granularity", "")).strip().lower() == "word" for item in token_slice)
+    text = " ".join([item for item in text_parts if item]).strip() if has_word_granularity else "".join(text_parts).strip()
+    if not text:
+        return {}
+
+    return {
+        "start_time": start_time,
+        "end_time": max(start_time, end_time),
+        "text": text,
+        "confidence": round(float(source_unit.get("confidence", 0.0)), 3),
+        "token_units": _normalize_token_units(token_slice),
+        "source_sentence_index": int(source_unit.get("source_sentence_index", 0)),
+        "unit_transform": unit_transform,
+    }
+
+
+def _merge_adjacent_visual_lyric_units(
+    visual_units: list[dict[str, Any]],
+    big_segments: list[dict[str, Any]],
+    instrumental_labels: list[str],
+    merge_gap_seconds: float,
+    max_visual_unit_seconds: float,
+) -> list[dict[str, Any]]:
+    """合并相邻短句视觉单元（仅在同段落类型且间隔较小时生效）。"""
+    if not visual_units:
+        return []
+
+    sorted_units = sorted(visual_units, key=lambda item: float(item.get("start_time", 0.0)))
+    instrumental_set = {label.lower().strip() for label in instrumental_labels}
+    short_duration_threshold = max(1.0, max_visual_unit_seconds / 2.0)
+    merged_output: list[dict[str, Any]] = []
+    current_unit = dict(sorted_units[0])
+
+    for next_unit in sorted_units[1:]:
+        if _can_merge_visual_units(
+            left_unit=current_unit,
+            right_unit=next_unit,
+            big_segments=big_segments,
+            instrumental_set=instrumental_set,
+            merge_gap_seconds=merge_gap_seconds,
+            max_visual_unit_seconds=max_visual_unit_seconds,
+            short_duration_threshold=short_duration_threshold,
+        ):
+            current_unit = _merge_two_visual_units(left_unit=current_unit, right_unit=next_unit)
+            continue
+        merged_output.append(current_unit)
+        current_unit = dict(next_unit)
+    merged_output.append(current_unit)
+
+    return merged_output
+
+
+def _can_merge_visual_units(
+    left_unit: dict[str, Any],
+    right_unit: dict[str, Any],
+    big_segments: list[dict[str, Any]],
+    instrumental_set: set[str],
+    merge_gap_seconds: float,
+    max_visual_unit_seconds: float,
+    short_duration_threshold: float,
+) -> bool:
+    """判断两条视觉歌词单元是否可以合并。"""
+    left_source = left_unit.get("source_sentence_index", None)
+    right_source = right_unit.get("source_sentence_index", None)
+    if isinstance(left_source, int) and isinstance(right_source, int) and left_source == right_source:
+        return False
+
+    left_text = str(left_unit.get("text", "")).strip()
+    right_text = str(right_unit.get("text", "")).strip()
+    if not left_text or not right_text:
+        return False
+    if left_text in {"[未识别歌词]", "吟唱"} or right_text in {"[未识别歌词]", "吟唱"}:
+        return False
+
+    left_start = float(left_unit.get("start_time", 0.0))
+    left_end = float(left_unit.get("end_time", left_start))
+    right_start = float(right_unit.get("start_time", left_end))
+    right_end = float(right_unit.get("end_time", right_start))
+    left_duration = max(0.0, left_end - left_start)
+    right_duration = max(0.0, right_end - right_start)
+    gap = right_start - left_end
+    merged_duration = right_end - left_start
+
+    if gap < 0.0 or gap > merge_gap_seconds:
+        return False
+    if left_duration > short_duration_threshold or right_duration > short_duration_threshold:
+        return False
+    if merged_duration > max_visual_unit_seconds:
+        return False
+
+    left_mid = (left_start + left_end) / 2.0
+    right_mid = (right_start + right_end) / 2.0
+    left_big_segment = _find_big_segment(left_mid, big_segments)
+    right_big_segment = _find_big_segment(right_mid, big_segments)
+    if str(left_big_segment.get("segment_id", "")) != str(right_big_segment.get("segment_id", "")):
+        return False
+
+    left_label = str(left_big_segment.get("label", "unknown")).lower().strip()
+    right_label = str(right_big_segment.get("label", "unknown")).lower().strip()
+    left_audio_role = "instrumental" if left_label in instrumental_set else "vocal"
+    right_audio_role = "instrumental" if right_label in instrumental_set else "vocal"
+    return left_audio_role == right_audio_role
+
+
+def _merge_two_visual_units(left_unit: dict[str, Any], right_unit: dict[str, Any]) -> dict[str, Any]:
+    """合并两条视觉歌词单元并保留可追溯元信息。"""
+    left_text = str(left_unit.get("text", "")).strip()
+    right_text = str(right_unit.get("text", "")).strip()
+    if re.search(r"[。！？!?；;、，,]$", left_text):
+        merged_text = f"{left_text}{right_text}"
+    else:
+        merged_text = f"{left_text} {right_text}".strip()
+
+    left_tokens = _normalize_token_units(left_unit.get("token_units", []))
+    right_tokens = _normalize_token_units(right_unit.get("token_units", []))
+    merged_tokens = left_tokens + right_tokens
+    left_source = int(left_unit.get("source_sentence_index", 0))
+    right_source = int(right_unit.get("source_sentence_index", left_source))
+
+    return {
+        "start_time": _round_time(float(left_unit.get("start_time", 0.0))),
+        "end_time": _round_time(max(float(left_unit.get("start_time", 0.0)), float(right_unit.get("end_time", 0.0)))),
+        "text": merged_text,
+        "confidence": round(max(float(left_unit.get("confidence", 0.0)), float(right_unit.get("confidence", 0.0))), 3),
+        "token_units": merged_tokens,
+        "source_sentence_index": min(left_source, right_source),
+        "unit_transform": "merged",
+    }
+
+
+def _normalize_token_units(token_units: Any) -> list[dict[str, Any]]:
+    """清洗 token_units，确保结构满足 text/start/end/granularity。"""
+    if not isinstance(token_units, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in token_units:
+        if not isinstance(item, dict):
+            continue
+        start_raw = item.get("start_time", item.get("start", 0.0))
+        end_raw = item.get("end_time", item.get("end", start_raw))
+        if not isinstance(start_raw, (int, float)) or not isinstance(end_raw, (int, float)):
+            continue
+        start_time = _round_time(float(start_raw))
+        end_time = _round_time(max(start_time, float(end_raw)))
+        granularity_raw = str(item.get("granularity", "char")).strip().lower()
+        granularity = "word" if granularity_raw == "word" else "char"
+        normalized.append(
+            {
+                "text": str(item.get("text", "")).strip(),
+                "start_time": start_time,
+                "end_time": end_time,
+                "granularity": granularity,
+            }
+        )
+    return normalized
 
 
 def _is_placeholder_text(text: str) -> bool:
@@ -1038,6 +1669,15 @@ def _attach_lyrics_to_segments(lyric_units_raw: list[dict[str, Any]], segments: 
                 "confidence": round(float(item.get("confidence", 0.0)), 3),
             }
         )
+        source_sentence_index = item.get("source_sentence_index", None)
+        if isinstance(source_sentence_index, int) and source_sentence_index >= 0:
+            output_items[-1]["source_sentence_index"] = source_sentence_index
+        unit_transform = str(item.get("unit_transform", "")).strip().lower()
+        if unit_transform in {"original", "split", "merged"}:
+            output_items[-1]["unit_transform"] = unit_transform
+        token_units = _normalize_token_units(item.get("token_units", []))
+        if token_units:
+            output_items[-1]["token_units"] = token_units
     return output_items
 
 
