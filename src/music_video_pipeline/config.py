@@ -109,26 +109,36 @@ class ModuleAConfig:
     """
     功能说明：定义模块 A 的真实链路配置。
     参数说明：
-    - whisper_language: Whisper 语言策略（auto 或语言代码，如 zh/en/ja）。
+    - funasr_language: FunASR 语言策略（auto 或语言代码，如 zh/en/ja）。
+    - lyric_segment_policy: 歌词视觉单元策略（sentence_strict/adaptive_phrase）。
+    - comma_pause_seconds: 逗号断句停顿阈值（秒）。
+    - long_pause_seconds: 长停顿断句阈值（秒）。
+    - merge_gap_seconds: 相邻短句合并阈值（秒）。
+    - max_visual_unit_seconds: 单个歌词视觉单元最大时长（秒）。
     - mode: 模式（real_auto/real_strict/fallback_only）。
     - lyric_beat_snap_threshold_ms: 歌词到节拍的吸附阈值（毫秒）。
     - instrumental_labels: 视为器乐段的标签集合。
     - fallback_enabled: 真实模型失败时是否降级到规则链。
     - device: 设备策略（auto/cpu/cuda）。
-    - whisper_model: Whisper 模型名称。
+    - funasr_model: FunASR 模型名称。
     - demucs_model: Demucs 模型名称。
     返回值：不适用。
     异常说明：不适用。
     边界条件：阈值建议大于等于 0。
     """
 
-    whisper_language: str
+    funasr_language: str
+    lyric_segment_policy: str = "sentence_strict"
+    comma_pause_seconds: float = 0.45
+    long_pause_seconds: float = 0.8
+    merge_gap_seconds: float = 0.25
+    max_visual_unit_seconds: float = 6.0
     mode: str = "real_auto"
     lyric_beat_snap_threshold_ms: int = 200
     instrumental_labels: list[str] = field(default_factory=lambda: ["intro", "outro", "inst"])
     fallback_enabled: bool = True
     device: str = "auto"
-    whisper_model: str = "base"
+    funasr_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
     demucs_model: str = "htdemucs"
 
 
@@ -153,7 +163,7 @@ class AppConfig:
     ffmpeg: FfmpegConfig
     logging: LoggingConfig
     mock: MockConfig
-    module_a: ModuleAConfig = field(default_factory=lambda: ModuleAConfig(whisper_language="auto"))
+    module_a: ModuleAConfig = field(default_factory=lambda: ModuleAConfig(funasr_language="auto"))
 
 
 def _read_json_config(config_path: Path) -> dict:
@@ -202,7 +212,12 @@ def _merge_defaults(raw_data: dict) -> dict:
             "instrumental_labels": ["intro", "outro", "inst"],
             "fallback_enabled": True,
             "device": "auto",
-            "whisper_model": "base",
+            "lyric_segment_policy": "sentence_strict",
+            "comma_pause_seconds": 0.45,
+            "long_pause_seconds": 0.8,
+            "merge_gap_seconds": 0.25,
+            "max_visual_unit_seconds": 6.0,
+            "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
             "demucs_model": "htdemucs",
         },
     }

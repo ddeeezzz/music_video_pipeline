@@ -1,4 +1,4 @@
-﻿{
+{
   "mode": {
     "script_generator": "mock",
     "frame_generator": "mock"
@@ -27,11 +27,20 @@
   "module_a": {
     "mode": "real_auto",
     "lyric_beat_snap_threshold_ms": 200,
-    "instrumental_labels": ["intro", "outro", "inst"],
+    "instrumental_labels": [
+      "intro",
+      "outro",
+      "inst"
+    ],
     "fallback_enabled": true,
     "device": "auto",
-    "whisper_language": "auto",
-    "whisper_model": "base",
-    "demucs_model": "htdemucs"
+    "funasr_language": "auto",
+    "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
+    "demucs_model": "htdemucs",
+    "lyric_segment_policy": "sentence_strict",
+    "comma_pause_seconds": 0.45,
+    "long_pause_seconds": 0.8,
+    "merge_gap_seconds": 0.25,
+    "max_visual_unit_seconds": 6.0
   }
 }

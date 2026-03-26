@@ -37,7 +37,7 @@
     "funasr_language": "ja",
     "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
     "demucs_model": "htdemucs",
-    "lyric_segment_policy": "sentence_strict",
+    "lyric_segment_policy": "adaptive_phrase",
     "comma_pause_seconds": 0.45,
     "long_pause_seconds": 0.8,
     "merge_gap_seconds": 0.25,

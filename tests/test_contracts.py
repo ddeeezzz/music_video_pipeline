@@ -196,6 +196,49 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
         validate_module_b_output(invalid_big_segment_id_output)
 
 
+def test_validate_module_a_output_should_validate_token_units() -> None:
+    """
+    功能说明：验证模块A契约可校验 lyric_units.token_units 的结构与取值。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：granularity 仅允许 word/char。
+    """
+    module_a_output = {
+        "task_id": "task_001",
+        "audio_path": "demo.wav",
+        "big_segments": [{"segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"}],
+        "segments": [{"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"}],
+        "beats": [{"time": 0.0, "type": "major", "source": "beat"}, {"time": 2.0, "type": "major", "source": "beat"}],
+        "lyric_units": [
+            {
+                "segment_id": "seg_0001",
+                "start_time": 0.1,
+                "end_time": 1.8,
+                "text": "テスト",
+                "confidence": 0.9,
+                "source_sentence_index": 0,
+                "unit_transform": "original",
+                "token_units": [
+                    {"text": "テ", "start_time": 0.1, "end_time": 0.5, "granularity": "char"},
+                    {"text": "スト", "start_time": 0.5, "end_time": 1.0, "granularity": "word"},
+                ],
+            }
+        ],
+        "energy_features": [{"start_time": 0.0, "end_time": 2.0, "energy_level": "mid", "trend": "flat", "rhythm_tension": 0.5}],
+    }
+    validate_module_a_output(module_a_output)
+
+    module_a_output["lyric_units"][0]["token_units"][0]["granularity"] = "syllable"
+    with pytest.raises(ValueError):
+        validate_module_a_output(module_a_output)
+
+    module_a_output["lyric_units"][0]["token_units"][0]["granularity"] = "char"
+    module_a_output["lyric_units"][0]["unit_transform"] = "unknown"
+    with pytest.raises(ValueError):
+        validate_module_a_output(module_a_output)
+
+
 def _build_test_config(tmp_path: Path) -> AppConfig:
     """
     功能说明：构建用于测试的最小配置对象。
@@ -220,5 +263,5 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
         ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
-        module_a=ModuleAConfig(whisper_language="auto", mode="fallback_only"),
+        module_a=ModuleAConfig(funasr_language="auto", mode="fallback_only"),
     )
