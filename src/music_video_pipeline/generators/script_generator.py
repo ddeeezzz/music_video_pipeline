@@ -119,6 +119,24 @@ class MockScriptGenerator(ScriptGenerator):
                 "text": str(item.get("text", "")).strip(),
                 "confidence": float(item.get("confidence", 0.0)),
             }
+            raw_token_units = item.get("token_units", [])
+            if isinstance(raw_token_units, list):
+                token_units: list[dict[str, Any]] = []
+                for token_item in raw_token_units:
+                    if not isinstance(token_item, dict):
+                        continue
+                    token_units.append(
+                        {
+                            "text": str(token_item.get("text", "")).strip(),
+                            "start_time": float(token_item.get("start_time", 0.0)),
+                            "end_time": float(token_item.get("end_time", token_item.get("start_time", 0.0))),
+                            "granularity": "word"
+                            if str(token_item.get("granularity", "")).strip().lower() == "word"
+                            else "char",
+                        }
+                    )
+                if token_units:
+                    normalized_item["token_units"] = token_units
             lyric_units_map.setdefault(segment_id, []).append(normalized_item)
 
         for segment_id in lyric_units_map:

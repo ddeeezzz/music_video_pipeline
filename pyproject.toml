@@ -16,7 +16,8 @@ dependencies = [
   "torch==2.5.0",
   "torchaudio==2.5.0",
   "demucs>=4.0.1",
-  "openai-whisper>=20240930",
+  "funasr",
+  "transformers>=4.40.0",
   "natten", 
   "madmom",
   "all-in-one-fix==2.0.4",
@@ -47,6 +48,7 @@ torch = { index = "pytorch-cu121" }
 torchaudio = { index = "pytorch-cu121" }
 natten = { url = "https://github.com/SHI-Labs/NATTEN/releases/download/v0.17.5/natten-0.17.5%2Btorch250cu121-cp311-cp311-linux_x86_64.whl" }
 madmom = { git = "https://github.com/CPJKU//madmom.git", rev = "27f032e" }
+funasr = { git = "https://github.com/modelscope/FunASR.git", rev = "b842ff8107e1da950947ada0d11ae3c008baeb54" }
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

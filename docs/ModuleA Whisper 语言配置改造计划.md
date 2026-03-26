@@ -1,4 +1,6 @@
-## ModuleA Whisper Language（非兼容改造）实施计划
+## ModuleA Whisper Language（非兼容改造）实施计划（已归档）
+
+> 说明：该文档为历史方案，当前主干已迁移到 FunASR-Nano。最新配置与接口请参考 `docs/Whisper → Fun-ASR-Nano 全量替换计划.md`。
 
 ### Summary
 - 新增 `module_a.whisper_language`，语义为：`auto` 自动检测，或 `zh/en/ja/...` 强制指定语言。
