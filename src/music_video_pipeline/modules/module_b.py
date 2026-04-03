@@ -69,10 +69,20 @@ def _enrich_shots_with_segment_meta(
     """
     segments = module_a_output.get("segments", [])
     big_segments = module_a_output.get("big_segments", [])
+    lyric_units_raw = module_a_output.get("lyric_units", None)
     if not isinstance(segments, list):
         segments = []
     if not isinstance(big_segments, list):
         big_segments = []
+    lyric_units_available = isinstance(lyric_units_raw, list)
+    lyric_segment_ids: set[str] = set()
+    if lyric_units_available:
+        for item in lyric_units_raw:
+            if not isinstance(item, dict):
+                continue
+            segment_id = str(item.get("segment_id", "")).strip()
+            if segment_id:
+                lyric_segment_ids.add(segment_id)
 
     big_segment_map = {
         str(item.get("segment_id", "")).strip(): item
@@ -94,7 +104,15 @@ def _enrich_shots_with_segment_meta(
         if segment:
             segment_label = str(segment.get("label", "")).strip()
             normalized_label = segment_label.lower()
-            audio_role = "instrumental" if normalized_label in instrumental_set else "vocal"
+            segment_id = str(segment.get("segment_id", "")).strip()
+            has_lyric = segment_id in lyric_segment_ids if lyric_units_available else True
+            if normalized_label in instrumental_set:
+                audio_role = "instrumental"
+            elif not has_lyric:
+                # 规则约束：人声标签段里无歌词单元时，按器乐段处理。
+                audio_role = "instrumental"
+            else:
+                audio_role = "vocal"
 
             big_segment_id = str(segment.get("big_segment_id", "")).strip()
             big_segment_obj = big_segment_map.get(big_segment_id, {})
