@@ -33,6 +33,7 @@ from music_video_pipeline.modules.module_a import (
     _recognize_lyrics_with_funasr,
     _run_real_pipeline,
     _rms_delta_at,
+    _snap_to_nearest_beat,
     _select_small_timestamps,
     run_module_a,
 )
@@ -118,6 +119,54 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     )
 
 
+def test_snap_to_nearest_beat_should_snap_when_diff_within_threshold() -> None:
+    """
+    功能说明：验证目标时间与最近节拍差值在阈值内时会发生吸附。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：阈值为正时按闭区间语义处理。
+    """
+    snapped_time = _snap_to_nearest_beat(
+        target_time=1.05,
+        beat_pool=[1.0, 2.0],
+        threshold_seconds=0.2,
+    )
+    assert snapped_time == 1.0
+
+
+def test_snap_to_nearest_beat_should_keep_target_when_diff_over_threshold() -> None:
+    """
+    功能说明：验证目标时间与最近节拍差值超过阈值时保持原始时间。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅校验超阈值不吸附语义，不涉及上游分段逻辑。
+    """
+    snapped_time = _snap_to_nearest_beat(
+        target_time=1.35,
+        beat_pool=[1.0, 2.0],
+        threshold_seconds=0.2,
+    )
+    assert snapped_time == 1.35
+
+
+def test_snap_to_nearest_beat_should_snap_when_diff_equals_threshold() -> None:
+    """
+    功能说明：验证差值等于阈值时按闭区间语义执行吸附。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：阈值边界值必须稳定，防止后续比较符号回归。
+    """
+    snapped_time = _snap_to_nearest_beat(
+        target_time=1.2,
+        beat_pool=[1.0, 2.0],
+        threshold_seconds=0.2,
+    )
+    assert snapped_time == 1.0
+
+
 def test_module_a_instrumental_should_prefer_rms_delta_peak() -> None:
     """
     功能说明：验证器乐段在可用 onset 候选下优先选择能量突变最大的时间点。
@@ -145,6 +194,54 @@ def test_module_a_instrumental_should_prefer_rms_delta_peak() -> None:
         snap_threshold_ms=200,
     )
     assert 2.0 in timestamps
+
+
+def test_build_segments_with_lyric_priority_should_split_long_instrumental_once_by_max_delta() -> None:
+    """
+    功能说明：验证器乐长段仅切一次，切点选择能量落差最大的候选点。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：即使存在多个 beat/onset 候选，也不得按节拍连续切分。
+    """
+    segments = _build_segments_with_lyric_priority(
+        duration_seconds=10.0,
+        big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 10.0, "label": "intro"}],
+        beat_candidates=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0],
+        onset_candidates=[2.0, 6.0, 8.0],
+        lyric_units=[],
+        instrumental_labels=["intro", "inst", "outro"],
+        rms_times=[1.9, 2.0, 5.9, 6.0, 7.9, 8.0],
+        rms_values=[0.1, 0.2, 0.2, 1.2, 1.2, 1.25],
+    )
+    assert len(segments) == 2
+    assert float(segments[0]["start_time"]) == 0.0
+    assert float(segments[0]["end_time"]) == 6.0
+    assert float(segments[1]["start_time"]) == 6.0
+    assert float(segments[1]["end_time"]) == 10.0
+
+
+def test_build_segments_with_lyric_priority_should_not_split_short_instrumental_segment() -> None:
+    """
+    功能说明：验证器乐短段（<4秒）保持单段，不做单次能量切分。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：候选点充足时也应保持单段，避免过度切分。
+    """
+    segments = _build_segments_with_lyric_priority(
+        duration_seconds=3.5,
+        big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 3.5, "label": "intro"}],
+        beat_candidates=[0.0, 1.0, 2.0, 3.5],
+        onset_candidates=[1.0, 2.0],
+        lyric_units=[],
+        instrumental_labels=["intro", "inst", "outro"],
+        rms_times=[0.9, 1.0, 1.9, 2.0],
+        rms_values=[0.2, 0.8, 0.3, 0.9],
+    )
+    assert len(segments) == 1
+    assert float(segments[0]["start_time"]) == 0.0
+    assert float(segments[0]["end_time"]) == 3.5
 
 
 def test_module_a_instrumental_should_fallback_to_rms_peak_when_delta_is_zero() -> None:
