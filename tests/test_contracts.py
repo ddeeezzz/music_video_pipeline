@@ -82,12 +82,21 @@ def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
     assert "audio_role" in module_b_output[0]
 
     instrumental_set = {item.lower() for item in config.module_a.instrumental_labels}
-    for shot in module_b_output:
+    lyric_segment_ids = {
+        str(item.get("segment_id", "")).strip()
+        for item in module_a_output.get("lyric_units", [])
+        if isinstance(item, dict) and str(item.get("segment_id", "")).strip()
+    }
+    for index, shot in enumerate(module_b_output):
         assert isinstance(shot["big_segment_id"], str)
         assert isinstance(shot["big_segment_label"], str)
         assert isinstance(shot["segment_label"], str)
         assert shot["audio_role"] in {"instrumental", "vocal"}
-        if str(shot["segment_label"]).lower() in instrumental_set:
+
+        segment = module_a_output["segments"][index]
+        segment_id = str(segment.get("segment_id", "")).strip()
+        segment_label = str(shot["segment_label"]).lower()
+        if segment_label in instrumental_set or segment_id not in lyric_segment_ids:
             assert shot["audio_role"] == "instrumental"
         else:
             assert shot["audio_role"] == "vocal"

@@ -110,3 +110,66 @@ def test_enrich_shots_should_fallback_when_index_order_is_misaligned() -> None:
     assert enriched[0]["audio_role"] == "instrumental"
     assert enriched[1]["big_segment_id"] == "big_100"
     assert enriched[1]["audio_role"] == "vocal"
+
+
+def test_enrich_shots_should_mark_vocal_label_without_lyric_as_instrumental() -> None:
+    """
+    功能说明：验证人声标签段若无歌词单元，也会按器乐段标记 audio_role。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：lyric_units 显式为空时触发该规则。
+    """
+    shots = [
+        {"shot_id": "shot_001", "start_time": 0.0, "end_time": 2.0},
+    ]
+    module_a_output = {
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"},
+        ],
+        "big_segments": [
+            {"segment_id": "big_001", "label": "verse"},
+        ],
+        "lyric_units": [],
+    }
+    enriched = _enrich_shots_with_segment_meta(
+        shots=shots,
+        module_a_output=module_a_output,
+        instrumental_labels=["intro", "inst", "outro"],
+    )
+    assert enriched[0]["audio_role"] == "instrumental"
+
+
+def test_enrich_shots_should_keep_vocal_when_unknown_or_chant_lyrics_exist() -> None:
+    """
+    功能说明：验证存在歌词单元时（含“未识别歌词/吟唱”）仍保持人声段标记。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：本规则只看歌词单元是否存在，不按文本语义二次剔除。
+    """
+    shots = [
+        {"shot_id": "shot_001", "start_time": 0.0, "end_time": 2.0},
+        {"shot_id": "shot_002", "start_time": 2.0, "end_time": 4.0},
+    ]
+    module_a_output = {
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"},
+            {"segment_id": "seg_0002", "big_segment_id": "big_002", "start_time": 2.0, "end_time": 4.0, "label": "verse"},
+        ],
+        "big_segments": [
+            {"segment_id": "big_001", "label": "verse"},
+            {"segment_id": "big_002", "label": "verse"},
+        ],
+        "lyric_units": [
+            {"segment_id": "seg_0001", "start_time": 0.1, "end_time": 1.5, "text": "[未识别歌词]", "confidence": 0.2},
+            {"segment_id": "seg_0002", "start_time": 2.2, "end_time": 3.6, "text": "吟唱", "confidence": 0.6},
+        ],
+    }
+    enriched = _enrich_shots_with_segment_meta(
+        shots=shots,
+        module_a_output=module_a_output,
+        instrumental_labels=["intro", "inst", "outro"],
+    )
+    assert enriched[0]["audio_role"] == "vocal"
+    assert enriched[1]["audio_role"] == "vocal"
