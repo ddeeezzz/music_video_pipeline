@@ -9,7 +9,7 @@
 
 ### 2.1 配置层
 
-- 新增并启用受控并发字段：`render_workers`（默认 `4`）。
+- 新增并启用受控并发字段：`render_workers`（默认 `3`）。
   - 证据：[src/music_video_pipeline/config.py:84](/home/sod2204/work/zonghe/t1/src/music_video_pipeline/config.py:84)
 - `render_batch_size` 降为兼容字段，默认 `1`。
   - 证据：[src/music_video_pipeline/config.py:83](/home/sod2204/work/zonghe/t1/src/music_video_pipeline/config.py:83)
@@ -18,7 +18,7 @@
 
 - `render_batch_size` 在新路径固定按 `1` 执行；若配置不为 `1` 仅告警。
   - 证据：[src/music_video_pipeline/modules/module_d.py:96](/home/sod2204/work/zonghe/t1/src/music_video_pipeline/modules/module_d.py:96)
-- `render_workers` 归一化范围 `1~4`，非法回退 `4`。
+- `render_workers` 归一化范围 `1~4`，非法回退 `3`。
   - 证据：[src/music_video_pipeline/modules/module_d.py:123](/home/sod2204/work/zonghe/t1/src/music_video_pipeline/modules/module_d.py:123)
 - 单段命令语义：每段固定“单输入单输出”。
   - 证据：[src/music_video_pipeline/modules/module_d.py:264](/home/sod2204/work/zonghe/t1/src/music_video_pipeline/modules/module_d.py:264)
@@ -84,8 +84,8 @@
 ## 6. 结论与建议
 
 1. 本机（RTX 4060 Laptop）在当前任务规模（86段）下，受控并行方案有效，`workers=4` 在本轮单次测试中最快。
-2. 配置默认值已调整为 `render_workers=4`（以本机当前跑数最优为依据）。
-3. 若出现波动或回退次数上升，可临时降到 `render_workers=3`；建议保留 `gpu_to_cpu_fallback_count` 监控并至少重复跑3次取中位数后再固定。
+2. 配置默认值建议保持 `render_workers=3`（稳定性优先）。
+3. 若你在同机同场景下追求极限速度，可临时升到 `render_workers=4`；建议保留 `gpu_to_cpu_fallback_count` 监控并至少重复跑3次取中位数后再固定。
 4. 建议持续监控三项核心指标：`render_segments_elapsed`、`total_elapsed`、`gpu_to_cpu_fallback_count`。
 
 ## 7. 附：本轮输出记录

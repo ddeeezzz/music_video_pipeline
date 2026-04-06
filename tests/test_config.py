@@ -227,7 +227,7 @@ def test_load_config_should_fill_ffmpeg_gpu_accel_defaults(tmp_path: Path) -> No
     )
     app_config = load_config(config_path=config_path)
     assert app_config.ffmpeg.render_batch_size == 1
-    assert app_config.ffmpeg.render_workers == 4
+    assert app_config.ffmpeg.render_workers == 3
     assert app_config.ffmpeg.video_accel_mode == "auto"
     assert app_config.ffmpeg.gpu_video_codec == "h264_nvenc"
     assert app_config.ffmpeg.gpu_preset == "p1"

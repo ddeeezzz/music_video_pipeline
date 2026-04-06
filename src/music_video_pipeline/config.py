@@ -81,7 +81,7 @@ class FfmpegConfig:
     video_preset: str
     video_crf: int
     render_batch_size: int = 1
-    render_workers: int = 4
+    render_workers: int = 3
     video_accel_mode: str = "auto"
     gpu_video_codec: str = "h264_nvenc"
     gpu_preset: str = "p1"
@@ -242,7 +242,7 @@ def _merge_defaults(raw_data: dict) -> dict:
             "video_preset": "veryfast",
             "video_crf": 30,
             "render_batch_size": 1,
-            "render_workers": 4,
+            "render_workers": 3,
             "video_accel_mode": "auto",
             "gpu_video_codec": "h264_nvenc",
             "gpu_preset": "p1",
