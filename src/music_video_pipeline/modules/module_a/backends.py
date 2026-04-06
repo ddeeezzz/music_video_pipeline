@@ -8,6 +8,8 @@
 
 # 标准库：动态导入
 import importlib
+# 标准库：JSON 序列化
+import json
 # 标准库：正则处理
 import re
 # 标准库：子进程调用
@@ -25,6 +27,61 @@ from music_video_pipeline.modules.module_a.timing_energy import (
     _normalize_timestamp_list,
     _round_time,
 )
+
+
+def _json_default_for_allin1_dump(value: Any) -> Any:
+    """
+    功能说明：为 Allin1 原始响应提供 JSON 序列化兜底转换。
+    参数说明：
+    - value: 待序列化对象。
+    返回值：
+    - Any: 可被 json.dump 处理的安全对象。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：复杂对象在无法结构化时回退字符串表示。
+    """
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "tolist"):
+        try:
+            return value.tolist()
+        except Exception:  # noqa: BLE001
+            pass
+    if hasattr(value, "__dict__"):
+        try:
+            return {
+                str(key): item
+                for key, item in vars(value).items()
+                if not str(key).startswith("_")
+            }
+        except Exception:  # noqa: BLE001
+            pass
+    return str(value)
+
+
+def _save_allin1_raw_response(raw_result: Any, output_path: Path, logger) -> None:
+    """
+    功能说明：保存 Allin1 原始响应 JSON，用于结果追溯与标签证据核验。
+    参数说明：
+    - raw_result: Allin1 原始返回对象。
+    - output_path: 原始响应 JSON 输出路径。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：无。
+    异常说明：保存失败时不抛出，记录 warning 并继续主流程。
+    边界条件：输出目录不存在时自动创建。
+    """
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as file_obj:
+            json.dump(
+                raw_result,
+                file_obj,
+                ensure_ascii=False,
+                indent=2,
+                default=_json_default_for_allin1_dump,
+            )
+        logger.info("模块A-Allin1原始响应已保存，路径=%s", output_path)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("模块A-Allin1原始响应保存失败，路径=%s，错误=%s", output_path, error)
 
 
 def _separate_with_demucs(audio_path: Path, output_dir: Path, device: str, model_name: str, logger) -> tuple[Path, Path]:
@@ -68,43 +125,439 @@ def _separate_with_demucs(audio_path: Path, output_dir: Path, device: str, model
     if not vocals_candidates or not accomp_candidates:
         raise RuntimeError("Demucs 执行成功但未找到分离结果文件")
 
-    return vocals_candidates[0], accomp_candidates[0]
+    vocals_path = vocals_candidates[0]
+    no_vocals_path = accomp_candidates[0]
+    target_sample_rate = _probe_audio_sample_rate(audio_path=audio_path, logger=logger)
+    _normalize_standard_stems_sample_rate(
+        vocals_path=vocals_path,
+        no_vocals_path=no_vocals_path,
+        target_sample_rate=target_sample_rate,
+        logger=logger,
+    )
+    return vocals_path, no_vocals_path
 
 
-def _detect_big_segments_with_allin1(audio_path: Path, duration_seconds: float, logger) -> list[dict[str, Any]]:
+def _normalize_allin1_runtime_device(device: str) -> str:
     """
-    功能说明：调用 Allin1/Allin1Fix 获取大段落，并标准化为连续区间。
+    功能说明：归一化 allin1fix 分离阶段设备参数，仅输出 cpu/cuda。
+    参数说明：
+    - device: 推理设备标识（如 cpu/cuda/auto）。
+    返回值：
+    - str: 归一化后的设备字符串，仅为 cpu 或 cuda。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：当 torch 不可用或无 CUDA 时默认 cpu。
+    """
+    normalized = str(device).strip().lower()
+    if normalized in {"cpu", "cuda"}:
+        return normalized
+    try:
+        # 第三方库：设备可用性探测
+        import torch  # type: ignore
+    except Exception:  # noqa: BLE001
+        return "cpu"
+    return "cuda" if bool(torch.cuda.is_available()) else "cpu"
+
+
+def _probe_audio_sample_rate(audio_path: Path, logger) -> int | None:
+    """
+    功能说明：通过 ffprobe 读取音频采样率（Hz）。
+    参数说明：
+    - audio_path: 输入音频路径。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：
+    - int | None: 采样率；失败时返回 None。
+    异常说明：异常在函数内吞并并记录 warning，不中断主流程。
+    边界条件：ffprobe 不可用时直接返回 None。
+    """
+    ffprobe_bin = shutil.which("ffprobe")
+    if ffprobe_bin is None:
+        logger.warning("模块A-未检测到 ffprobe，跳过采样率标准化探测")
+        return None
+
+    command = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=sample_rate",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(audio_path),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+        text = str(result.stdout).strip()
+        if not text:
+            return None
+        return int(float(text.splitlines()[0]))
+    except Exception as error:  # noqa: BLE001
+        logger.warning("模块A-采样率探测失败，路径=%s，错误=%s", audio_path, error)
+        return None
+
+
+def _resample_audio_file_inplace(audio_path: Path, target_sample_rate: int, logger) -> None:
+    """
+    功能说明：使用 ffmpeg 原地重采样音频文件并强制双声道输出。
+    参数说明：
+    - audio_path: 待重采样音频路径。
+    - target_sample_rate: 目标采样率（Hz）。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：无。
+    异常说明：重采样失败抛错，由上层统一处理。
+    边界条件：ffmpeg 不可用时抛错，避免静默格式漂移。
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        raise RuntimeError("未检测到 ffmpeg，可用性不足以执行采样率标准化")
+
+    temp_output_path = audio_path.with_name(f"{audio_path.stem}.resample_tmp.wav")
+    command = [
+        ffmpeg_bin,
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(audio_path),
+        "-ar",
+        str(int(target_sample_rate)),
+        "-ac",
+        "2",
+        str(temp_output_path),
+    ]
+    subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+    temp_output_path.replace(audio_path)
+
+
+def _mix_non_vocal_stems_to_no_vocals(
+    bass_path: Path,
+    drums_path: Path,
+    other_path: Path,
+    output_path: Path,
+    logger,
+) -> None:
+    """
+    功能说明：将 bass/drums/other 三轨等权求和并做峰值保护，输出 no_vocals.wav。
+    参数说明：
+    - bass_path: bass 轨路径。
+    - drums_path: drums 轨路径。
+    - other_path: other 轨路径。
+    - output_path: 输出 no_vocals 路径。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：无。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：依赖 ffmpeg amix + alimiter，输出目录不存在时自动创建。
+    """
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin is None:
+        raise RuntimeError("未检测到 ffmpeg，可用性不足以合成 no_vocals")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg_bin,
+        "-y",
+        "-v",
+        "error",
+        "-i",
+        str(bass_path),
+        "-i",
+        str(drums_path),
+        "-i",
+        str(other_path),
+        "-filter_complex",
+        "[0:a][1:a][2:a]amix=inputs=3:normalize=0,alimiter=limit=0.98",
+        "-ac",
+        "2",
+        str(output_path),
+    ]
+    subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True)
+    logger.info("模块A-已合成 no_vocals，路径=%s", output_path)
+
+
+def _normalize_standard_stems_sample_rate(
+    vocals_path: Path,
+    no_vocals_path: Path,
+    target_sample_rate: int | None,
+    logger,
+) -> None:
+    """
+    功能说明：将标准二轨（vocals/no_vocals）统一重采样到指定采样率。
+    参数说明：
+    - vocals_path: vocals 轨路径。
+    - no_vocals_path: no_vocals 轨路径。
+    - target_sample_rate: 目标采样率（Hz）；为 None 时跳过。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：无。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：仅在目标采样率有效时执行重采样。
+    """
+    if target_sample_rate is None or target_sample_rate <= 0:
+        return
+    _resample_audio_file_inplace(audio_path=vocals_path, target_sample_rate=target_sample_rate, logger=logger)
+    _resample_audio_file_inplace(audio_path=no_vocals_path, target_sample_rate=target_sample_rate, logger=logger)
+    logger.info(
+        "模块A-标准二轨采样率已统一，vocals=%s，no_vocals=%s，target_sr=%s",
+        vocals_path,
+        no_vocals_path,
+        target_sample_rate,
+    )
+
+
+def _prepare_stems_with_allin1_demucs(
+    audio_path: Path,
+    output_dir: Path,
+    device: str,
+    model_name: str,
+    logger,
+) -> tuple[Path, Path, dict[str, Any]]:
+    """
+    功能说明：复用 allin1fix 的 Demucs 分离能力，返回声轨路径与可供 allin1 分析的 stems_input。
+    参数说明：
+    - audio_path: 输入音频文件路径。
+    - output_dir: allin1fix 分离结果输出目录。
+    - device: 推理设备标识（如 cpu/cuda/auto）。
+    - model_name: 分离模型名称（如 htdemucs）。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：
+    - tuple[Path, Path, dict[str, Any]]: `(vocals_path, no_vocals_path, stems_input)`。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：仅在 allin1fix 后端可用时生效，不支持时抛错由上层降级。
+    """
+    backend_name, backend_module = _import_allin1_backend()
+    if backend_name != "allin1fix" or not hasattr(backend_module, "get_stems"):
+        raise RuntimeError(f"当前后端={backend_name}，不支持复用 allin1fix 的 Demucs 分离")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runtime_device = _normalize_allin1_runtime_device(device=device)
+    provider_obj = None
+    provider_cls = getattr(backend_module, "DemucsProvider", None)
+    if provider_cls is not None:
+        try:
+            provider_obj = provider_cls(model_name=model_name, device=runtime_device)
+        except TypeError:
+            provider_obj = provider_cls(device=runtime_device)
+
+    logger.info("模块A调用 allin1fix-Demucs 分离，模型=%s，设备=%s", model_name, runtime_device)
+    stem_dirs = backend_module.get_stems([audio_path], output_dir, provider_obj, runtime_device)
+    if not stem_dirs:
+        raise RuntimeError("allin1fix Demucs 未返回可用分离目录")
+
+    stem_dir = Path(stem_dirs[0])
+    stem_paths = {
+        "bass": stem_dir / "bass.wav",
+        "drums": stem_dir / "drums.wav",
+        "other": stem_dir / "other.wav",
+        "vocals": stem_dir / "vocals.wav",
+    }
+    missing_files = [name for name, path in stem_paths.items() if not path.exists()]
+    if missing_files:
+        raise RuntimeError(f"allin1fix Demucs 缺少分离文件: {missing_files}")
+
+    stems_input = {
+        "bass": stem_paths["bass"],
+        "drums": stem_paths["drums"],
+        "other": stem_paths["other"],
+        "vocals": stem_paths["vocals"],
+        "identifier": audio_path.stem,
+    }
+    no_vocals_path = stem_dir / "no_vocals.wav"
+    _mix_non_vocal_stems_to_no_vocals(
+        bass_path=stem_paths["bass"],
+        drums_path=stem_paths["drums"],
+        other_path=stem_paths["other"],
+        output_path=no_vocals_path,
+        logger=logger,
+    )
+    target_sample_rate = _probe_audio_sample_rate(audio_path=audio_path, logger=logger)
+    _normalize_standard_stems_sample_rate(
+        vocals_path=stem_paths["vocals"],
+        no_vocals_path=no_vocals_path,
+        target_sample_rate=target_sample_rate,
+        logger=logger,
+    )
+    return stem_paths["vocals"], no_vocals_path, stems_input
+
+
+def _extract_first_allin1_item(raw_result: Any) -> Any:
+    """
+    功能说明：统一提取 allin1 返回中的首个分析项（单曲场景）。
+    参数说明：
+    - raw_result: allin1 原始返回对象。
+    返回值：
+    - Any: 单曲分析对象（dict 或对象实例）。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：列表返回为空时抛错。
+    """
+    if isinstance(raw_result, list):
+        if not raw_result:
+            raise RuntimeError("allin1 返回结果为空列表")
+        return raw_result[0]
+    return raw_result
+
+
+def _extract_allin1_raw_segments(raw_item: Any) -> list[Any]:
+    """
+    功能说明：从 allin1 单曲结果中抽取原始段落数组。
+    参数说明：
+    - raw_item: allin1 单曲分析对象。
+    返回值：
+    - list[Any]: 原始段落数组。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：当字段缺失时返回空数组由上层处理。
+    """
+    if isinstance(raw_item, dict):
+        for key in ["segments", "sections", "section_list"]:
+            value = raw_item.get(key)
+            if isinstance(value, list):
+                return value
+        return []
+    if hasattr(raw_item, "segments"):
+        value = getattr(raw_item, "segments")
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _extract_allin1_beat_payload(raw_item: Any, duration_seconds: float) -> tuple[list[float], list[int | None]]:
+    """
+    功能说明：抽取并规范 allin1 beats 与 beat_positions，仅做裁剪/去重/升序。
+    参数说明：
+    - raw_item: allin1 单曲分析对象。
+    - duration_seconds: 音频总时长（秒）。
+    返回值：
+    - tuple[list[float], list[int | None]]: `(beat_times, beat_positions)`。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：不注入额外节拍点，不补 0/duration。
+    """
+    raw_beats: list[Any] = []
+    raw_positions: list[Any] = []
+    if isinstance(raw_item, dict):
+        beats_value = raw_item.get("beats")
+        positions_value = raw_item.get("beat_positions")
+        if isinstance(beats_value, list):
+            raw_beats = beats_value
+        if isinstance(positions_value, list):
+            raw_positions = positions_value
+    else:
+        beats_value = getattr(raw_item, "beats", [])
+        positions_value = getattr(raw_item, "beat_positions", [])
+        if isinstance(beats_value, list):
+            raw_beats = beats_value
+        if isinstance(positions_value, list):
+            raw_positions = positions_value
+
+    parsed_pairs: list[tuple[float, int | None]] = []
+    for index, beat_raw in enumerate(raw_beats):
+        try:
+            beat_time = _round_time(_clamp_time(float(beat_raw), duration_seconds))
+        except Exception:  # noqa: BLE001
+            continue
+        beat_pos: int | None = None
+        if index < len(raw_positions):
+            try:
+                beat_pos_value = int(float(raw_positions[index]))
+                beat_pos = beat_pos_value if beat_pos_value > 0 else None
+            except Exception:  # noqa: BLE001
+                beat_pos = None
+        parsed_pairs.append((beat_time, beat_pos))
+
+    parsed_pairs.sort(key=lambda item: item[0])
+    dedup_pairs: list[tuple[float, int | None]] = []
+    for beat_time, beat_pos in parsed_pairs:
+        if dedup_pairs and abs(beat_time - dedup_pairs[-1][0]) <= 1e-6:
+            continue
+        dedup_pairs.append((beat_time, beat_pos))
+
+    beat_times = [item[0] for item in dedup_pairs]
+    beat_positions = [item[1] for item in dedup_pairs]
+    return beat_times, beat_positions
+
+
+def _build_module_a_beats_from_allin1(beat_times: list[float], beat_positions: list[int | None]) -> list[dict[str, Any]]:
+    """
+    功能说明：将 allin1 beats 映射为 ModuleAOutput.beats 契约结构。
+    参数说明：
+    - beat_times: allin1 输出节拍时间列表（秒）。
+    - beat_positions: allin1 输出拍位列表（1 表示小节首拍）。
+    返回值：
+    - list[dict[str, Any]]: 标准化 beats 列表（source 固定 allin1）。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：beat_positions 缺失时退化为按索引 major/minor。
+    """
+    output: list[dict[str, Any]] = []
+    for index, beat_time in enumerate(beat_times):
+        beat_type = "major" if index % 4 == 0 else "minor"
+        if index < len(beat_positions) and beat_positions[index] is not None:
+            beat_type = "major" if int(beat_positions[index]) == 1 else "minor"
+        output.append(
+            {
+                "time": _round_time(float(beat_time)),
+                "type": beat_type,
+                "source": "allin1",
+            }
+        )
+    return output
+
+
+def _analyze_with_allin1(
+    audio_path: Path,
+    duration_seconds: float,
+    logger,
+    raw_response_path: Path | None = None,
+    stems_input: dict[str, Any] | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    """
+    功能说明：调用 allin1 并一次性返回大段落、节拍与原始响应解析结果。
     参数说明：
     - audio_path: 输入音频文件路径。
     - duration_seconds: 音频总时长（秒）。
     - logger: 日志记录器，用于输出过程与异常信息。
+    - raw_response_path: allin1 原始响应 JSON 输出路径（可选）。
+    - stems_input: allin1fix 直连分离声轨输入（可选）。
+    - work_dir: allin1 运行工作目录（可选）。
     返回值：
-    - list[dict[str, Any]]: 标准化后的大段落列表。
+    - dict[str, Any]: 包含 big_segments/beat_times/beat_positions/beats/raw_item。
     异常说明：异常由调用方或上层流程统一处理。
-    边界条件：遵循当前实现中的兜底与裁剪策略。
+    边界条件：当后端不支持 stems_input 时自动回退音频路径调用。
     """
     backend_name, backend_module = _import_allin1_backend()
     logger.info("模块A调用 %s 检测大时间戳", backend_name)
 
-    if hasattr(backend_module, "analyze"):
-        raw_result = backend_module.analyze(str(audio_path))
-    elif hasattr(backend_module, "run"):
-        raw_result = backend_module.run(str(audio_path))
+    raw_result: Any
+    analyze_fn = getattr(backend_module, "analyze", None)
+    run_fn = getattr(backend_module, "run", None)
+    if stems_input is not None and backend_name == "allin1fix" and callable(analyze_fn):
+        analyze_kwargs: dict[str, Any] = {
+            "stems_input": stems_input,
+            "multiprocess": False,
+        }
+        if work_dir is not None:
+            analyze_kwargs["demix_dir"] = work_dir / "allin1_demix"
+            analyze_kwargs["spec_dir"] = work_dir / "allin1_spec"
+        try:
+            raw_result = analyze_fn(**analyze_kwargs)
+        except TypeError as error:
+            logger.warning("模块A-allin1fix stems_input 调用失败，已回退音频路径调用，错误=%s", error)
+            if callable(analyze_fn):
+                raw_result = analyze_fn(str(audio_path))
+            elif callable(run_fn):
+                raw_result = run_fn(str(audio_path))
+            else:
+                raise RuntimeError(f"{backend_name} 缺少可调用入口（analyze/run）") from error
+    elif callable(analyze_fn):
+        raw_result = analyze_fn(str(audio_path))
+    elif callable(run_fn):
+        raw_result = run_fn(str(audio_path))
     else:
         raise RuntimeError(f"{backend_name} 缺少可调用入口（analyze/run）")
 
-    raw_segments: list[Any] = []
-    if isinstance(raw_result, dict):
-        for key in ["segments", "sections", "section_list"]:
-            value = raw_result.get(key)
-            if isinstance(value, list):
-                raw_segments = value
-                break
-    elif hasattr(raw_result, "segments"):
-        value = getattr(raw_result, "segments")
-        if isinstance(value, list):
-            raw_segments = value
+    raw_item = _extract_first_allin1_item(raw_result)
+    if raw_response_path is not None:
+        _save_allin1_raw_response(raw_result=raw_item, output_path=raw_response_path, logger=logger)
 
+    raw_segments = _extract_allin1_raw_segments(raw_item)
     if not raw_segments:
         raise RuntimeError("allin1 未返回可用段落")
 
@@ -129,16 +582,16 @@ def _detect_big_segments_with_allin1(audio_path: Path, duration_seconds: float, 
         raise RuntimeError("allin1 段落解析后为空")
 
     parsed.sort(key=lambda item: item["start_time"])
-    normalized: list[dict[str, Any]] = []
+    normalized_segments: list[dict[str, Any]] = []
     cursor = 0.0
     for item in parsed:
         start_time = max(cursor, item["start_time"])
         end_time = min(duration_seconds, max(start_time + 0.1, item["end_time"]))
         if end_time <= start_time:
             continue
-        normalized.append(
+        normalized_segments.append(
             {
-                "segment_id": f"big_{len(normalized) + 1:03d}",
+                "segment_id": f"big_{len(normalized_segments) + 1:03d}",
                 "start_time": _round_time(start_time),
                 "end_time": _round_time(end_time),
                 "label": item["label"],
@@ -146,32 +599,67 @@ def _detect_big_segments_with_allin1(audio_path: Path, duration_seconds: float, 
         )
         cursor = end_time
 
-    if not normalized:
+    if not normalized_segments:
         raise RuntimeError("allin1 归一化后段落为空")
 
-    if normalized[0]["start_time"] > 0.0:
-        normalized.insert(
+    if normalized_segments[0]["start_time"] > 0.0:
+        normalized_segments.insert(
             0,
             {
                 "segment_id": "big_000",
                 "start_time": 0.0,
-                "end_time": normalized[0]["start_time"],
-                "label": normalized[0]["label"],
+                "end_time": normalized_segments[0]["start_time"],
+                "label": normalized_segments[0]["label"],
             },
         )
-    if normalized[-1]["end_time"] < _round_time(duration_seconds):
-        normalized.append(
+    if normalized_segments[-1]["end_time"] < _round_time(duration_seconds):
+        normalized_segments.append(
             {
-                "segment_id": f"big_{len(normalized) + 1:03d}",
-                "start_time": normalized[-1]["end_time"],
+                "segment_id": f"big_{len(normalized_segments) + 1:03d}",
+                "start_time": normalized_segments[-1]["end_time"],
                 "end_time": _round_time(duration_seconds),
-                "label": normalized[-1]["label"],
+                "label": normalized_segments[-1]["label"],
             }
         )
-
-    for index, item in enumerate(normalized, start=1):
+    for index, item in enumerate(normalized_segments, start=1):
         item["segment_id"] = f"big_{index:03d}"
-    return normalized
+
+    beat_times, beat_positions = _extract_allin1_beat_payload(raw_item=raw_item, duration_seconds=duration_seconds)
+    beats = _build_module_a_beats_from_allin1(beat_times=beat_times, beat_positions=beat_positions)
+    return {
+        "big_segments": normalized_segments,
+        "beat_times": beat_times,
+        "beat_positions": beat_positions,
+        "beats": beats,
+        "raw_item": raw_item,
+    }
+
+
+def _detect_big_segments_with_allin1(
+    audio_path: Path,
+    duration_seconds: float,
+    logger,
+    raw_response_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：调用 Allin1/Allin1Fix 获取大段落，并标准化为连续区间。
+    参数说明：
+    - audio_path: 输入音频文件路径。
+    - duration_seconds: 音频总时长（秒）。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    - raw_response_path: Allin1 原始响应 JSON 输出路径（可选）。
+    返回值：
+    - list[dict[str, Any]]: 标准化后的大段落列表。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：遵循当前实现中的兜底与裁剪策略。
+    """
+    analysis = _analyze_with_allin1(
+        audio_path=audio_path,
+        duration_seconds=duration_seconds,
+        logger=logger,
+        raw_response_path=raw_response_path,
+    )
+    return analysis["big_segments"]
 
 
 def _import_allin1_backend() -> tuple[str, Any]:
@@ -305,12 +793,7 @@ def _recognize_lyrics_with_funasr(
     time_scale = _infer_funasr_time_scale(records=records)
     lyric_units_raw: list[dict[str, Any]] = []
     for record in records:
-        sentence_units = _build_lyric_units_from_sentence_info(record=record, time_scale=time_scale)
-        if sentence_units:
-            lyric_units_raw.extend(sentence_units)
-            continue
-        fallback_units = _build_lyric_units_from_timestamp(record=record, time_scale=time_scale)
-        lyric_units_raw.extend(fallback_units)
+        lyric_units_raw.extend(_build_lyric_units_from_record(record=record, time_scale=time_scale))
 
     lyric_units_raw = [item for item in lyric_units_raw if float(item.get("end_time", 0.0)) >= float(item.get("start_time", 0.0))]
     lyric_units_raw.sort(key=lambda item: float(item.get("start_time", 0.0)))
@@ -319,6 +802,23 @@ def _recognize_lyrics_with_funasr(
 
     sentence_starts = [float(item["start_time"]) for item in lyric_units_raw]
     return sentence_starts, lyric_units_raw
+
+
+def _build_lyric_units_from_record(record: dict[str, Any], time_scale: float) -> list[dict[str, Any]]:
+    """
+    功能说明：统一从单条 FunASR record 构建歌词单元，优先 sentence_info，失败后回退 timestamp。
+    参数说明：
+    - record: FunASR单条记录对象。
+    - time_scale: FunASR时间单位缩放倍率。
+    返回值：
+    - list[dict[str, Any]]: 构建后的句级歌词单元列表。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：当 sentence_info 与 timestamp 均不可用时返回空列表。
+    """
+    sentence_units = _build_lyric_units_from_sentence_info(record=record, time_scale=time_scale)
+    if sentence_units:
+        return sentence_units
+    return _build_lyric_units_from_timestamp(record=record, time_scale=time_scale)
 
 
 def _normalize_funasr_language(funasr_language: str, logger) -> str:
@@ -370,49 +870,7 @@ def _infer_funasr_time_scale(records: list[dict[str, Any]]) -> float:
     异常说明：异常由调用方或上层流程统一处理。
     边界条件：遵循当前实现中的兜底与裁剪策略。
     """
-    values: list[float] = []
-    for record in records:
-        for sentence in record.get("sentence_info", []) if isinstance(record.get("sentence_info"), list) else []:
-            if not isinstance(sentence, dict):
-                continue
-            for key in ["start", "end"]:
-                value = sentence.get(key)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    values.append(float(value))
-            for token in sentence.get("timestamp", []) if isinstance(sentence.get("timestamp"), list) else []:
-                if isinstance(token, (list, tuple)) and len(token) >= 2:
-                    left_value = token[0]
-                    right_value = token[1]
-                    if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
-                        values.extend([float(left_value), float(right_value)])
-                elif isinstance(token, dict):
-                    for key in ["start", "end", "begin", "finish"]:
-                        token_value = token.get(key)
-                        if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
-                            values.append(float(token_value))
-
-        for token in record.get("timestamp", []) if isinstance(record.get("timestamp"), list) else []:
-            if isinstance(token, (list, tuple)) and len(token) >= 2:
-                left_value = token[0]
-                right_value = token[1]
-                if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
-                    values.extend([float(left_value), float(right_value)])
-            elif isinstance(token, dict):
-                for key in ["start", "end", "begin", "finish"]:
-                    token_value = token.get(key)
-                    if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
-                        values.append(float(token_value))
-        for token in record.get("timestamps", []) if isinstance(record.get("timestamps"), list) else []:
-            if isinstance(token, (list, tuple)) and len(token) >= 2:
-                left_value = token[0]
-                right_value = token[1]
-                if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
-                    values.extend([float(left_value), float(right_value)])
-            elif isinstance(token, dict):
-                for key in ["start", "end", "begin", "finish", "start_time", "end_time"]:
-                    token_value = token.get(key)
-                    if isinstance(token_value, (int, float)) and not isinstance(token_value, bool):
-                        values.append(float(token_value))
+    values = [value for value in _iter_funasr_record_time_values(records=records)]
 
     if not values:
         return 0.001
@@ -426,6 +884,62 @@ def _infer_funasr_time_scale(records: list[dict[str, Any]]) -> float:
     if max_value <= 60.0:
         return 1.0
     return 0.001
+
+
+def _iter_funasr_record_time_values(records: list[dict[str, Any]]) -> list[float]:
+    """
+    功能说明：统一提取 FunASR 记录中的数值时间戳样本，用于时间单位推断。
+    参数说明：
+    - records: FunASR记录列表。
+    返回值：
+    - list[float]: 收集到的全部数值时间戳样本。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：无可用时间信息时返回空列表。
+    """
+    values: list[float] = []
+    for record in records:
+        sentence_items = record.get("sentence_info", [])
+        if isinstance(sentence_items, list):
+            for sentence in sentence_items:
+                if not isinstance(sentence, dict):
+                    continue
+                for key in ["start", "end"]:
+                    numeric_value = sentence.get(key)
+                    if isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                        values.append(float(numeric_value))
+                values.extend(_collect_numeric_time_values_from_timestamp_items(sentence.get("timestamp", [])))
+        values.extend(_collect_numeric_time_values_from_timestamp_items(record.get("timestamp", [])))
+        values.extend(_collect_numeric_time_values_from_timestamp_items(record.get("timestamps", [])))
+    return values
+
+
+def _collect_numeric_time_values_from_timestamp_items(timestamp_items: Any) -> list[float]:
+    """
+    功能说明：从 timestamp 列表中提取可用于时间尺度推断的数值样本。
+    参数说明：
+    - timestamp_items: FunASR timestamp 原始条目。
+    返回值：
+    - list[float]: 时间数值样本列表。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：输入非列表时返回空列表。
+    """
+    if not isinstance(timestamp_items, list):
+        return []
+    values: list[float] = []
+    for item in timestamp_items:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            left_value = item[0]
+            right_value = item[1]
+            if isinstance(left_value, (int, float)) and isinstance(right_value, (int, float)):
+                values.extend([float(left_value), float(right_value)])
+            continue
+        if not isinstance(item, dict):
+            continue
+        for key in ["start", "end", "begin", "finish", "start_time", "end_time"]:
+            numeric_value = item.get(key)
+            if isinstance(numeric_value, (int, float)) and not isinstance(numeric_value, bool):
+                values.append(float(numeric_value))
+    return values
 
 
 def _build_lyric_units_from_sentence_info(record: dict[str, Any], time_scale: float) -> list[dict[str, Any]]:

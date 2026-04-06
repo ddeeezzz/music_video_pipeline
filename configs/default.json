@@ -14,7 +14,16 @@
     "audio_codec": "aac",
     "fps": 24,
     "video_preset": "veryfast",
-    "video_crf": 30
+    "video_crf": 30,
+    "render_batch_size": 12,
+    "video_accel_mode": "auto",
+    "gpu_video_codec": "h264_nvenc",
+    "gpu_preset": "p1",
+    "gpu_rc_mode": "vbr",
+    "gpu_cq": 34,
+    "gpu_bitrate": null,
+    "concat_video_mode": "copy",
+    "concat_copy_fallback_reencode": true
   },
   "logging": {
     "level": "INFO"

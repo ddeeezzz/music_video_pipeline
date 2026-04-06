@@ -4,7 +4,7 @@
     "frame_generator": "mock"
   },
   "paths": {
-    "runs_dir": "runs",
+    "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
     "default_audio_path": "resources/wuli.m4a"
   },
   "ffmpeg": {
@@ -14,7 +14,8 @@
     "audio_codec": "aac",
     "fps": 24,
     "video_preset": "veryfast",
-    "video_crf": 30
+    "video_crf": 30,
+    "render_batch_size": 1
   },
   "logging": {
     "level": "INFO"

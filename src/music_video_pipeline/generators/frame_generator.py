@@ -10,6 +10,8 @@
 from abc import ABC, abstractmethod
 # 标准库：用于日志输出
 import logging
+# 标准库：用于正则处理
+import re
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于类型提示
@@ -20,6 +22,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 UNKNOWN_LYRIC_TEXT = "[未识别歌词]"
 CHANT_LYRIC_TEXT = "吟唱"
+INSTRUMENTAL_LYRIC_NOTE = "（说明：根据音源分离后的能量检测，此处为器乐段，但 Fun-ASR 识别到了歌词）"
+# 常量：用于清理歌词文本句首标点（含中英文常见符号）的正则。
+EDGE_PUNCTUATION_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+")
+# 常量：用于识别“纯标点文本”，避免将其作为可展示歌词。
+PUNCTUATION_ONLY_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+$")
 
 
 class FrameGenerator(ABC):
@@ -450,9 +457,9 @@ def _extract_lyric_text_for_shot(shot: dict[str, Any]) -> str:
     异常说明：无。
     边界条件：优先使用 lyric_text，缺失时尝试从 lyric_units 聚合。
     """
-    lyric_text = str(shot.get("lyric_text", "")).strip()
+    lyric_text = _clean_lyric_render_text(str(shot.get("lyric_text", "")).strip())
     if lyric_text:
-        return lyric_text
+        return _append_instrumental_lyric_note_if_needed(shot=shot, lyric_text=lyric_text)
 
     lyric_units = shot.get("lyric_units", [])
     if not isinstance(lyric_units, list):
@@ -464,7 +471,7 @@ def _extract_lyric_text_for_shot(shot: dict[str, Any]) -> str:
     for item in lyric_units:
         if not isinstance(item, dict):
             continue
-        text = str(item.get("text", "")).strip()
+        text = _clean_lyric_render_text(str(item.get("text", "")).strip())
         if not text:
             continue
         if text == UNKNOWN_LYRIC_TEXT:
@@ -476,12 +483,55 @@ def _extract_lyric_text_for_shot(shot: dict[str, Any]) -> str:
         reliable_text_items.append(text)
 
     if reliable_text_items:
-        return " ".join(reliable_text_items)
+        lyric_text_joined = " ".join(reliable_text_items)
+        return _append_instrumental_lyric_note_if_needed(shot=shot, lyric_text=lyric_text_joined)
     if has_unknown:
         return UNKNOWN_LYRIC_TEXT
     if has_chant:
         return CHANT_LYRIC_TEXT
     return ""
+
+
+def _append_instrumental_lyric_note_if_needed(shot: dict[str, Any], lyric_text: str) -> str:
+    """
+    功能说明：在“器乐段但有有效歌词”场景追加固定说明文案，避免误判导致吞字。
+    参数说明：
+    - shot: 分镜字典，读取 audio_role 字段。
+    - lyric_text: 已提取且清洗后的歌词文本。
+    返回值：
+    - str: 可能追加说明文案后的歌词文本。
+    异常说明：无。
+    边界条件：未识别标记/吟唱标记不追加说明文案。
+    """
+    cleaned_text = str(lyric_text).strip()
+    if not cleaned_text:
+        return ""
+    if cleaned_text in {UNKNOWN_LYRIC_TEXT, CHANT_LYRIC_TEXT}:
+        return cleaned_text
+    audio_role = str(shot.get("audio_role", "")).strip().lower()
+    if audio_role != "instrumental":
+        return cleaned_text
+    if INSTRUMENTAL_LYRIC_NOTE in cleaned_text:
+        return cleaned_text
+    return f"{cleaned_text}{INSTRUMENTAL_LYRIC_NOTE}"
+
+
+def _clean_lyric_render_text(text: str) -> str:
+    """
+    功能说明：清洗占位图歌词文本，避免句首标点或纯标点上屏。
+    参数说明：
+    - text: 原始歌词文本。
+    返回值：
+    - str: 清洗后的可渲染文本；若仅标点返回空字符串。
+    异常说明：无。
+    边界条件：仅移除句首标点，句中与句尾标点保留。
+    """
+    cleaned_text = EDGE_PUNCTUATION_PATTERN.sub("", str(text).strip()).strip()
+    if not cleaned_text:
+        return ""
+    if PUNCTUATION_ONLY_PATTERN.fullmatch(cleaned_text):
+        return ""
+    return cleaned_text
 
 
 def _extract_big_segment_display_for_shot(shot: dict[str, Any]) -> str:

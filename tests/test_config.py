@@ -149,3 +149,90 @@ def test_load_config_should_accept_adaptive_lyric_segment_policy(tmp_path: Path)
     assert app_config.module_a.long_pause_seconds == 0.8
     assert app_config.module_a.merge_gap_seconds == 0.25
     assert app_config.module_a.max_visual_unit_seconds == 6.0
+    assert app_config.module_a.vocal_energy_enter_quantile == 0.70
+    assert app_config.module_a.vocal_energy_exit_quantile == 0.45
+    assert app_config.module_a.mid_segment_min_duration_seconds == 0.8
+    assert app_config.module_a.short_vocal_non_lyric_merge_seconds == 1.2
+    assert app_config.module_a.instrumental_single_split_min_seconds == 4.0
+    assert app_config.module_a.accent_delta_trigger_ratio == 0.35
+    assert app_config.module_a.skip_funasr_when_vocals_silent is True
+    assert app_config.module_a.vocal_skip_peak_rms_threshold == 0.010
+    assert app_config.module_a.vocal_skip_active_ratio_threshold == 0.020
+
+
+def test_load_config_should_accept_explicit_module_a_segmentation_tuning(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_a 新增分段调参字段可显式加载并覆盖默认值。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅覆盖本次新增字段，不影响其他默认项。
+    """
+    config_path = tmp_path / "config_with_module_a_tuning.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                    "vocal_energy_enter_quantile": 0.75,
+                    "vocal_energy_exit_quantile": 0.40,
+                    "mid_segment_min_duration_seconds": 0.9,
+                    "short_vocal_non_lyric_merge_seconds": 0.7,
+                    "instrumental_single_split_min_seconds": 5.0,
+                    "accent_delta_trigger_ratio": 0.25,
+                    "skip_funasr_when_vocals_silent": False,
+                    "vocal_skip_peak_rms_threshold": 0.02,
+                    "vocal_skip_active_ratio_threshold": 0.05,
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.module_a.vocal_energy_enter_quantile == 0.75
+    assert app_config.module_a.vocal_energy_exit_quantile == 0.40
+    assert app_config.module_a.mid_segment_min_duration_seconds == 0.9
+    assert app_config.module_a.short_vocal_non_lyric_merge_seconds == 0.7
+    assert app_config.module_a.instrumental_single_split_min_seconds == 5.0
+    assert app_config.module_a.accent_delta_trigger_ratio == 0.25
+    assert app_config.module_a.skip_funasr_when_vocals_silent is False
+    assert app_config.module_a.vocal_skip_peak_rms_threshold == 0.02
+    assert app_config.module_a.vocal_skip_active_ratio_threshold == 0.05
+
+
+def test_load_config_should_fill_ffmpeg_gpu_accel_defaults(tmp_path: Path) -> None:
+    """
+    功能说明：验证 ffmpeg GPU 与 concat 新字段在缺省配置下可自动补齐默认值。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅校验新增字段，不影响既有 ffmpeg 基础字段行为。
+    """
+    config_path = tmp_path / "config_ffmpeg_gpu_defaults.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.ffmpeg.render_batch_size == 1
+    assert app_config.ffmpeg.render_workers == 4
+    assert app_config.ffmpeg.video_accel_mode == "auto"
+    assert app_config.ffmpeg.gpu_video_codec == "h264_nvenc"
+    assert app_config.ffmpeg.gpu_preset == "p1"
+    assert app_config.ffmpeg.gpu_rc_mode == "vbr"
+    assert app_config.ffmpeg.gpu_cq == 34
+    assert app_config.ffmpeg.gpu_bitrate is None
+    assert app_config.ffmpeg.concat_video_mode == "copy"
+    assert app_config.ffmpeg.concat_copy_fallback_reencode is True

@@ -8,10 +8,14 @@
 
 # 标准库：用于日志记录
 import logging
+# 标准库：用于上下文管理器
+from contextlib import contextmanager
+# 标准库：用于日志文件名时间戳
+from datetime import datetime
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于可调用类型提示
-from typing import Callable
+from typing import Callable, Iterator
 
 # 项目内模块：配置类型
 from music_video_pipeline.config import AppConfig
@@ -65,6 +69,37 @@ class PipelineRunner:
             "D": run_module_d,
         }
 
+    @contextmanager
+    def _bind_task_log_file(self, task_dir: Path, command_name: str) -> Iterator[Path]:
+        """
+        功能说明：在任务执行期间挂载任务级日志文件处理器。
+        参数说明：
+        - task_dir: 任务目录路径。
+        - command_name: 命令名标识（run/resume/run_module_xxx）。
+        返回值：
+        - Iterator[Path]: 日志文件路径上下文迭代器。
+        异常说明：异常由调用方或上层流程统一处理。
+        边界条件：退出上下文时必须移除并关闭 handler，避免串写。
+        """
+        log_dir = task_dir / "log"
+        ensure_dir(log_dir)
+        safe_command = "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in command_name.lower()).strip("_")
+        if not safe_command:
+            safe_command = "task"
+        timestamp_text = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        log_path = log_dir / f"{safe_command}_{timestamp_text}.log"
+        log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+        self.logger.addHandler(file_handler)
+        try:
+            self.logger.info("任务日志文件已挂载，task_id目录=%s，日志路径=%s", task_dir, log_path)
+            yield log_path
+        finally:
+            self.logger.removeHandler(file_handler)
+            file_handler.close()
+
     def run(self, task_id: str, audio_path: Path, config_path: Path, force_module: str | None = None) -> dict:
         """
         功能说明：执行全链路任务（支持从指定模块强制重跑）。
@@ -80,17 +115,18 @@ class PipelineRunner:
         """
         normalized_audio_path = self._resolve_audio_path(audio_path=audio_path)
         context = self._prepare_context(task_id=task_id, audio_path=normalized_audio_path)
-        self.state_store.init_task(task_id=task_id, audio_path=str(normalized_audio_path), config_path=str(config_path))
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="run"):
+            self.state_store.init_task(task_id=task_id, audio_path=str(normalized_audio_path), config_path=str(config_path))
 
-        if force_module:
-            normalized_module = self._normalize_module_name(force_module)
-            self.logger.warning("任务触发强制重跑，task_id=%s，from_module=%s", task_id, normalized_module)
-            self.state_store.reset_from_module(task_id=task_id, module_name=normalized_module)
+            if force_module:
+                normalized_module = self._normalize_module_name(force_module)
+                self.logger.warning("任务触发强制重跑，task_id=%s，from_module=%s", task_id, normalized_module)
+                self.state_store.reset_from_module(task_id=task_id, module_name=normalized_module)
 
-        self.state_store.update_task_status(task_id=task_id, status="running")
-        output_video_path = self._execute_modules(context=context, start_module="A")
-        summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
-        return summary
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            output_video_path = self._execute_modules(context=context, start_module="A")
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            return summary
 
     def resume(self, task_id: str, config_path: Path, force_module: str | None = None) -> dict:
         """
@@ -110,22 +146,23 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="resume"):
+            self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
 
-        start_module = self.state_store.first_non_done_module(task_id=task_id)
-        if force_module:
-            start_module = self._normalize_module_name(force_module)
-            self.logger.warning("任务触发强制恢复，task_id=%s，from_module=%s", task_id, start_module)
-            self.state_store.reset_from_module(task_id=task_id, module_name=start_module)
+            start_module = self.state_store.first_non_done_module(task_id=task_id)
+            if force_module:
+                start_module = self._normalize_module_name(force_module)
+                self.logger.warning("任务触发强制恢复，task_id=%s，from_module=%s", task_id, start_module)
+                self.state_store.reset_from_module(task_id=task_id, module_name=start_module)
 
-        if not start_module:
-            self.logger.info("任务已全部完成，无需恢复，task_id=%s", task_id)
-            return self._build_summary(task_id=task_id, output_video_path=Path(str(task_record.get("output_video_path", ""))))
+            if not start_module:
+                self.logger.info("任务已全部完成，无需恢复，task_id=%s", task_id)
+                return self._build_summary(task_id=task_id, output_video_path=Path(str(task_record.get("output_video_path", ""))))
 
-        self.state_store.update_task_status(task_id=task_id, status="running")
-        output_video_path = self._execute_modules(context=context, start_module=start_module)
-        summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
-        return summary
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            output_video_path = self._execute_modules(context=context, start_module=start_module)
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            return summary
 
     def run_single_module(
         self,
@@ -159,19 +196,20 @@ class PipelineRunner:
             raise RuntimeError("run-module 首次执行需要提供 --audio-path。")
 
         context = self._prepare_context(task_id=task_id, audio_path=resolved_audio_path)
-        self.state_store.init_task(task_id=task_id, audio_path=str(resolved_audio_path), config_path=str(config_path))
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name=f"run_module_{normalized_module.lower()}"):
+            self.state_store.init_task(task_id=task_id, audio_path=str(resolved_audio_path), config_path=str(config_path))
 
-        if force:
-            self.state_store.reset_from_module(task_id=task_id, module_name=normalized_module)
+            if force:
+                self.state_store.reset_from_module(task_id=task_id, module_name=normalized_module)
 
-        can_run, reason = self.state_store.can_run_module(task_id=task_id, module_name=normalized_module)
-        if not can_run:
-            raise RuntimeError(f"模块 {normalized_module} 无法执行：{reason}")
+            can_run, reason = self.state_store.can_run_module(task_id=task_id, module_name=normalized_module)
+            if not can_run:
+                raise RuntimeError(f"模块 {normalized_module} 无法执行：{reason}")
 
-        self.state_store.update_task_status(task_id=task_id, status="running")
-        output_video_path = self._execute_single_module(context=context, module_name=normalized_module)
-        summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
-        return summary
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            output_video_path = self._execute_single_module(context=context, module_name=normalized_module)
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            return summary
 
     def _prepare_context(self, task_id: str, audio_path: Path) -> RuntimeContext:
         """

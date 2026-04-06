@@ -121,3 +121,98 @@ def test_mock_script_generator_should_fallback_to_unknown_marker_when_no_reliabl
     }
     shots = generator.generate(module_a_output=module_a_output)
     assert shots[0]["lyric_text"] == "[未识别歌词]"
+
+
+def test_mock_script_generator_should_fallback_to_time_overlap_when_segment_id_not_matched() -> None:
+    """
+    功能说明：验证当歌词缺失 segment_id 映射时，可按时间重叠兜底挂载到分镜。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：对所有分镜统一启用时间重叠兜底。
+    """
+    generator = MockScriptGenerator()
+    module_a_output = {
+        "big_segments": [{"segment_id": "big_001", "label": "verse"}],
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 1.5, "label": "verse"},
+        ],
+        "energy_features": [{"energy_level": "mid", "trend": "flat"}],
+        "lyric_units": [
+            {"segment_id": "seg_xxx", "start_time": 0.3, "end_time": 1.2, "text": "重叠歌词", "confidence": 0.8},
+        ],
+    }
+    shots = generator.generate(module_a_output=module_a_output)
+    assert shots[0]["lyric_text"] == "重叠歌词"
+    assert len(shots[0]["lyric_units"]) == 1
+
+
+def test_mock_script_generator_should_fallback_to_time_overlap_for_instrumental_segment() -> None:
+    """
+    功能说明：验证 inst 分镜在 segment_id 不匹配时仍可通过时间重叠挂载歌词。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：该行为仅影响歌词透传，不改变 inst 标签本身。
+    """
+    generator = MockScriptGenerator()
+    module_a_output = {
+        "big_segments": [{"segment_id": "big_001", "label": "chorus"}],
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 10.0, "end_time": 12.0, "label": "inst"},
+        ],
+        "energy_features": [{"energy_level": "mid", "trend": "flat"}],
+        "lyric_units": [
+            {"segment_id": "seg_xxx", "start_time": 10.2, "end_time": 11.6, "text": "器乐段命中歌词", "confidence": 0.8},
+        ],
+    }
+    shots = generator.generate(module_a_output=module_a_output)
+    assert shots[0]["lyric_text"] == "器乐段命中歌词"
+    assert len(shots[0]["lyric_units"]) == 1
+
+
+def test_mock_script_generator_should_keep_lyrics_for_instrumental_segment() -> None:
+    """
+    功能说明：验证 inst 分镜在存在歌词映射时仍保留歌词字段（不再强制清空）。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅调整歌词挂载，不影响段落标签语义。
+    """
+    generator = MockScriptGenerator()
+    module_a_output = {
+        "big_segments": [{"segment_id": "big_001", "label": "chorus"}],
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "inst"},
+        ],
+        "energy_features": [{"energy_level": "mid", "trend": "flat"}],
+        "lyric_units": [
+            {"segment_id": "seg_0001", "start_time": 0.2, "end_time": 1.7, "text": "不应展示", "confidence": 0.8},
+        ],
+    }
+    shots = generator.generate(module_a_output=module_a_output)
+    assert shots[0]["lyric_text"] == "不应展示"
+    assert len(shots[0]["lyric_units"]) == 1
+
+
+def test_mock_script_generator_should_strip_leading_punctuation_and_keep_trailing_punctuation() -> None:
+    """
+    功能说明：验证歌词文本仅去除句首标点，句尾标点应保留。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：纯标点文本仍应被过滤，不做整句去标点。
+    """
+    generator = MockScriptGenerator()
+    module_a_output = {
+        "big_segments": [{"segment_id": "big_001", "label": "verse"}],
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"},
+        ],
+        "energy_features": [{"energy_level": "mid", "trend": "flat"}],
+        "lyric_units": [
+            {"segment_id": "seg_0001", "start_time": 0.2, "end_time": 1.7, "text": "，你好。", "confidence": 0.9},
+        ],
+    }
+    shots = generator.generate(module_a_output=module_a_output)
+    assert shots[0]["lyric_text"] == "你好。"

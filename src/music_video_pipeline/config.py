@@ -58,6 +58,16 @@ class FfmpegConfig:
     - fps: 输出帧率。
     - video_preset: 编码预设。
     - video_crf: 视频质量参数。
+    - render_batch_size: 兼容旧配置字段，当前固定按单段渲染语义使用。
+    - render_workers: 受控并行渲染 worker 数量。
+    - video_accel_mode: 视频加速模式（auto/cpu_only/gpu_only）。
+    - gpu_video_codec: GPU 视频编码器（如 h264_nvenc/hevc_nvenc）。
+    - gpu_preset: GPU 编码预设（如 p1~p7）。
+    - gpu_rc_mode: GPU 码率控制模式（如 vbr_hq/cbr）。
+    - gpu_cq: GPU 常质量参数（可选）。
+    - gpu_bitrate: GPU 目标码率（可选，如 8M）。
+    - concat_video_mode: 最终拼接视频处理模式（copy/reencode）。
+    - concat_copy_fallback_reencode: copy 失败时是否自动回退重编码。
     返回值：不适用。
     异常说明：不适用。
     边界条件：ffmpeg 缺失时在模块 D 抛出运行错误。
@@ -70,6 +80,16 @@ class FfmpegConfig:
     fps: int
     video_preset: str
     video_crf: int
+    render_batch_size: int = 1
+    render_workers: int = 4
+    video_accel_mode: str = "auto"
+    gpu_video_codec: str = "h264_nvenc"
+    gpu_preset: str = "p1"
+    gpu_rc_mode: str = "vbr"
+    gpu_cq: int | None = 34
+    gpu_bitrate: str | None = None
+    concat_video_mode: str = "copy"
+    concat_copy_fallback_reencode: bool = True
 
 
 @dataclass(frozen=True)
@@ -122,6 +142,15 @@ class ModuleAConfig:
     - device: 设备策略（auto/cpu/cuda）。
     - funasr_model: FunASR 模型名称。
     - demucs_model: Demucs 模型名称。
+    - vocal_energy_enter_quantile: 人声音量进入阈值分位点。
+    - vocal_energy_exit_quantile: 人声音量退出阈值分位点。
+    - mid_segment_min_duration_seconds: 人声中间段最小时长（秒）。
+    - short_vocal_non_lyric_merge_seconds: 人声“无歌词/短歌词”短段合并阈值（秒）。
+    - instrumental_single_split_min_seconds: 器乐单次切分触发最小时长（秒）。
+    - accent_delta_trigger_ratio: 首重音检测的能量突变触发比例（0~1）。
+    - skip_funasr_when_vocals_silent: 当人声音轨能量极低时是否跳过 FunASR。
+    - vocal_skip_peak_rms_threshold: “极低人声”判定的峰值 RMS 阈值。
+    - vocal_skip_active_ratio_threshold: “极低人声”判定的活跃帧占比阈值。
     返回值：不适用。
     异常说明：不适用。
     边界条件：阈值建议大于等于 0。
@@ -140,6 +169,15 @@ class ModuleAConfig:
     device: str = "auto"
     funasr_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
     demucs_model: str = "htdemucs"
+    vocal_energy_enter_quantile: float = 0.70
+    vocal_energy_exit_quantile: float = 0.45
+    mid_segment_min_duration_seconds: float = 0.8
+    short_vocal_non_lyric_merge_seconds: float = 1.2
+    instrumental_single_split_min_seconds: float = 4.0
+    accent_delta_trigger_ratio: float = 0.35
+    skip_funasr_when_vocals_silent: bool = True
+    vocal_skip_peak_rms_threshold: float = 0.010
+    vocal_skip_active_ratio_threshold: float = 0.020
 
 
 @dataclass(frozen=True)
@@ -203,6 +241,16 @@ def _merge_defaults(raw_data: dict) -> dict:
             "fps": 24,
             "video_preset": "veryfast",
             "video_crf": 30,
+            "render_batch_size": 1,
+            "render_workers": 4,
+            "video_accel_mode": "auto",
+            "gpu_video_codec": "h264_nvenc",
+            "gpu_preset": "p1",
+            "gpu_rc_mode": "vbr",
+            "gpu_cq": 34,
+            "gpu_bitrate": None,
+            "concat_video_mode": "copy",
+            "concat_copy_fallback_reencode": True,
         },
         "logging": {"level": "INFO"},
         "mock": {"beat_interval_seconds": 0.5, "video_width": 960, "video_height": 540},
@@ -219,6 +267,15 @@ def _merge_defaults(raw_data: dict) -> dict:
             "max_visual_unit_seconds": 6.0,
             "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
             "demucs_model": "htdemucs",
+            "vocal_energy_enter_quantile": 0.70,
+            "vocal_energy_exit_quantile": 0.45,
+            "mid_segment_min_duration_seconds": 0.8,
+            "short_vocal_non_lyric_merge_seconds": 1.2,
+            "instrumental_single_split_min_seconds": 4.0,
+            "accent_delta_trigger_ratio": 0.35,
+            "skip_funasr_when_vocals_silent": True,
+            "vocal_skip_peak_rms_threshold": 0.010,
+            "vocal_skip_active_ratio_threshold": 0.020,
         },
     }
 

@@ -112,13 +112,13 @@ def test_enrich_shots_should_fallback_when_index_order_is_misaligned() -> None:
     assert enriched[1]["audio_role"] == "vocal"
 
 
-def test_enrich_shots_should_mark_vocal_label_without_lyric_as_instrumental() -> None:
+def test_enrich_shots_should_keep_vocal_when_label_is_vocal_even_without_lyrics() -> None:
     """
-    功能说明：验证人声标签段若无歌词单元，也会按器乐段标记 audio_role。
+    功能说明：验证音频角色由 segment.label 决定，不再受 lyric_units 有无影响。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：lyric_units 显式为空时触发该规则。
+    边界条件：当 label 为非器乐标签时，即使歌词为空也应保持 vocal。
     """
     shots = [
         {"shot_id": "shot_001", "start_time": 0.0, "end_time": 2.0},
@@ -137,7 +137,7 @@ def test_enrich_shots_should_mark_vocal_label_without_lyric_as_instrumental() ->
         module_a_output=module_a_output,
         instrumental_labels=["intro", "inst", "outro"],
     )
-    assert enriched[0]["audio_role"] == "instrumental"
+    assert enriched[0]["audio_role"] == "vocal"
 
 
 def test_enrich_shots_should_keep_vocal_when_unknown_or_chant_lyrics_exist() -> None:
@@ -173,3 +173,33 @@ def test_enrich_shots_should_keep_vocal_when_unknown_or_chant_lyrics_exist() -> 
     )
     assert enriched[0]["audio_role"] == "vocal"
     assert enriched[1]["audio_role"] == "vocal"
+
+
+def test_enrich_shots_should_keep_instrumental_when_label_is_inst_even_with_lyrics() -> None:
+    """
+    功能说明：验证 segment.label 为 inst 时，audio_role 固定为 instrumental。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：歌词单元存在时也不得覆盖器乐判定。
+    """
+    shots = [
+        {"shot_id": "shot_001", "start_time": 0.0, "end_time": 2.0},
+    ]
+    module_a_output = {
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "inst"},
+        ],
+        "big_segments": [
+            {"segment_id": "big_001", "label": "verse"},
+        ],
+        "lyric_units": [
+            {"segment_id": "seg_0001", "start_time": 0.2, "end_time": 1.8, "text": "吟唱", "confidence": 0.7},
+        ],
+    }
+    enriched = _enrich_shots_with_segment_meta(
+        shots=shots,
+        module_a_output=module_a_output,
+        instrumental_labels=["intro", "inst", "outro"],
+    )
+    assert enriched[0]["audio_role"] == "instrumental"

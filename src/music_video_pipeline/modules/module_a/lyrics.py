@@ -14,6 +14,15 @@ from typing import Any
 # 项目内模块：时间工具
 from music_video_pipeline.modules.module_a.timing_energy import _find_big_segment, _round_time
 
+# 常量：用于清理歌词文本句首标点（含中英文常见符号）的正则。
+EDGE_PUNCTUATION_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+")
+# 常量：用于锚点拆分时识别应触发断句的标点集合。
+ANCHOR_SPLIT_PUNCTUATION_PATTERN = re.compile(r"[，、；：。！？!?,.;:]")
+# 常量：用于识别“纯标点文本”，避免将其作为可展示歌词。
+PUNCTUATION_ONLY_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+$")
+# 常量：锚点拆分中“超长单字间隔断句”的时间阈值（秒）。
+ANCHOR_SPLIT_GAP_SECONDS = 0.8
+
 
 def _clean_lyric_units(
     lyric_units_raw: list[dict[str, Any]],
@@ -219,6 +228,123 @@ def _build_visual_lyric_units(
     return merged_units
 
 
+def _build_segmentation_anchor_lyric_units(
+    sentence_units: list[dict[str, Any]],
+    logger,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：将句级歌词拆分为“分段锚点歌词单元”，用于模块A分段主锚点。
+    参数说明：
+    - sentence_units: 句级歌词单元列表。
+    - logger: 日志记录器，用于输出过程与异常信息。
+    返回值：
+    - list[dict[str, Any]]: 分段锚点歌词单元列表（包含逗号短句边界）。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：仅过滤纯标点内容，不改变对外契约字段结构。
+    """
+    if not sentence_units:
+        return []
+
+    anchor_units: list[dict[str, Any]] = []
+    sorted_units = sorted(sentence_units, key=lambda item: float(item.get("start_time", 0.0)))
+    for sentence_index, item in enumerate(sorted_units):
+        normalized_item = {
+            "start_time": _round_time(float(item.get("start_time", 0.0))),
+            "end_time": _round_time(max(float(item.get("start_time", 0.0)), float(item.get("end_time", 0.0)))),
+            "text": str(item.get("text", "")).strip(),
+            "confidence": round(float(item.get("confidence", 0.0)), 3),
+            "token_units": _normalize_token_units(item.get("token_units", [])),
+            "source_sentence_index": int(item.get("source_sentence_index", sentence_index)),
+            "unit_transform": str(item.get("unit_transform", "original")).strip().lower() or "original",
+        }
+        split_units = _split_sentence_unit_by_anchor_punctuation(sentence_unit=normalized_item)
+        if not split_units:
+            split_units = [normalized_item]
+        for split_item in split_units:
+            cleaned_text = _strip_edge_punctuation(str(split_item.get("text", "")).strip())
+            if not cleaned_text or _is_punctuation_only_text(cleaned_text):
+                continue
+            split_item["text"] = cleaned_text
+            anchor_units.append(split_item)
+
+    normalized_anchors: list[dict[str, Any]] = []
+    previous_end = 0.0
+    for item in sorted(anchor_units, key=lambda unit: float(unit.get("start_time", 0.0))):
+        start_time = max(float(item.get("start_time", 0.0)), previous_end)
+        end_time = max(start_time, float(item.get("end_time", start_time)))
+        if end_time - start_time <= 1e-3:
+            continue
+        normalized_item = dict(item)
+        normalized_item["start_time"] = _round_time(start_time)
+        normalized_item["end_time"] = _round_time(end_time)
+        token_units = _normalize_token_units(normalized_item.get("token_units", []))
+        clipped_tokens = _clip_token_units_by_range(
+            token_units=token_units,
+            start_time=float(normalized_item["start_time"]),
+            end_time=float(normalized_item["end_time"]),
+        )
+        if clipped_tokens:
+            normalized_item["token_units"] = clipped_tokens
+            normalized_item["text"] = _build_text_from_token_units(clipped_tokens) or normalized_item["text"]
+        if _is_punctuation_only_text(str(normalized_item.get("text", ""))):
+            continue
+        previous_end = float(normalized_item["end_time"])
+        normalized_anchors.append(normalized_item)
+
+    logger.info("模块A-分段锚点歌词生成完成，句级=%s，锚点=%s", len(sentence_units), len(normalized_anchors))
+    return normalized_anchors
+
+
+def _split_sentence_unit_by_anchor_punctuation(sentence_unit: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    功能说明：按锚点标点（含逗号）与长停顿拆分单句歌词，供分段主锚点使用。
+    参数说明：
+    - sentence_unit: 单句歌词单元，需包含 start/end/text/token_units。
+    返回值：
+    - list[dict[str, Any]]: 拆分后的歌词单元列表。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：无 token、无可拆分标点且无长停顿时返回原单元。
+    """
+    token_units = _normalize_token_units(sentence_unit.get("token_units", []))
+    if len(token_units) <= 1:
+        return [dict(sentence_unit)]
+
+    split_slices: list[tuple[int, int]] = []
+    chunk_start_index = 0
+    for token_index, current_token in enumerate(token_units):
+        current_text = str(current_token.get("text", "")).strip()
+        is_last_token = token_index == len(token_units) - 1
+        should_split = bool(ANCHOR_SPLIT_PUNCTUATION_PATTERN.search(current_text))
+        if not should_split and not is_last_token:
+            next_token = token_units[token_index + 1]
+            gap_after = float(next_token.get("start_time", 0.0)) - float(current_token.get("end_time", 0.0))
+            if gap_after > ANCHOR_SPLIT_GAP_SECONDS:
+                should_split = True
+        if should_split or is_last_token:
+            split_slices.append((chunk_start_index, token_index))
+            chunk_start_index = token_index + 1
+
+    split_slices = _left_attach_punctuation_tokens_before_split(
+        token_units=token_units,
+        split_slices=split_slices,
+    )
+
+    if len(split_slices) <= 1:
+        return [dict(sentence_unit)]
+
+    split_units: list[dict[str, Any]] = []
+    for left_index, right_index in split_slices:
+        token_slice = token_units[left_index : right_index + 1]
+        split_unit = _build_visual_unit_from_token_slice(
+            token_slice=token_slice,
+            source_unit=sentence_unit,
+            unit_transform="split",
+        )
+        if split_unit:
+            split_units.append(split_unit)
+    return split_units if split_units else [dict(sentence_unit)]
+
+
 def _normalize_lyric_segment_policy(lyric_segment_policy: str, logger) -> str:
     """
     功能说明：归一化歌词视觉单元策略，不合法时回退 sentence_strict。
@@ -338,6 +464,11 @@ def _split_sentence_unit_for_adaptive_policy(
     if chunk_start_index <= len(token_units) - 1:
         split_slices.append((chunk_start_index, len(token_units) - 1))
 
+    split_slices = _left_attach_punctuation_tokens_before_split(
+        token_units=token_units,
+        split_slices=split_slices,
+    )
+
     if len(split_slices) <= 1:
         return [dict(sentence_unit)]
 
@@ -390,6 +521,44 @@ def _build_visual_unit_from_token_slice(
         "source_sentence_index": int(source_unit.get("source_sentence_index", 0)),
         "unit_transform": unit_transform,
     }
+
+
+def _left_attach_punctuation_tokens_before_split(
+    token_units: list[dict[str, Any]],
+    split_slices: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """
+    功能说明：在切句后构建单元前，将“后句开头连续标点 token”左归属到前句。
+    参数说明：
+    - token_units: 归一化后的 token 列表。
+    - split_slices: 初始切片索引区间列表（闭区间）。
+    返回值：
+    - list[tuple[int, int]]: 修正后的切片索引区间列表（闭区间）。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：句首标点不左移；仅调整归属，不改 token 原始时间戳。
+    """
+    if len(split_slices) <= 1:
+        return split_slices
+
+    mutable_slices = [list(item) for item in split_slices]
+    for slice_index in range(1, len(mutable_slices)):
+        previous_slice = mutable_slices[slice_index - 1]
+        current_slice = mutable_slices[slice_index]
+
+        # 从当前切片起点开始，连续纯标点 token 统一左归属到前一切片。
+        while current_slice[0] <= current_slice[1]:
+            token_text = str(token_units[current_slice[0]].get("text", "")).strip()
+            if not _is_punctuation_only_text(token_text):
+                break
+            previous_slice[1] += 1
+            current_slice[0] += 1
+
+    normalized_slices: list[tuple[int, int]] = []
+    for item in mutable_slices:
+        if item[0] > item[1]:
+            continue
+        normalized_slices.append((int(item[0]), int(item[1])))
+    return normalized_slices
 
 
 def _merge_adjacent_visual_lyric_units(
@@ -576,6 +745,95 @@ def _normalize_token_units(token_units: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _strip_edge_punctuation(text: str) -> str:
+    """
+    功能说明：去除文本句首的标点与空白，避免句首孤立标点进入歌词展示内容。
+    参数说明：
+    - text: 原始文本。
+    返回值：
+    - str: 清洗后的文本。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：仅清理句首标点，不移除句中或句尾标点。
+    """
+    raw_text = str(text).strip()
+    if not raw_text:
+        return ""
+    cleaned_text = EDGE_PUNCTUATION_PATTERN.sub("", raw_text)
+    return cleaned_text.strip()
+
+
+def _is_punctuation_only_text(text: str) -> bool:
+    """
+    功能说明：判断文本是否仅由标点和空白组成。
+    参数说明：
+    - text: 待判断文本。
+    返回值：
+    - bool: 若仅为标点/空白返回 True，否则返回 False。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：空字符串视为 False，由调用方自行决定是否丢弃。
+    """
+    raw_text = str(text).strip()
+    if not raw_text:
+        return False
+    return bool(PUNCTUATION_ONLY_PATTERN.fullmatch(raw_text))
+
+
+def _build_text_from_token_units(token_units: list[dict[str, Any]]) -> str:
+    """
+    功能说明：根据 token 列表组装可展示歌词文本，并去除句首标点。
+    参数说明：
+    - token_units: token级时间单元列表。
+    返回值：
+    - str: 组装后的歌词文本。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：当 token 为空或仅标点时返回空字符串，句尾标点保留。
+    """
+    if not token_units:
+        return ""
+    has_word_granularity = any(str(item.get("granularity", "")).strip().lower() == "word" for item in token_units)
+    token_text_parts = [str(item.get("text", "")).strip() for item in token_units if str(item.get("text", "")).strip()]
+    if not token_text_parts:
+        return ""
+    joined_text = " ".join(token_text_parts) if has_word_granularity else "".join(token_text_parts)
+    cleaned_text = _strip_edge_punctuation(joined_text)
+    if _is_punctuation_only_text(cleaned_text):
+        return ""
+    return cleaned_text
+
+
+def _clip_token_units_by_range(token_units: list[dict[str, Any]], start_time: float, end_time: float) -> list[dict[str, Any]]:
+    """
+    功能说明：将 token 列表裁剪到指定时间窗口，便于歌词按 segment 精确挂载。
+    参数说明：
+    - token_units: token级时间单元列表。
+    - start_time: 裁剪窗口起点（秒）。
+    - end_time: 裁剪窗口终点（秒）。
+    返回值：
+    - list[dict[str, Any]]: 裁剪后的 token 列表。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：窗口无交集时返回空列表。
+    """
+    if not token_units or end_time <= start_time:
+        return []
+    clipped_units: list[dict[str, Any]] = []
+    for item in token_units:
+        token_start = float(item.get("start_time", 0.0))
+        token_end = max(token_start, float(item.get("end_time", token_start)))
+        overlap_start = max(start_time, token_start)
+        overlap_end = min(end_time, token_end)
+        if overlap_end - overlap_start <= 1e-6:
+            continue
+        clipped_units.append(
+            {
+                "text": str(item.get("text", "")).strip(),
+                "start_time": _round_time(overlap_start),
+                "end_time": _round_time(overlap_end),
+                "granularity": "word" if str(item.get("granularity", "")).strip().lower() == "word" else "char",
+            }
+        )
+    return clipped_units
+
+
 def _is_placeholder_text(text: str) -> bool:
     """
     功能说明：判断是否为歌词占位词（用于转写不可靠标记）。
@@ -678,30 +936,138 @@ def _attach_lyrics_to_segments(lyric_units_raw: list[dict[str, Any]], segments: 
     if not lyric_units_raw or not segments:
         return []
 
+    sorted_segments = sorted(segments, key=lambda item: float(item.get("start_time", 0.0)))
     output_items: list[dict[str, Any]] = []
     for item in lyric_units_raw:
-        start_time = float(item.get("start_time", 0.0))
-        end_time = float(item.get("end_time", start_time))
-        segment = _select_best_overlap_segment(start_time=start_time, end_time=end_time, segments=segments)
-        output_items.append(
-            {
-                "segment_id": str(segment["segment_id"]),
-                "start_time": _round_time(start_time),
-                "end_time": _round_time(max(start_time, end_time)),
-                "text": str(item.get("text", "")).strip(),
-                "confidence": round(float(item.get("confidence", 0.0)), 3),
-            }
-        )
-        source_sentence_index = item.get("source_sentence_index", None)
-        if isinstance(source_sentence_index, int) and source_sentence_index >= 0:
-            output_items[-1]["source_sentence_index"] = source_sentence_index
-        unit_transform = str(item.get("unit_transform", "")).strip().lower()
-        if unit_transform in {"original", "split", "merged"}:
-            output_items[-1]["unit_transform"] = unit_transform
+        start_time = _round_time(float(item.get("start_time", 0.0)))
+        end_time = _round_time(max(start_time, float(item.get("end_time", start_time))))
+        if end_time - start_time <= 1e-6:
+            continue
+
         token_units = _normalize_token_units(item.get("token_units", []))
+        base_text = _strip_edge_punctuation(str(item.get("text", "")).strip())
         if token_units:
-            output_items[-1]["token_units"] = token_units
+            base_text = _build_text_from_token_units(token_units) or base_text
+        if not base_text or _is_punctuation_only_text(base_text):
+            continue
+
+        source_sentence_index = item.get("source_sentence_index", None)
+        unit_transform = str(item.get("unit_transform", "")).strip().lower()
+        confidence = round(float(item.get("confidence", 0.0)), 3)
+        overlapped_segments = _collect_overlapped_segments(
+            start_time=start_time,
+            end_time=end_time,
+            segments=sorted_segments,
+        )
+
+        # 没有 token 级时间戳时，无法安全切片，保持“单句挂单段”的兜底语义。
+        if not token_units or not overlapped_segments:
+            segment = _select_best_overlap_segment(
+                start_time=start_time,
+                end_time=end_time,
+                segments=sorted_segments,
+            )
+            attached_item = {
+                "segment_id": str(segment["segment_id"]),
+                "start_time": start_time,
+                "end_time": end_time,
+                "text": base_text,
+                "confidence": confidence,
+            }
+            if isinstance(source_sentence_index, int) and source_sentence_index >= 0:
+                attached_item["source_sentence_index"] = source_sentence_index
+            if unit_transform in {"original", "split", "merged"}:
+                attached_item["unit_transform"] = unit_transform
+            if token_units:
+                attached_item["token_units"] = token_units
+            output_items.append(attached_item)
+            continue
+
+        split_items: list[dict[str, Any]] = []
+        covered_duration = 0.0
+        for segment in overlapped_segments:
+            seg_start = float(segment.get("start_time", 0.0))
+            seg_end = max(seg_start, float(segment.get("end_time", seg_start)))
+            clip_start = _round_time(max(start_time, seg_start))
+            clip_end = _round_time(min(end_time, seg_end))
+            if clip_end - clip_start <= 1e-6:
+                continue
+            clipped_tokens = _clip_token_units_by_range(
+                token_units=token_units,
+                start_time=clip_start,
+                end_time=clip_end,
+            )
+            clipped_text = _build_text_from_token_units(clipped_tokens)
+            if not clipped_text:
+                continue
+            if _is_punctuation_only_text(clipped_text):
+                continue
+
+            attached_item = {
+                "segment_id": str(segment["segment_id"]),
+                "start_time": clip_start,
+                "end_time": clip_end,
+                "text": clipped_text,
+                "confidence": confidence,
+                "token_units": clipped_tokens,
+            }
+            if isinstance(source_sentence_index, int) and source_sentence_index >= 0:
+                attached_item["source_sentence_index"] = source_sentence_index
+            if unit_transform in {"original", "split", "merged"}:
+                attached_item["unit_transform"] = unit_transform
+            split_items.append(attached_item)
+            covered_duration += max(0.0, clip_end - clip_start)
+
+        lyric_duration = max(1e-6, end_time - start_time)
+        coverage_ratio = covered_duration / lyric_duration
+        if split_items and coverage_ratio >= 0.5:
+            output_items.extend(split_items)
+            continue
+
+        # token 切片覆盖不足时回退到最大重叠挂载，避免“只挂到标点附近小片段”。
+        segment = _select_best_overlap_segment(
+            start_time=start_time,
+            end_time=end_time,
+            segments=sorted_segments,
+        )
+        attached_item = {
+            "segment_id": str(segment["segment_id"]),
+            "start_time": start_time,
+            "end_time": end_time,
+            "text": base_text,
+            "confidence": confidence,
+        }
+        if token_units:
+            attached_item["token_units"] = token_units
+        if isinstance(source_sentence_index, int) and source_sentence_index >= 0:
+            attached_item["source_sentence_index"] = source_sentence_index
+        if unit_transform in {"original", "split", "merged"}:
+            attached_item["unit_transform"] = unit_transform
+        output_items.append(attached_item)
     return output_items
+
+
+def _collect_overlapped_segments(start_time: float, end_time: float, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    功能说明：收集与歌词时间区间有交集的小段落列表。
+    参数说明：
+    - start_time: 歌词区间起点（秒）。
+    - end_time: 歌词区间终点（秒）。
+    - segments: 小段落列表。
+    返回值：
+    - list[dict[str, Any]]: 与歌词有交集的小段落，按起点升序返回。
+    异常说明：异常由调用方或上层流程统一处理。
+    边界条件：无交集时返回空列表。
+    """
+    overlapped_segments: list[dict[str, Any]] = []
+    for segment in segments:
+        seg_start = float(segment.get("start_time", 0.0))
+        seg_end = max(seg_start, float(segment.get("end_time", seg_start)))
+        overlap = max(0.0, min(end_time, seg_end) - max(start_time, seg_start))
+        if overlap <= 1e-6:
+            continue
+        overlapped_segments.append(segment)
+    return overlapped_segments
 
 
 def _select_best_overlap_segment(start_time: float, end_time: float, segments: list[dict[str, Any]]) -> dict[str, Any]:

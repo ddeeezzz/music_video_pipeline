@@ -126,6 +126,42 @@ def test_extract_lyric_text_for_shot_should_return_unknown_marker_when_no_reliab
     assert _extract_lyric_text_for_shot(shot=shot) == "[未识别歌词]"
 
 
+def test_extract_lyric_text_for_shot_should_filter_punctuation_only_text() -> None:
+    """
+    功能说明：验证占位图歌词提取会过滤纯标点文本，避免标点单独上屏。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：当 lyric_text 为纯标点时，应回退到 lyric_units 中的有效文本。
+    """
+    shot = {
+        "lyric_text": "，",
+        "lyric_units": [
+            {"text": "。"},
+            {"text": "  你好  "},
+        ],
+    }
+    assert _extract_lyric_text_for_shot(shot=shot) == "你好"
+
+
+def test_extract_lyric_text_for_shot_should_append_note_for_instrumental_with_lyrics() -> None:
+    """
+    功能说明：验证器乐段存在歌词文本时，会在歌词后追加固定说明文案。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅对有效歌词文本追加说明，不影响纯标点过滤。
+    """
+    shot = {
+        "audio_role": "instrumental",
+        "lyric_text": "当白天像是",
+    }
+    lyric_text = _extract_lyric_text_for_shot(shot=shot)
+    assert lyric_text.startswith("当白天像是")
+    assert "根据音源分离后的能量检测" in lyric_text
+    assert "Fun-ASR 识别到了歌词" in lyric_text
+
+
 def test_extract_big_segment_display_for_shot_should_format_label_and_id() -> None:
     """
     功能说明：验证大段落展示文本按“标签+ID”格式输出。
