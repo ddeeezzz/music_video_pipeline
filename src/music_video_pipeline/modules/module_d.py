@@ -129,16 +129,16 @@ def _normalize_render_workers(render_workers: int, logger: logging.Logger) -> in
     返回值：
     - int: 合法 worker 数量（范围 1~4）。
     异常说明：无。
-    边界条件：非法值统一回退为 4，并写 warning。
+    边界条件：非法值统一回退为 3，并写 warning。
     """
     try:
         normalized = int(render_workers)
     except (TypeError, ValueError):
-        logger.warning("模块D渲染并发配置非法，已回退默认值4，raw_value=%s", render_workers)
-        return 4
+        logger.warning("模块D渲染并发配置非法，已回退默认值3，raw_value=%s", render_workers)
+        return 3
     if normalized < 1 or normalized > 4:
-        logger.warning("模块D渲染并发超出建议范围[1,4]，已回退默认值4，raw_value=%s", render_workers)
-        return 4
+        logger.warning("模块D渲染并发超出建议范围[1,4]，已回退默认值3，raw_value=%s", render_workers)
+        return 3
     return normalized
 
 
