@@ -6,8 +6,8 @@
 维护说明：新增模块时需同步更新导出列表与 pipeline 映射。
 """
 
-# 项目内模块：导出模块 A 执行函数
-from music_video_pipeline.modules.module_a import run_module_a
+# 项目内模块：导出模块 A V2 执行函数
+from music_video_pipeline.modules.module_a_v2 import run_module_a_v2
 # 项目内模块：导出模块 B 执行函数
 from music_video_pipeline.modules.module_b import run_module_b
 # 项目内模块：导出模块 C 执行函数
@@ -15,4 +15,4 @@ from music_video_pipeline.modules.module_c import run_module_c
 # 项目内模块：导出模块 D 执行函数
 from music_video_pipeline.modules.module_d import run_module_d
 
-__all__ = ["run_module_a", "run_module_b", "run_module_c", "run_module_d"]
+__all__ = ["run_module_a_v2", "run_module_b", "run_module_c", "run_module_d"]

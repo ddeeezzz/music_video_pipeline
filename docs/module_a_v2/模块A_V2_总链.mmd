@@ -1,0 +1,100 @@
+flowchart TD
+    classDef artifact fill:#fff3e0,stroke:#f57c00,stroke-width:2px,rx:8px,ry:8px;
+    classDef runtime fill:#ede7f6,stroke:#5e35b1,stroke-width:2px,rx:8px,ry:8px;
+    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:8px,ry:8px;
+
+    Audio[(输入音频<br/>audio_path)]:::artifact
+
+    subgraph PER[感知层 Perception]
+        direction TB
+        Demucs[(perception/model/demucs/stems/<br/>vocals,bass,drums,other,no_vocals.wav)]:::artifact
+        Allin1Raw[(perception/model/allin1/allin1_raw_response.json)]:::artifact
+        FunasrRaw[(perception/model/funasr/funasr_raw_response.json)]:::artifact
+        LyricSentence[(perception/model/funasr/lyric_sentence_units.json)]:::artifact
+        SplitStats[(perception/model/funasr/sentence_split_stats.json)]:::artifact
+        Accompaniment[(perception/signal/librosa/accompaniment_candidates.json)]:::artifact
+        VocalCandidates[(perception/signal/librosa/vocal_candidates.json)]:::artifact
+        VocalPrecheck[(perception/signal/librosa/vocal_precheck_rms.json)]:::artifact
+        BeatPack[(内存产物<br/>beats + beat_candidates)]:::runtime
+    end
+
+    subgraph ALG[算法层 Algorithm]
+        direction TB
+        BigA0[(algorithm/timeline/stage_big_a0.json)]:::artifact
+        LyricHeadRefined[(algorithm/timeline/stage_lyric_sentence_units_head_refined.json)]:::artifact
+        WindowsRaw[(algorithm/window/stage_windows_raw.json)]:::artifact
+        WindowsClassified[(algorithm/window/stage_windows_classified.json)]:::artifact
+        WindowsMerged[(algorithm/window/stage_windows_merged.json)]:::artifact
+
+        BigA1[(algorithm/timeline/stage_big_a1.json<br/>A1 snapped)]:::artifact
+        BoundaryResolved[(algorithm/timeline/stage_boundary_conflict_resolved.json)]:::artifact
+        SmallTS[(algorithm/timeline/stage_small_timestamps.json)]:::artifact
+        SegmentsFinal[(algorithm/final/stage_segments_final.json)]:::artifact
+        BigMoves[(algorithm/timeline/stage_big_boundary_moves.json)]:::artifact
+
+        LyricAttached[(algorithm/final/stage_lyric_attached.json)]:::artifact
+        Energy[(algorithm/final/stage_energy.json)]:::artifact
+        Analysis[(algorithm/final/final_analysis_data.json)]:::artifact
+    end
+
+    ModuleOut[(artifacts/module_a_output.json<br/>big_segments(A1 snapped), segments, beats, lyric_units(attached), energy_features)]:::output
+
+    Audio -->|Demucs分轨 + no_vocals合成| Demucs
+    Audio -->|allin1fix结构识别| Allin1Raw
+    Audio -->|FunASR识别| FunasrRaw
+    Audio -->|librosa伴奏侧特征提取| Accompaniment
+    Audio -->|librosa人声侧特征提取| VocalCandidates
+    Audio -->|librosa人声预检(是否跳过FunASR)| VocalPrecheck
+
+    Allin1Raw -->|提取A0大段| BigA0
+    Allin1Raw -->|提取节拍与候选拍点| BeatPack
+
+    FunasrRaw -->|解析句级歌词| LyricSentence
+    FunasrRaw -->|统计句间空歇阈值| SplitStats
+
+    LyricSentence -->|歌词清洗 + 英文句首回拉(多窗口取最早上升沿)| LyricHeadRefined
+
+    LyricHeadRefined -->|build_windows_from_sentences| WindowsRaw
+    SplitStats -->|提供dynamic_gap_threshold_seconds| WindowsRaw
+    BigA0 -->|inject_boundary_points_into_windows(仅other窗口)| WindowsRaw
+
+    WindowsRaw -->|classify_window_roles| WindowsClassified
+    VocalCandidates -->|人声RMS判定chant/silence| WindowsClassified
+    Accompaniment -->|伴奏RMS判定inst| WindowsClassified
+
+    WindowsClassified -->|merge_windows_by_rules(tiny + 短于1小节)| WindowsMerged
+    BeatPack -->|估计bar_length_seconds| WindowsMerged
+
+    BigA0 -->|A0->A1第一阶段: 歌词跨界占比校正| BigA1
+    LyricHeadRefined -->|A0->A1第二阶段: 其他窗口占比 + near-anchor句首信息| BigA1
+    WindowsMerged -->|A0->A1第二阶段: 其他窗口跨界占比| BigA1
+    VocalCandidates -->|near-anchor人声能量判定| BigA1
+
+    BigA1 -->|输出near-anchor裁决明细(drop/push)| BoundaryResolved
+
+    WindowsMerged -->|build_small_timestamps| SmallTS
+    BigA1 -->|build_final_segments(回填big_id/label)| SegmentsFinal
+    SmallTS -->|小时戳切分| SegmentsFinal
+    WindowsMerged -->|回填segment_role| SegmentsFinal
+
+    SegmentsFinal -->|seg_cut_snap: big边界吸附到S切点(必要时回建S)| BigA1
+    BigA1 -->|边界移动审计(含seg_cut_snap)| BigMoves
+
+    LyricHeadRefined -->|_attach_lyrics_to_segments| LyricAttached
+    SegmentsFinal -->|_attach_lyrics_to_segments| LyricAttached
+
+    SegmentsFinal -->|_build_energy_features| Energy
+    Accompaniment -->|RMS强度与趋势| Energy
+    BeatPack -->|节拍张力特征| Energy
+
+    WindowsRaw -->|窗口统计| Analysis
+    WindowsClassified -->|角色统计| Analysis
+    WindowsMerged -->|并段统计| Analysis
+    BoundaryResolved -->|near-anchor统计| Analysis
+    BigMoves -->|边界移动统计| Analysis
+
+    BigA1 --> ModuleOut
+    SegmentsFinal --> ModuleOut
+    BeatPack --> ModuleOut
+    LyricAttached --> ModuleOut
+    Energy --> ModuleOut

@@ -2,7 +2,7 @@
 
 ## 1. 职责与对外影响
 - 职责：模块A总编排入口，负责时长探测、真实链路执行、降级策略、最终JSON写出。
-- 对外影响：直接决定 `module_a_output.json` 的字段来源与完整性。
+- 对外影响：直接决定 `module_a_output.json` 的字段来源与完整性，并写入统一命名别名 `alias_map`（说明性字段，不替代原契约字段）。
 
 证据：`src/music_video_pipeline/modules/module_a/orchestrator.py:42-124`
 
@@ -11,7 +11,7 @@
 - 内部调用关系：
   - `run_module_a ---> _probe_audio_duration`
   - `run_module_a ---> (_run_real_pipeline 或 _run_fallback_pipeline)`
-  - `run_module_a ---> validate_module_a_output ---> write_json`
+  - `run_module_a ---> _build_module_a_alias_map ---> validate_module_a_output ---> write_json`
 - 真实链细分调用由 `_run_real_pipeline` 组织（Demucs/Allin1/Librosa/FunASR/segmentation/lyrics/timing_energy）。
 
 证据：`orchestrator.py:52-123, 127-309`

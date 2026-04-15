@@ -7,7 +7,7 @@
 """
 
 # 标准库：用于声明结构化类型
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 
 TaskState = Literal["pending", "running", "done", "failed"]
@@ -42,6 +42,7 @@ class SegmentItem(TypedDict):
     start_time: float
     end_time: float
     label: str
+    role: NotRequired[str]
 
 
 class BeatItem(TypedDict):
@@ -109,6 +110,7 @@ class ModuleAOutput(TypedDict):
     beats: list[BeatItem]
     lyric_units: list[LyricUnitItem]
     energy_features: list[EnergyFeatureItem]
+    alias_map: NotRequired[dict[str, Any]]
 
 
 class ModuleBOutputItem(TypedDict):
@@ -124,7 +126,12 @@ class ModuleBOutputItem(TypedDict):
     start_time: float
     end_time: float
     scene_desc: str
-    image_prompt: str
+    keyframe_prompt_zh: NotRequired[str]
+    keyframe_prompt_en: NotRequired[str]
+    keyframe_prompt: str
+    video_prompt_zh: NotRequired[str]
+    video_prompt_en: NotRequired[str]
+    video_prompt: str
     camera_motion: str
     transition: str
     constraints: dict[str, bool]
@@ -133,6 +140,7 @@ class ModuleBOutputItem(TypedDict):
     big_segment_id: NotRequired[str]
     big_segment_label: NotRequired[str]
     segment_label: NotRequired[str]
+    segment_role: NotRequired[str]
     audio_role: NotRequired[str]
 
 
@@ -189,6 +197,7 @@ def validate_module_a_output(data: dict) -> None:
         raise ValueError("ModuleAOutput.beats 至少包含起止两个时间戳")
 
     tol = 0.02
+    valid_segment_role = {"lyric", "chant", "inst", "silence"}
 
     # 大段落校验
     last_end = None
@@ -228,6 +237,15 @@ def validate_module_a_output(data: dict) -> None:
         if last_end is not None and abs(start_time - last_end) > tol:
             raise ValueError("ModuleAOutput.segments 时间轴不连续")
         last_end = end_time
+        if "role" in item:
+            if not isinstance(item["role"], str):
+                raise TypeError(f"ModuleAOutput.segments[{index}].role 必须是 str")
+            role = str(item["role"]).strip().lower()
+            if role not in valid_segment_role:
+                raise ValueError(
+                    f"ModuleAOutput.segments[{index}].role 非法: {role}，"
+                    f"合法值: {sorted(valid_segment_role)}"
+                )
 
     # 节拍校验（最终小时间戳）
     last_time = None
@@ -266,7 +284,7 @@ def validate_module_a_output(data: dict) -> None:
                     raise TypeError(
                         f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 必须是 dict"
                     )
-                for token_key in ["text", "start_time", "end_time", "granularity"]:
+                for token_key in ["text", "start_time", "end_time"]:
                     if token_key not in token_item:
                         raise KeyError(
                             f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 缺失字段: {token_key}"
@@ -287,11 +305,12 @@ def validate_module_a_output(data: dict) -> None:
                     raise ValueError(
                         f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}] 时间区间非法"
                     )
-                granularity = str(token_item["granularity"]).strip()
-                if granularity not in {"word", "char"}:
-                    raise ValueError(
-                        f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].granularity 非法: {granularity}"
-                    )
+                if "granularity" in token_item:
+                    granularity = str(token_item["granularity"]).strip()
+                    if granularity not in {"word", "char"}:
+                        raise ValueError(
+                            f"ModuleAOutput.lyric_units[{index}].token_units[{token_index}].granularity 非法: {granularity}"
+                        )
         if "source_sentence_index" in item:
             source_sentence_index = item["source_sentence_index"]
             if not isinstance(source_sentence_index, int) or isinstance(source_sentence_index, bool) or source_sentence_index < 0:
@@ -318,9 +337,10 @@ def validate_module_b_output(data: list[dict]) -> None:
     if not isinstance(data, list) or not data:
         raise ValueError("ModuleBOutput 必须是非空 list")
 
-    required_keys = {"shot_id", "start_time", "end_time", "scene_desc", "image_prompt", "camera_motion", "transition"}
+    required_keys = {"shot_id", "start_time", "end_time", "scene_desc", "keyframe_prompt", "video_prompt", "camera_motion", "transition"}
     valid_camera_motion = {"slow_pan", "zoom_in", "shake", "push_pull", "none"}
     valid_audio_role = {"instrumental", "vocal"}
+    valid_segment_role = {"lyric", "chant", "inst", "silence"}
 
     for index, item in enumerate(data):
         missing_keys = required_keys.difference(item.keys())
@@ -334,12 +354,40 @@ def validate_module_b_output(data: list[dict]) -> None:
                 f"合法值: {sorted(valid_camera_motion)}"
             )
 
+        for prompt_key in ["scene_desc", "keyframe_prompt", "video_prompt"]:
+            if not isinstance(item[prompt_key], str):
+                raise TypeError(f"ModuleBOutput[{index}].{prompt_key} 必须是 str")
+            if not str(item[prompt_key]).strip():
+                raise ValueError(f"ModuleBOutput[{index}].{prompt_key} 不能为空字符串")
+
+        for optional_prompt_key in [
+            "keyframe_prompt_zh",
+            "keyframe_prompt_en",
+            "video_prompt_zh",
+            "video_prompt_en",
+        ]:
+            if optional_prompt_key in item:
+                if not isinstance(item[optional_prompt_key], str):
+                    raise TypeError(f"ModuleBOutput[{index}].{optional_prompt_key} 必须是 str")
+                if not str(item[optional_prompt_key]).strip():
+                    raise ValueError(f"ModuleBOutput[{index}].{optional_prompt_key} 不能为空字符串")
+
         if "lyric_text" in item and not isinstance(item["lyric_text"], str):
             raise TypeError(f"ModuleBOutput[{index}].lyric_text 必须是 str")
 
         for optional_key in ["big_segment_id", "big_segment_label", "segment_label"]:
             if optional_key in item and not isinstance(item[optional_key], str):
                 raise TypeError(f"ModuleBOutput[{index}].{optional_key} 必须是 str")
+
+        if "segment_role" in item:
+            if not isinstance(item["segment_role"], str):
+                raise TypeError(f"ModuleBOutput[{index}].segment_role 必须是 str")
+            segment_role = str(item["segment_role"]).strip().lower()
+            if segment_role not in valid_segment_role:
+                raise ValueError(
+                    f"ModuleBOutput[{index}].segment_role 非法: {segment_role}，"
+                    f"合法值: {sorted(valid_segment_role)}"
+                )
 
         if "audio_role" in item:
             if not isinstance(item["audio_role"], str):

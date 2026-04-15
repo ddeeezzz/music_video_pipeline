@@ -132,18 +132,17 @@
 | inst追加最小段长 | `0.12` | `segmentation.py:505,635,1726,1786` | 避免极短inst碎片。 |
 | 边界保护微段最小下限 | `0.03` | `segmentation.py:578` | 保护窗口最小可保留长度。 |
 | mid局部最小切片 | `0.05` | `segmentation.py:675,1274,1858` | 去除过窄切片。 |
-| 节奏切片最小长度 | `0.08` | `segmentation.py:1826` | `_split_range_by_rhythm` 去碎片。 |
 | silence floor范围 | `[0.0015, 0.02]` | `segmentation.py:1319` | 静音地板安全裁剪区间。 |
 | `vocal_threshold_rms` 上限 | `0.08` | `segmentation.py:1170` | 人声阈值上限保护。 |
 | `epsilon` 下限 | `0.0008` | `segmentation.py:1169` | 阈值抬升最小增量。 |
 | `min_side_duration_seconds` 默认 | `1.2` | `segmentation.py:1710` | 器乐单次切分两侧最短保留时长。 |
 
 ## 5. 兼容/被弱化思路
-- 兼容导出但非稳定公共API：本文件大量私有函数通过 `test_compat_api` 暴露，用于测试/迁移。
-  - 证据：`__init__.py:91-151`
-- 当前主链未调用（仅定义/兼容保留）的函数：
-  - `_slice_lyric_units_by_start`（定义 `segmentation.py:190`）
-  - `_merge_short_mid_segments_by_neighbor_energy`（定义 `segmentation.py:1498`）
-  - `_detect_first_accent_in_vocal_segment`（定义 `segmentation.py:1593`）
-  - `_split_range_by_rhythm`（定义 `segmentation.py:1766`）
-- 上述函数仍被兼容导出，属于“可测试/可迁移但非当前主链必要步骤”的保留实现。
+- 兼容导出但非稳定公共API：本文件私有函数通过 `test_compat_api` 暴露，用于测试/迁移。
+  - 证据：`__init__.py`
+- 本轮已移除（仓库内无调用证据）：
+  - `_slice_lyric_units_by_start`
+  - `_merge_short_mid_segments_by_neighbor_energy`
+  - `_detect_first_accent_in_vocal_segment`
+- 本轮继续清理后已移除：
+  - `_split_range_by_rhythm`

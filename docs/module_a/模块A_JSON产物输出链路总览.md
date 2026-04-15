@@ -8,12 +8,41 @@
   - `src/music_video_pipeline/modules/module_a/lyrics.py`
   - `src/music_video_pipeline/modules/module_a/timing_energy.py`
 
+## 1.5 统一命名词典（唯一口径）
+以下命名与 `module_a_output.json` 顶层 `alias_map` 一致（由 `run_module_a` 写入）。
+
+关键产物命名：
+- `A0段`：Allin1 直出大段（stage1，代码字段 `analysis_data.big_segments_stage1`）。
+- `AL段`：按歌词证据重算边界后的 A 段（real 链 `analysis_data.big_segments`）。
+- `B段`：最终对外大段（`output_data.big_segments`）。
+- `M段`：中段（内部 mid segments，不直接对外）。
+- `S段`：最终对外小段（`output_data.segments`）。
+- `B-I段 / M-I段 / S-I段`：大/中/小器乐段。
+- `B-V段 / M-V段 / S-V段`：大/中/小人声段。
+
+大/小时间戳命名：
+- `BT0`：A0段边界时戳（stage1 大段边界）。
+- `BT1`：AL段边界时戳（歌词重算后大段边界）。
+- `BT_OUT`：B段对外边界时戳。
+- `ST0`：小时间戳候选池（beat/onset/lyric 起点候选）。
+- `ST1`：`_select_small_timestamps` 筛选结果。
+- `ST_OUT`：S段最终边界时戳（由 segments 边界推导）。
+
+切分阶段命名：
+- `切分1-M切`：按人声 RMS 切出中段（M段）。
+- `切分2-R选`：歌词优先 + 器乐单次切分，生成候选区间。
+- `切分3-N并`：短段并合 + 连续性归一化。
+- `切分4-S落`：候选区间落成最终 S 段。
+
 ## 2. 主链路（`xxx ---> yyy ---> zzz`）
 技术名链路：
 `run_module_a ---> _probe_audio_duration ---> mode分支(fallback_only / real_*) ---> analysis_data组装 ---> output_data组装 ---> validate_module_a_output ---> write_json(module_a_output.json)`
 
 含义链路（易读版）：
 `模块A总入口 ---> 探测音频总时长 ---> 选择“真实链/降级链” ---> 得到结构分析结果analysis_data ---> 组装最终输出字段output_data ---> 校验是否符合ModuleA契约 ---> 写入module_a_output.json`
+
+### 2.1 Mermaid 总览图
+- 已拆分为独立文档：`docs/module_a/模块A_Mermaid总览图.md`
 
 函数含义速查：
 - `run_module_a`：模块A总编排入口，负责调用各子步骤并产出最终JSON。
@@ -136,6 +165,7 @@
 - `beats`：来自 `analysis_data["beats"]`（`orchestrator.py:116`）
 - `lyric_units`：来自 `analysis_data["lyric_units"]`（`orchestrator.py:117`）
 - `energy_features`：来自 `analysis_data["energy_features"]`（`orchestrator.py:118`）
+- `alias_map`：来自 `_build_module_a_alias_map(mode, analysis_data)`，用于统一命名说明（不替代既有契约字段）。
 
 ## 8. 关键分支条件（影响JSON）
 - `mode == "fallback_only"`：直接走规则链（`orchestrator.py:64-70`）。
@@ -146,3 +176,6 @@
 ## 9. 被弱化/兼容路径说明（客观口径）
 - 兼容面由 `module_a.__init__.py` 的 `test_compat_api` 维护，官方稳定公共入口仅 `run_module_a`（`__init__.py:86-153`）。
 - 这意味着：大量私有函数仍导出用于测试/迁移兼容，但不等于主链稳定API。
+- 本轮两层清理结果：
+  - 已删除（仓库内无调用证据）：`_slice_lyric_units_by_start`、`_merge_short_mid_segments_by_neighbor_energy`、`_detect_first_accent_in_vocal_segment`。
+  - 已完成硬删除（原过渡兼容函数）：`_detect_big_segments_with_allin1`、`_build_beats_from_segments`、`_split_range_by_rhythm`。

@@ -33,10 +33,8 @@
 证据：`lyrics.py:47-130, 837-922`
 
 ### 3.2 视觉歌词单元策略
-- `lyric_segment_policy == sentence_strict`：句级单元直接返回。
-- `adaptive_phrase`：
-  - 先按标点/停顿/最大时长切分（`_split_sentence_unit_for_adaptive_policy`）；
-  - 再按同段落角色与时长约束并合（`_merge_adjacent_visual_lyric_units`）。
+- 该文档对应的旧版 `module_a/lyrics.py` 实现包含多种视觉歌词切分策略。
+- 现行模块A V2已移除 `module_a.lyric_segment_policy` 配置项，分句由 V2 的 FunASR gap 分句链路统一驱动。
 
 证据：`lyrics.py:164-228, 414-485, 564-710`
 

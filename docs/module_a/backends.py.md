@@ -10,14 +10,14 @@
 ## 2. 入口与调用关系
 - 主链被 `_run_real_pipeline` 调用的函数：
   - `_separate_with_demucs`
-  - `_detect_big_segments_with_allin1`
+  - `_analyze_with_allin1`
   - `_extract_acoustic_candidates_with_librosa`
   - `_recognize_lyrics_with_funasr`
 
 证据：`orchestrator.py:180-230`
 
 - 本文件内部调用关系：
-  - `_detect_big_segments_with_allin1 ---> _import_allin1_backend`
+  - `_analyze_with_allin1 ---> _import_allin1_backend`
   - `_recognize_lyrics_with_funasr ---> _extract_funasr_records/_infer_funasr_time_scale/_build_lyric_units_from_record`
   - `_build_lyric_units_from_record ---> sentence_info优先，失败回退timestamp`
 
@@ -76,5 +76,6 @@
   - 证据：`backends.py:177-194`
 - 兼容解析：FunASR在 `sentence_info` 不可用时回退 `timestamp` 路径。
   - 证据：`backends.py:319-333,506-537`
+- 本轮继续清理后已移除：`_detect_big_segments_with_allin1`（已统一使用 `_analyze_with_allin1`）。
 - 兼容导出但非稳定公共API：本文件多个私有函数通过 `test_compat_api` 对外暴露，用于测试/迁移，不代表稳定API。
   - 证据：`__init__.py:91-151`

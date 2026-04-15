@@ -20,8 +20,12 @@ from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, 
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：目录工具
 from music_video_pipeline.io_utils import read_json
-# 项目内模块：模块实现
-from music_video_pipeline.modules.module_a import run_module_a
+# 项目内模块：模块A V2实现
+from music_video_pipeline.modules.module_a_v2 import run_module_a_v2
+# 项目内模块：V2算法层产物类型
+from music_video_pipeline.modules.module_a_v2.algorithm import AlgorithmBundle
+# 项目内模块：V2感知层产物类型
+from music_video_pipeline.modules.module_a_v2.perception import PerceptionBundle
 # 项目内模块：模块实现
 from music_video_pipeline.modules.module_b import run_module_b
 # 项目内模块：状态存储
@@ -30,7 +34,7 @@ from music_video_pipeline.state_store import StateStore
 from music_video_pipeline.types import validate_module_a_output, validate_module_b_output
 
 
-def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
+def test_module_a_and_b_outputs_should_match_contracts(monkeypatch, tmp_path: Path) -> None:
     """
     功能说明：执行模块 A/B 并验证输出满足最低契约。
     参数说明：
@@ -58,7 +62,49 @@ def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
     )
     context.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    module_a_path = run_module_a(context)
+    def _fake_probe_audio_duration(*_args, **_kwargs) -> float:
+        return 8.0
+
+    def _fake_perception_stage(*_args, **_kwargs) -> PerceptionBundle:
+        return PerceptionBundle(
+            big_segments_stage1=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 8.0, "label": "verse"}],
+            beat_candidates=[0.0, 2.0, 4.0, 8.0],
+            beats=[
+                {"time": 0.0, "type": "major", "source": "allin1"},
+                {"time": 8.0, "type": "minor", "source": "allin1"},
+            ],
+            lyric_sentence_units=[],
+            sentence_split_stats={"dynamic_gap_threshold_seconds": 0.35, "skipped": True},
+            vocals_path=tmp_path / "vocals.wav",
+            no_vocals_path=tmp_path / "no_vocals.wav",
+            demucs_stems={},
+            onset_candidates=[0.0, 2.0, 4.0, 8.0],
+            rms_times=[0.0, 2.0, 4.0, 8.0],
+            rms_values=[0.2, 0.3, 0.2, 0.2],
+            vocal_onset_candidates=[0.0, 2.0, 4.0, 8.0],
+            vocal_rms_times=[0.0, 2.0, 4.0, 8.0],
+            vocal_rms_values=[0.2, 0.3, 0.2, 0.2],
+            funasr_skipped_for_silent_vocals=True,
+        )
+
+    def _fake_algorithm_stage(*_args, **_kwargs) -> AlgorithmBundle:
+        return AlgorithmBundle(
+            big_segments_stage1=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 8.0, "label": "verse"}],
+            big_segments=[{"segment_id": "big_001", "start_time": 0.0, "end_time": 8.0, "label": "verse"}],
+            segments=[{"segment_id": "seg_001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 8.0, "label": "verse"}],
+            beats=[
+                {"time": 0.0, "type": "major", "source": "allin1"},
+                {"time": 8.0, "type": "minor", "source": "allin1"},
+            ],
+            lyric_units=[],
+            energy_features=[{"start_time": 0.0, "end_time": 8.0, "energy_level": "mid", "trend": "flat", "rhythm_tension": 0.5}],
+        )
+
+    monkeypatch.setattr("music_video_pipeline.modules.module_a_v2.orchestrator.probe_audio_duration", _fake_probe_audio_duration)
+    monkeypatch.setattr("music_video_pipeline.modules.module_a_v2.orchestrator._run_perception_stage", _fake_perception_stage)
+    monkeypatch.setattr("music_video_pipeline.modules.module_a_v2.orchestrator._run_algorithm_stage", _fake_algorithm_stage)
+
+    module_a_path = run_module_a_v2(context)
     module_a_output = read_json(module_a_path)
     validate_module_a_output(module_a_output)
     assert module_a_output["task_id"] == "contract_task"
@@ -67,6 +113,8 @@ def test_module_a_and_b_outputs_should_match_contracts(tmp_path: Path) -> None:
     assert isinstance(module_a_output["segments"], list)
     assert len(module_a_output["segments"]) > 0
     assert "big_segment_id" in module_a_output["segments"][0]
+    assert "alias_map" in module_a_output
+    assert module_a_output["alias_map"]["version"] == "module_a_alias_v1"
 
     module_b_path = run_module_b(context)
     module_b_output = read_json(module_b_path)
@@ -110,7 +158,7 @@ def test_validate_module_b_output_should_be_forward_compatible_for_legacy_items(
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "image_prompt": "default prompt",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -133,7 +181,7 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "image_prompt": "default prompt",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -145,6 +193,7 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "big_segment_id": "big_001",
             "big_segment_label": "verse",
             "segment_label": "verse",
+            "segment_role": "lyric",
             "audio_role": "vocal",
         }
     ]
@@ -156,7 +205,7 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "image_prompt": "default prompt",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -172,7 +221,7 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "image_prompt": "default prompt",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -182,13 +231,29 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
     with pytest.raises(ValueError):
         validate_module_b_output(invalid_audio_role_output)
 
+    invalid_segment_role_output = [
+        {
+            "shot_id": "shot_001",
+            "start_time": 0.0,
+            "end_time": 1.2,
+            "scene_desc": "默认场景",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
+            "camera_motion": "slow_pan",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "segment_role": "unknown",
+        }
+    ]
+    with pytest.raises(ValueError):
+        validate_module_b_output(invalid_segment_role_output)
+
     invalid_big_segment_id_output = [
         {
             "shot_id": "shot_001",
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "image_prompt": "default prompt",
+            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -205,13 +270,13 @@ def test_validate_module_a_output_should_validate_token_units() -> None:
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：granularity 仅允许 word/char。
+    边界条件：token_units 最小字段为 text/start_time/end_time，granularity 为可选兼容字段。
     """
     module_a_output = {
         "task_id": "task_001",
         "audio_path": "demo.wav",
         "big_segments": [{"segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"}],
-        "segments": [{"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"}],
+        "segments": [{"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse", "role": "lyric"}],
         "beats": [{"time": 0.0, "type": "major", "source": "beat"}, {"time": 2.0, "type": "major", "source": "beat"}],
         "lyric_units": [
             {
@@ -223,13 +288,17 @@ def test_validate_module_a_output_should_validate_token_units() -> None:
                 "source_sentence_index": 0,
                 "unit_transform": "original",
                 "token_units": [
-                    {"text": "テ", "start_time": 0.1, "end_time": 0.5, "granularity": "char"},
-                    {"text": "スト", "start_time": 0.5, "end_time": 1.0, "granularity": "word"},
+                    {"text": "テ", "start_time": 0.1, "end_time": 0.5},
+                    {"text": "スト", "start_time": 0.5, "end_time": 1.0},
                 ],
             }
         ],
         "energy_features": [{"start_time": 0.0, "end_time": 2.0, "energy_level": "mid", "trend": "flat", "rhythm_tension": 0.5}],
     }
+    validate_module_a_output(module_a_output)
+
+    module_a_output["lyric_units"][0]["token_units"][0]["granularity"] = "char"
+    module_a_output["lyric_units"][0]["token_units"][1]["granularity"] = "word"
     validate_module_a_output(module_a_output)
 
     module_a_output["lyric_units"][0]["token_units"][0]["granularity"] = "syllable"
@@ -238,6 +307,11 @@ def test_validate_module_a_output_should_validate_token_units() -> None:
 
     module_a_output["lyric_units"][0]["token_units"][0]["granularity"] = "char"
     module_a_output["lyric_units"][0]["unit_transform"] = "unknown"
+    with pytest.raises(ValueError):
+        validate_module_a_output(module_a_output)
+
+    module_a_output["lyric_units"][0]["unit_transform"] = "original"
+    module_a_output["segments"][0]["role"] = "unknown"
     with pytest.raises(ValueError):
         validate_module_a_output(module_a_output)
 

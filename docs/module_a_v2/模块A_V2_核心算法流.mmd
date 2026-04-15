@@ -1,0 +1,76 @@
+flowchart TD
+    classDef artifact fill:#fff3e0,stroke:#f57c00,stroke-width:2px,rx:8px,ry:8px;
+    classDef runtime fill:#ede7f6,stroke:#5e35b1,stroke-width:2px,rx:8px,ry:8px;
+    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,rx:8px,ry:8px;
+
+    A0[(algorithm/timeline/stage_big_a0.json)]:::artifact
+    SU[(perception/model/funasr/lyric_sentence_units.json)]:::artifact
+    SS[(perception/model/funasr/sentence_split_stats.json)]:::artifact
+    VR[(perception/signal/librosa/vocal_candidates.json)]:::artifact
+    AR[(perception/signal/librosa/accompaniment_candidates.json)]:::artifact
+    BR[(内存产物<br/>beats + beat_candidates)]:::runtime
+
+    HeadRefined[(algorithm/timeline/stage_lyric_sentence_units_head_refined.json)]:::artifact
+    WinRaw[(algorithm/window/stage_windows_raw.json)]:::artifact
+    WinClass[(algorithm/window/stage_windows_classified.json)]:::artifact
+    WinMerged[(algorithm/window/stage_windows_merged.json)]:::artifact
+
+    BigA1[(algorithm/timeline/stage_big_a1.json<br/>A1 snapped)]:::artifact
+    NearAnchor[(algorithm/timeline/stage_boundary_conflict_resolved.json)]:::artifact
+    SmallTS[(algorithm/timeline/stage_small_timestamps.json)]:::artifact
+    SegFinal[(algorithm/final/stage_segments_final.json)]:::artifact
+    BigMoves[(algorithm/timeline/stage_big_boundary_moves.json)]:::artifact
+
+    LyricAttached[(algorithm/final/stage_lyric_attached.json)]:::artifact
+    Energy[(algorithm/final/stage_energy.json)]:::artifact
+    Analysis[(algorithm/final/final_analysis_data.json)]:::artifact
+
+    ModuleOut[(artifacts/module_a_output.json<br/>big_segments, segments, beats, lyric_units, energy_features)]:::output
+
+    SU -->|1) 歌词清洗(clean_lyric_units) + 英文句首回拉(refine_english_sentence_heads)<br/>目的: 修正英文句首滞后, 多窗口回拉取最早上升沿| HeadRefined
+
+    HeadRefined -->|2) build_windows_from_sentences| WinRaw
+    SS -->|2) 提供dynamic_gap_threshold_seconds<br/>目的: 由分句统计驱动窗口切分| WinRaw
+    A0 -->|2) inject_boundary_points_into_windows(仅other窗口注入A0边界)<br/>目的: 后续并段与A0边界可对齐| WinRaw
+
+    WinRaw -->|3) classify_window_roles<br/>目的: 产出lyric/chant/inst/silence四分类| WinClass
+    VR -->|3) 人声RMS判定chant/silence| WinClass
+    AR -->|3) 伴奏RMS判定inst| WinClass
+
+    WinClass -->|4) merge_windows_by_rules<br/>目的: tiny并段 + 短于1小节并段| WinMerged
+    BR -->|4) estimate_bar_length_seconds<br/>目的: 给“短于1小节并段”提供时长基准| WinMerged
+
+    A0 -->|5) resolve_big_timestamps_and_segments(阶段一)<br/>目的: A0->A1歌词跨界占比校正| BigA1
+    HeadRefined -->|5) resolve_big_timestamps_and_segments(阶段二)<br/>目的: 句首锚点参与边界决策| BigA1
+    WinMerged -->|5) resolve_big_timestamps_and_segments(阶段二)<br/>目的: 其他窗口跨界占比校正| BigA1
+    VR -->|5) near-anchor人声能量判定<br/>目的: 冲突点执行drop/push| BigA1
+
+    BigA1 -->|6) 输出近锚点冲突裁决报告(drop_near_anchor / push_big_boundary_to_head)| NearAnchor
+
+    WinMerged -->|7) build_small_timestamps<br/>目的: 生成小时戳切点集合| SmallTS
+
+    BigA1 -->|8) build_final_segments<br/>目的: 回填big_id/label并保证时间轴连续| SegFinal
+    SmallTS -->|8) 以小时戳落S段| SegFinal
+    WinMerged -->|8) 回填segment_role| SegFinal
+
+    SegFinal -->|9) seg_cut_snap<br/>目的: big边界吸附到S切点, 必要时回建S| BigA1
+    BigA1 -->|9) 输出边界移动审计(lyric_overlap/other_ratio/seg_cut_snap)| BigMoves
+
+    HeadRefined -->|10) _attach_lyrics_to_segments<br/>目的: 产出attached歌词单元| LyricAttached
+    SegFinal -->|10) 提供segment时间窗| LyricAttached
+
+    SegFinal -->|11) _build_energy_features| Energy
+    AR -->|11) RMS强度与趋势| Energy
+    BR -->|11) 节拍张力| Energy
+
+    WinRaw -->|12) 过程统计汇总| Analysis
+    WinClass -->|12) 角色统计汇总| Analysis
+    WinMerged -->|12) 并段统计汇总| Analysis
+    NearAnchor -->|12) 冲突裁决统计汇总| Analysis
+    BigMoves -->|12) 边界移动统计汇总| Analysis
+
+    BigA1 --> ModuleOut
+    SegFinal --> ModuleOut
+    BR --> ModuleOut
+    LyricAttached --> ModuleOut
+    Energy --> ModuleOut

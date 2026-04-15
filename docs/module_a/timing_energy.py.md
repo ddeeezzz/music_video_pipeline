@@ -12,7 +12,7 @@
 ## 2. 入口与调用关系
 - 主链常用函数：
   - `_build_energy_features`
-  - `_build_beats_from_segments` / `_build_beats_from_timestamps`
+  - `_build_beats_from_timestamps`
   - `_build_fallback_big_segments`
   - `_build_grid_timestamps`
   - `_normalize_timestamp_list`
@@ -32,7 +32,6 @@
 证据：`timing_energy.py:33-82`
 
 ### 3.2 beats构造
-- `_build_beats_from_segments`：优先使用 `segments` 边界，缺失时回退传入 `fallback_timestamps`。
 - `_build_beats_from_timestamps`：
   - 时戳去重排序后，若少于2个则回退 `[0.0, 0.1]`；
   - `index % 4 == 0` 标记为 `major`，其余 `minor`；
@@ -69,5 +68,6 @@
 ## 5. 兼容/被弱化思路
 - fallback函数（`_build_fallback_big_segments/_build_fallback_energy_features`）是显式保留降级路径，不属于“效果最佳路径”，但属于稳定兜底。
   - 证据：`orchestrator.py:194-195,324-346`, `timing_energy.py:127-186`
+- 本轮继续清理后已移除：`_build_beats_from_segments`（统一使用 `_build_beats_from_timestamps` 或真实链路 allin1 beats）。
 - 兼容导出但非稳定公共API：本文件私有函数被 `test_compat_api` 导出给测试/迁移。
   - 证据：`__init__.py:91-151`
