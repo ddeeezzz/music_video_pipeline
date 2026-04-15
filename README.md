@@ -49,6 +49,30 @@ uv sync --extra test
 
 ## 4. 快速开始
 
+### 4.0 `uv run` 使用注意事项（重要）
+
+`uv run` 默认会先做环境同步检查；当依赖里包含直链包（如本项目的 `natten`）且网络不稳定时，可能出现“下载元数据超时”后命令直接失败。
+
+推荐做法：
+
+- 在项目根目录执行命令时，优先使用 `--no-sync` 复用已安装环境：
+
+```bash
+uv run --no-sync mvpl run --task-id demo_20s --config configs/default.json
+```
+
+- 如果当前不在项目根目录（例如在 `runs/` 下），需要显式指定项目路径；否则 `--no-sync` 可能不生效：
+
+```bash
+uv run --project /home/sod2204/work/zonghe/t1 --no-sync music-video-pipeline run --task-id demo_20s --config configs/default.json
+```
+
+- 当 `uv run` 因同步失败中断时，可直接用虚拟环境可执行文件执行等价命令：
+
+```bash
+.venv/bin/music-video-pipeline run --task-id demo_20s --config configs/default.json
+```
+
 ### 4.1 全链路执行
 
 ```bash
@@ -108,7 +132,6 @@ uv run music-video-pipeline run --task-id demo_20s --config configs/default.json
 - `paths.runs_dir`: 运行输出根目录
 - `paths.default_audio_path`: 默认音频
 - `module_a.funasr_language`: 必填（如 `auto` / `zh` / `en` / `ja`）
-- `module_a.lyric_segment_policy`: `sentence_strict` 或 `adaptive_phrase`
 
 当歌词链路不可用时，模块 A 会降级到纯声学结构链，并在日志中记录降级信息。
 

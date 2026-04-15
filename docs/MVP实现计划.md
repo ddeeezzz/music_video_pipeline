@@ -44,7 +44,7 @@
 
 - **模块契约（内部公共接口）**
 - `ModuleAOutput`：至少包含 `task_id`、`segments`、`beats`、`lyric_units`、`energy_features`。
-- `ModuleBOutput`：至少包含 `start_time`、`end_time`、`scene_desc`、`image_prompt`、`camera_motion`、`transition`。
+- `ModuleBOutput`：至少包含 `start_time`、`end_time`、`scene_desc`、`keyframe_prompt`、`video_prompt`、`camera_motion`、`transition`。
 - `TaskState`：`pending | running | done | failed`，并带 `error_message`（failed 时必填）与 `artifact_path`（done 时必填）。
 - 时间字段统一秒（float）；模块间禁止传未文档化字段。
 
