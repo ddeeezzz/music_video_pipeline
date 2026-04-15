@@ -8,10 +8,15 @@
 
 # 标准库：用于声明不可变数据类
 from dataclasses import dataclass, field
+# 标准库：用于配置兼容告警
+import logging
 # 标准库：用于 JSON 解析
 import json
 # 标准库：用于路径处理
 from pathlib import Path
+
+# 常量：配置模块日志器（用于兼容键清理告警）
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -125,12 +130,131 @@ class MockConfig:
 
 
 @dataclass(frozen=True)
+class ModuleBLlmConfig:
+    """
+    功能说明：定义模块 B 真实 LLM 分镜生成参数。
+    参数说明：
+    - provider: LLM 服务提供商标识（当前支持 siliconflow）。
+    - base_url: Chat Completions 接口根地址。
+    - model: 目标模型名称。
+    - api_key_file: API Key 文件路径（支持相对路径）。
+    - timeout_seconds: 单次请求超时（秒）。
+    - request_retry_times: HTTP 请求重试次数。
+    - json_retry_times: JSON 解析失败后的补救重试次数。
+    - temperature: 采样温度。
+    - top_p: 采样 top_p。
+    - max_tokens: 单次输出 token 上限。
+    - use_response_format_json_object: 是否启用 response_format=json_object。
+    - scene_desc_max_chars: scene_desc 最大字符数。
+    - keyframe_prompt_max_chars: keyframe_prompt 最大字符数。
+    - video_prompt_max_chars: video_prompt 最大字符数。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：当 script_generator=llm 时由模块 B 调用层读取并执行。
+    """
+
+    provider: str = "siliconflow"
+    base_url: str = "https://api.siliconflow.cn/v1"
+    model: str = "deepseek-ai/DeepSeek-V3.2"
+    api_key_file: str = ".secrets/siliconflow_api_key.txt"
+    timeout_seconds: float = 60.0
+    request_retry_times: int = 2
+    json_retry_times: int = 2
+    temperature: float = 0.30
+    top_p: float = 0.90
+    max_tokens: int = 350
+    use_response_format_json_object: bool = False
+    scene_desc_max_chars: int = 120
+    keyframe_prompt_max_chars: int = 400
+    video_prompt_max_chars: int = 500
+
+
+@dataclass(frozen=True)
+class ModuleBConfig:
+    """
+    功能说明：定义模块 B 的并行与重试参数。
+    参数说明：
+    - script_workers: 分镜最小单元并行生成 worker 数量。
+    - unit_retry_times: 单元失败后的重试次数。
+    - llm: 模块 B 真实 LLM 分镜参数。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：非法值由模块 B 执行层归一化兜底。
+    """
+
+    script_workers: int = 3
+    unit_retry_times: int = 1
+    llm: ModuleBLlmConfig = field(default_factory=ModuleBLlmConfig)
+
+
+@dataclass(frozen=True)
+class ModuleCConfig:
+    """
+    功能说明：定义模块 C 的并行与重试参数。
+    参数说明：
+    - render_workers: 最小视觉单元并行生成 worker 数量。
+    - unit_retry_times: 单元失败后的重试次数。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：非法值由模块 C 执行层归一化兜底。
+    """
+
+    render_workers: int = 3
+    unit_retry_times: int = 1
+
+
+@dataclass(frozen=True)
+class ModuleDConfig:
+    """
+    功能说明：定义模块 D 的并行与重试参数。
+    参数说明：
+    - segment_workers: 片段最小单元并行渲染 worker 数量。
+    - unit_retry_times: 单元失败后的重试次数。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：非法值由模块 D 执行层归一化兜底。
+    """
+
+    segment_workers: int = 3
+    unit_retry_times: int = 1
+
+
+@dataclass(frozen=True)
+class CrossModuleConfig:
+    """
+    功能说明：定义跨模块（B/C/D）并行调度参数。
+    参数说明：
+    - global_render_limit: 模块 C 与模块 D 的共享并发上限。
+    - scheduler_tick_ms: 调度器轮询间隔（毫秒）。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：非法值由跨模块调度层归一化兜底。
+    """
+
+    global_render_limit: int = 3
+    scheduler_tick_ms: int = 50
+
+
+@dataclass(frozen=True)
+class MonitoringConfig:
+    """
+    功能说明：定义运行时任务监督服务参数。
+    参数说明：
+    - max_wait_after_terminal_minutes: 任务进入终态后，CLI等待监督服务退出的最长分钟数。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：默认20分钟，超时后CLI会强制关闭监督服务。
+    """
+
+    max_wait_after_terminal_minutes: float = 20.0
+
+
+@dataclass(frozen=True)
 class ModuleAConfig:
     """
     功能说明：定义模块 A 的真实链路配置。
     参数说明：
     - funasr_language: FunASR 语言策略（auto 或语言代码，如 zh/en/ja）。
-    - lyric_segment_policy: 歌词视觉单元策略（sentence_strict/adaptive_phrase）。
     - comma_pause_seconds: 逗号断句停顿阈值（秒）。
     - long_pause_seconds: 长停顿断句阈值（秒）。
     - merge_gap_seconds: 相邻短句合并阈值（秒）。
@@ -151,13 +275,17 @@ class ModuleAConfig:
     - skip_funasr_when_vocals_silent: 当人声音轨能量极低时是否跳过 FunASR。
     - vocal_skip_peak_rms_threshold: “极低人声”判定的峰值 RMS 阈值。
     - vocal_skip_active_ratio_threshold: “极低人声”判定的活跃帧占比阈值。
+    - implementation: 模块A实现版本（v1/v2），用于迁移期开关切换。
+    - lyric_head_offset_seconds: 歌词句首小时间戳固定后移量（秒，v2歌词主链使用）。
+    - long_instrumental_gap_seconds: 人声段内长器乐补检触发阈值（秒，v2歌词主链使用）。
+    - lyric_boundary_near_anchor_seconds: 大段边界后“近锚点冲突”判定阈值（秒，v2歌词主链使用）。
+    - content_role_tiny_merge_bars: 内容角色tiny并段阈值（小节，v2四分类清理使用）。
     返回值：不适用。
     异常说明：不适用。
     边界条件：阈值建议大于等于 0。
     """
 
     funasr_language: str
-    lyric_segment_policy: str = "sentence_strict"
     comma_pause_seconds: float = 0.45
     long_pause_seconds: float = 0.8
     merge_gap_seconds: float = 0.25
@@ -178,6 +306,11 @@ class ModuleAConfig:
     skip_funasr_when_vocals_silent: bool = True
     vocal_skip_peak_rms_threshold: float = 0.010
     vocal_skip_active_ratio_threshold: float = 0.020
+    implementation: str = "v1"
+    lyric_head_offset_seconds: float = 0.02
+    long_instrumental_gap_seconds: float = 5.0
+    lyric_boundary_near_anchor_seconds: float = 1.5
+    content_role_tiny_merge_bars: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -190,6 +323,11 @@ class AppConfig:
     - ffmpeg: FFmpeg 配置。
     - logging: 日志配置。
     - mock: Mock 参数配置。
+    - module_b: 模块 B 参数配置。
+    - module_c: 模块 C 参数配置。
+    - module_d: 模块 D 参数配置。
+    - cross_module: 跨模块并行调度参数配置。
+    - monitoring: 运行时监督服务配置。
     - module_a: 模块 A 参数配置。
     返回值：不适用。
     异常说明：不适用。
@@ -201,6 +339,11 @@ class AppConfig:
     ffmpeg: FfmpegConfig
     logging: LoggingConfig
     mock: MockConfig
+    module_b: ModuleBConfig = field(default_factory=ModuleBConfig)
+    module_c: ModuleCConfig = field(default_factory=ModuleCConfig)
+    module_d: ModuleDConfig = field(default_factory=ModuleDConfig)
+    cross_module: CrossModuleConfig = field(default_factory=CrossModuleConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     module_a: ModuleAConfig = field(default_factory=lambda: ModuleAConfig(funasr_language="auto"))
 
 
@@ -254,13 +397,47 @@ def _merge_defaults(raw_data: dict) -> dict:
         },
         "logging": {"level": "INFO"},
         "mock": {"beat_interval_seconds": 0.5, "video_width": 960, "video_height": 540},
+        "module_b": {
+            "script_workers": 3,
+            "unit_retry_times": 1,
+            "llm": {
+                "provider": "siliconflow",
+                "base_url": "https://api.siliconflow.cn/v1",
+                "model": "deepseek-ai/DeepSeek-V3.2",
+                "api_key_file": ".secrets/siliconflow_api_key.txt",
+                "timeout_seconds": 60.0,
+                "request_retry_times": 2,
+                "json_retry_times": 2,
+                "temperature": 0.30,
+                "top_p": 0.90,
+                "max_tokens": 350,
+                "use_response_format_json_object": False,
+                "scene_desc_max_chars": 120,
+                "keyframe_prompt_max_chars": 400,
+                "video_prompt_max_chars": 500,
+            },
+        },
+        "module_c": {
+            "render_workers": 3,
+            "unit_retry_times": 1,
+        },
+        "module_d": {
+            "segment_workers": 3,
+            "unit_retry_times": 1,
+        },
+        "cross_module": {
+            "global_render_limit": 3,
+            "scheduler_tick_ms": 50,
+        },
+        "monitoring": {
+            "max_wait_after_terminal_minutes": 20.0,
+        },
         "module_a": {
             "mode": "real_auto",
             "lyric_beat_snap_threshold_ms": 200,
             "instrumental_labels": ["intro", "outro", "inst"],
             "fallback_enabled": True,
             "device": "auto",
-            "lyric_segment_policy": "sentence_strict",
             "comma_pause_seconds": 0.45,
             "long_pause_seconds": 0.8,
             "merge_gap_seconds": 0.25,
@@ -276,12 +453,24 @@ def _merge_defaults(raw_data: dict) -> dict:
             "skip_funasr_when_vocals_silent": True,
             "vocal_skip_peak_rms_threshold": 0.010,
             "vocal_skip_active_ratio_threshold": 0.020,
+            "implementation": "v1",
+            "lyric_head_offset_seconds": 0.02,
+            "long_instrumental_gap_seconds": 5.0,
+            "lyric_boundary_near_anchor_seconds": 1.5,
+            "content_role_tiny_merge_bars": 0.9,
         },
     }
 
     merged = default_data
     for top_key, top_value in raw_data.items():
-        if isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
+        if top_key == "module_b" and isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
+            merged_module_b = {**merged[top_key], **top_value}
+            default_llm = merged[top_key].get("llm", {})
+            override_llm = top_value.get("llm", {})
+            if isinstance(default_llm, dict) and isinstance(override_llm, dict):
+                merged_module_b["llm"] = {**default_llm, **override_llm}
+            merged[top_key] = merged_module_b
+        elif isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
             merged[top_key] = {**merged[top_key], **top_value}
         else:
             merged[top_key] = top_value
@@ -301,11 +490,37 @@ def load_config(config_path: Path) -> AppConfig:
     """
     raw_data = _read_json_config(config_path)
     merged = _merge_defaults(raw_data)
+    module_b_data = dict(merged["module_b"])
+    module_b_llm_data = module_b_data.pop("llm", {})
+    if not isinstance(module_b_llm_data, dict):
+        raise TypeError("配置错误：module_b.llm 必须是对象。")
+
+    module_a_data = dict(merged["module_a"])
+    raw_module_a_data = raw_data.get("module_a", {}) if isinstance(raw_data.get("module_a", {}), dict) else {}
+    if "lyric_segment_policy" in module_a_data:
+        LOGGER.warning("配置键 module_a.lyric_segment_policy 已移除并忽略，请删除该配置项。")
+        module_a_data.pop("lyric_segment_policy", None)
+    # 兼容说明：历史配置使用 content_role_tiny_merge_seconds，现统一为按小节阈值。
+    if (
+        "content_role_tiny_merge_bars" not in raw_module_a_data
+        and "content_role_tiny_merge_seconds" in raw_module_a_data
+    ):
+        module_a_data["content_role_tiny_merge_bars"] = raw_module_a_data.get("content_role_tiny_merge_seconds")
+    module_a_data.pop("content_role_tiny_merge_seconds", None)
+    if "english_head_pullback_window_seconds" in module_a_data:
+        LOGGER.warning("配置键 module_a.english_head_pullback_window_seconds 已移除并忽略，请删除该配置项。")
+        module_a_data.pop("english_head_pullback_window_seconds", None)
+
     return AppConfig(
         mode=ModeConfig(**merged["mode"]),
         paths=PathsConfig(**merged["paths"]),
         ffmpeg=FfmpegConfig(**merged["ffmpeg"]),
         logging=LoggingConfig(**merged["logging"]),
         mock=MockConfig(**merged["mock"]),
-        module_a=ModuleAConfig(**merged["module_a"]),
+        module_b=ModuleBConfig(llm=ModuleBLlmConfig(**module_b_llm_data), **module_b_data),
+        module_c=ModuleCConfig(**merged["module_c"]),
+        module_d=ModuleDConfig(**merged["module_d"]),
+        cross_module=CrossModuleConfig(**merged["cross_module"]),
+        monitoring=MonitoringConfig(**merged["monitoring"]),
+        module_a=ModuleAConfig(**module_a_data),
     )
