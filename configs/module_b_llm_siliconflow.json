@@ -1,0 +1,83 @@
+{
+  "mode": {
+    "script_generator": "llm",
+    "frame_generator": "mock"
+  },
+  "paths": {
+    "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
+    "default_audio_path": "resources/juebieshu20s.mp3"
+  },
+  "ffmpeg": {
+    "ffmpeg_bin": "ffmpeg",
+    "ffprobe_bin": "ffprobe",
+    "video_codec": "libx264",
+    "audio_codec": "aac",
+    "fps": 24,
+    "video_preset": "veryfast",
+    "video_crf": 30,
+    "render_batch_size": 1
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "mock": {
+    "beat_interval_seconds": 0.5,
+    "video_width": 960,
+    "video_height": 540
+  },
+  "module_b": {
+    "script_workers": 3,
+    "unit_retry_times": 1,
+    "llm": {
+      "provider": "siliconflow",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "model": "deepseek-ai/DeepSeek-V3.2",
+      "api_key_file": ".secrets/siliconflow_api_key.txt",
+      "timeout_seconds": 60.0,
+      "request_retry_times": 2,
+      "json_retry_times": 2,
+      "temperature": 0.3,
+      "top_p": 0.9,
+      "max_tokens": 350,
+      "use_response_format_json_object": false,
+      "scene_desc_max_chars": 120,
+      "keyframe_prompt_max_chars": 400,
+      "video_prompt_max_chars": 500
+    }
+  },
+  "module_c": {
+    "render_workers": 3,
+    "unit_retry_times": 1
+  },
+  "module_d": {
+    "segment_workers": 3,
+    "unit_retry_times": 1
+  },
+  "cross_module": {
+    "global_render_limit": 3,
+    "scheduler_tick_ms": 50
+  },
+  "monitoring": {
+    "max_wait_after_terminal_minutes": 20.0
+  },
+  "module_a": {
+    "mode": "real_auto",
+    "lyric_beat_snap_threshold_ms": 200,
+    "instrumental_labels": [
+      "intro",
+      "outro",
+      "inst"
+    ],
+    "fallback_enabled": true,
+    "device": "auto",
+    "funasr_language": "auto",
+    "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
+    "demucs_model": "htdemucs",
+    "comma_pause_seconds": 0.45,
+    "long_pause_seconds": 0.8,
+    "merge_gap_seconds": 0.25,
+    "max_visual_unit_seconds": 6.0,
+    "content_role_tiny_merge_bars": 0.9,
+    "implementation": "v2"
+  }
+}

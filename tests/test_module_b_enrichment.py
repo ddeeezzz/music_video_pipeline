@@ -203,3 +203,35 @@ def test_enrich_shots_should_keep_instrumental_when_label_is_inst_even_with_lyri
         instrumental_labels=["intro", "inst", "outro"],
     )
     assert enriched[0]["audio_role"] == "instrumental"
+
+
+def test_enrich_shots_should_prefer_segment_role_over_label_for_audio_role() -> None:
+    """
+    功能说明：验证当 segment.role 存在时，audio_role 优先按 role 映射。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：label 与 role 冲突时应以 role 为准。
+    """
+    shots = [
+        {"shot_id": "shot_001", "start_time": 0.0, "end_time": 1.0},
+        {"shot_id": "shot_002", "start_time": 1.0, "end_time": 2.0},
+    ]
+    module_a_output = {
+        "segments": [
+            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 1.0, "label": "inst", "role": "lyric"},
+            {"segment_id": "seg_0002", "big_segment_id": "big_001", "start_time": 1.0, "end_time": 2.0, "label": "verse", "role": "silence"},
+        ],
+        "big_segments": [
+            {"segment_id": "big_001", "label": "verse"},
+        ],
+    }
+    enriched = _enrich_shots_with_segment_meta(
+        shots=shots,
+        module_a_output=module_a_output,
+        instrumental_labels=["intro", "inst", "outro"],
+    )
+    assert enriched[0]["segment_role"] == "lyric"
+    assert enriched[0]["audio_role"] == "vocal"
+    assert enriched[1]["segment_role"] == "silence"
+    assert enriched[1]["audio_role"] == "instrumental"
