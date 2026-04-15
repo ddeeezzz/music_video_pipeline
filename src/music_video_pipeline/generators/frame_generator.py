@@ -35,20 +35,28 @@ class FrameGenerator(ABC):
     参数说明：无。
     返回值：不适用。
     异常说明：子类可抛出实现相关异常。
-    边界条件：输出帧清单需要包含路径和时长。
+    边界条件：输出单元结构需包含 frame_path 与时间字段。
     """
 
     @abstractmethod
-    def generate(self, shots: list[dict[str, Any]], output_dir: Path, width: int, height: int) -> list[dict[str, Any]]:
+    def generate_one(
+        self,
+        shot: dict[str, Any],
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+    ) -> dict[str, Any]:
         """
-        功能说明：根据分镜列表生成关键帧。
+        功能说明：根据单个分镜生成关键帧。
         参数说明：
-        - shots: 模块 B 输出的分镜数组。
+        - shot: 模块 B 输出的单个分镜对象。
         - output_dir: 图像输出目录。
         - width: 输出宽度。
         - height: 输出高度。
+        - shot_index: 分镜顺序索引（0 基）。
         返回值：
-        - list[dict[str, Any]]: 帧清单。
+        - dict[str, Any]: 单个 frame_item。
         异常说明：由子类决定。
         边界条件：width/height 建议为偶数。
         """
@@ -74,17 +82,27 @@ class MockFrameGenerator(FrameGenerator):
         边界条件：logger 为空时仅跳过告警输出。
         """
         self.logger = logger
+        # 标记：避免中文字体缺失告警被重复刷屏。
+        self._font_warning_emitted = False
 
-    def generate(self, shots: list[dict[str, Any]], output_dir: Path, width: int, height: int) -> list[dict[str, Any]]:
+    def generate_one(
+        self,
+        shot: dict[str, Any],
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+    ) -> dict[str, Any]:
         """
-        功能说明：为每个分镜生成一张带文字的占位图。
+        功能说明：为单个分镜生成一张带文字的占位图。
         参数说明：
-        - shots: 分镜数组。
+        - shot: 分镜对象。
         - output_dir: 帧输出目录。
         - width: 图像宽度。
         - height: 图像高度。
+        - shot_index: 分镜顺序索引（0 基）。
         返回值：
-        - list[dict[str, Any]]: 每个分镜对应的帧信息。
+        - dict[str, Any]: 单个分镜对应的 frame_item。
         异常说明：目录不可写时抛 OSError。
         边界条件：时长 <= 0 时自动修正为 0.5 秒。
         """
@@ -93,37 +111,39 @@ class MockFrameGenerator(FrameGenerator):
         body_font_size = max(24, int(width * 0.028))
         title_font_obj, title_font_source = _load_chinese_font(size=title_font_size)
         body_font_obj, body_font_source = _load_chinese_font(size=body_font_size)
-        if self.logger and ("pil_default" in {title_font_source, body_font_source}):
+        if self.logger and ("pil_default" in {title_font_source, body_font_source}) and (not self._font_warning_emitted):
             self.logger.warning("模块C未加载到可用中文字体，当前使用默认字体，中文可能无法正常显示。")
+            self._font_warning_emitted = True
 
-        frame_items: list[dict[str, Any]] = []
-        for index, shot in enumerate(shots):
-            start_time = float(shot["start_time"])
-            end_time = float(shot["end_time"])
-            duration = round(max(0.5, end_time - start_time), 3)
+        start_time = float(shot["start_time"])
+        end_time = float(shot["end_time"])
+        duration = round(max(0.5, end_time - start_time), 3)
 
-            image_path = output_dir / f"frame_{index + 1:03d}.png"
-            self._build_placeholder_image(
-                image_path=image_path,
-                width=width,
-                height=height,
-                shot=shot,
-                title_font_obj=title_font_obj,
-                body_font_obj=body_font_obj,
-                title_font_size=title_font_size,
-                body_font_size=body_font_size,
-            )
-
-            frame_items.append(
-                {
-                    "shot_id": str(shot["shot_id"]),
-                    "frame_path": str(image_path),
-                    "start_time": start_time,
-                    "end_time": end_time,
-                    "duration": duration,
-                }
-            )
-        return frame_items
+        image_path = output_dir / f"frame_{shot_index + 1:03d}.png"
+        self._build_placeholder_image(
+            image_path=image_path,
+            width=width,
+            height=height,
+            shot=shot,
+            title_font_obj=title_font_obj,
+            body_font_obj=body_font_obj,
+            title_font_size=title_font_size,
+            body_font_size=body_font_size,
+        )
+        return {
+            "shot_id": str(shot["shot_id"]),
+            "frame_path": str(image_path),
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": duration,
+            "scene_desc": str(shot.get("scene_desc", "")),
+            "keyframe_prompt_zh": str(shot.get("keyframe_prompt_zh", "")),
+            "keyframe_prompt_en": str(shot.get("keyframe_prompt_en", "")),
+            "keyframe_prompt": str(shot.get("keyframe_prompt", "")),
+            "video_prompt_zh": str(shot.get("video_prompt_zh", "")),
+            "video_prompt_en": str(shot.get("video_prompt_en", "")),
+            "video_prompt": str(shot.get("video_prompt", "")),
+        }
 
     def _build_placeholder_image(
         self,
@@ -261,21 +281,35 @@ class DiffusionFrameGenerator(FrameGenerator):
         self.logger = logger
         self._fallback = MockFrameGenerator(logger=logger)
 
-    def generate(self, shots: list[dict[str, Any]], output_dir: Path, width: int, height: int) -> list[dict[str, Any]]:
+    def generate_one(
+        self,
+        shot: dict[str, Any],
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+    ) -> dict[str, Any]:
         """
         功能说明：输出降级提示并调用 Mock 生成。
         参数说明：
-        - shots: 分镜数组。
+        - shot: 分镜对象。
         - output_dir: 输出目录。
         - width: 图像宽度。
         - height: 图像高度。
+        - shot_index: 分镜顺序索引（0 基）。
         返回值：
-        - list[dict[str, Any]]: 帧清单。
+        - dict[str, Any]: 单个 frame_item。
         异常说明：由 Mock 生成器决定。
         边界条件：后续真实模型接入时保持输出清单结构不变。
         """
         self.logger.warning("Diffusion 关键帧生成器尚未接入真实模型，已自动降级为 Mock 占位图生成。")
-        return self._fallback.generate(shots=shots, output_dir=output_dir, width=width, height=height)
+        return self._fallback.generate_one(
+            shot=shot,
+            output_dir=output_dir,
+            width=width,
+            height=height,
+            shot_index=shot_index,
+        )
 
 
 def build_frame_generator(mode: str, logger: logging.Logger) -> FrameGenerator:
