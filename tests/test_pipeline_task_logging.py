@@ -54,11 +54,15 @@ def test_pipeline_should_write_task_log_for_run_and_resume(tmp_path: Path) -> No
     run_logs = sorted(log_dir.glob("run_*.log"))
     assert run_logs, "run 命令未生成任务日志文件"
     assert "模块A准备执行" in run_logs[-1].read_text(encoding="utf-8")
+    run_log_text = run_logs[-1].read_text(encoding="utf-8")
+    assert "任务监督入口页链接=file://" in run_log_text
 
     runner.resume(task_id="task_log_resume", config_path=tmp_path / "config.json")
     resume_logs = sorted(log_dir.glob("resume_*.log"))
     assert resume_logs, "resume 命令未生成任务日志文件"
-    assert "模块C准备执行" in resume_logs[-1].read_text(encoding="utf-8")
+    resume_log_text = resume_logs[-1].read_text(encoding="utf-8")
+    assert "模块C准备执行" in resume_log_text
+    assert "任务监督入口页链接=file://" in resume_log_text
 
 
 def test_pipeline_should_write_task_log_for_run_single_module(tmp_path: Path) -> None:
@@ -97,7 +101,9 @@ def test_pipeline_should_write_task_log_for_run_single_module(tmp_path: Path) ->
     log_dir = task_dir / "log"
     single_logs = sorted(log_dir.glob("run_module_a_*.log"))
     assert single_logs, "run-module 未生成任务日志文件"
-    assert "模块A准备执行" in single_logs[-1].read_text(encoding="utf-8")
+    single_log_text = single_logs[-1].read_text(encoding="utf-8")
+    assert "模块A准备执行" in single_log_text
+    assert "任务监督入口页链接=file://" in single_log_text
 
 
 def _build_success_runner(module_name: str):

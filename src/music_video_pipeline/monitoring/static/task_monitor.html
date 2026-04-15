@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务监督面板</title>
+  <style>
+    :root {
+      --bg: #f7f8fc;
+      --card: #ffffff;
+      --text: #121622;
+      --muted: #5f6a82;
+      --line: #d9dff0;
+      --ok: #2f9e44;
+      --run: #1c7ed6;
+      --wait: #868e96;
+      --fail: #c92a2a;
+      --accent: #0b7285;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #f8fbff 0%, #f5f6fa 100%);
+      color: var(--text);
+      font: 14px/1.5 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px 16px 28px;
+    }
+    .title-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 10px 16px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0.4px;
+    }
+    .meta {
+      color: var(--muted);
+    }
+    .status-pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 12px;
+      color: #fff;
+      background: var(--wait);
+    }
+    .status-pending { background: var(--wait); }
+    .status-running { background: var(--run); }
+    .status-done { background: var(--ok); }
+    .status-failed { background: var(--fail); }
+    .status-not_found { background: #495057; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 14px 0 18px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 4px 12px rgba(17, 27, 54, 0.05);
+    }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .module-name {
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.4px;
+    }
+    .progress {
+      height: 8px;
+      border-radius: 999px;
+      background: #edf1fb;
+      overflow: hidden;
+    }
+    .progress > span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, #1982c4 0%, #2a9d8f 100%);
+      width: 0;
+      transition: width 0.3s ease;
+    }
+    .stats {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .err {
+      margin-top: 6px;
+      color: var(--fail);
+      font-size: 12px;
+      min-height: 18px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      box-shadow: 0 4px 12px rgba(17, 27, 54, 0.05);
+    }
+    .counts {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .tag {
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      background: #fff;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid #e9edf7;
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: #3d4a66;
+      font-weight: 600;
+      background: #fafcff;
+      position: sticky;
+      top: 0;
+    }
+    .mono { font-family: "JetBrains Mono", "Consolas", monospace; }
+    @media (max-width: 768px) {
+      .container { padding: 14px 10px 20px; }
+      h1 { font-size: 18px; }
+      table { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="title-row">
+      <h1>任务监督面板</h1>
+      <span class="meta">task_id=<span id="task-id" class="mono">-</span></span>
+      <span id="task-status" class="status-pill status-pending">pending</span>
+      <span class="meta">更新时间：<span id="updated-at">-</span></span>
+    </div>
+
+    <div id="module-grid" class="grid"></div>
+
+    <div class="panel">
+      <div class="counts" id="chain-counts"></div>
+      <div style="overflow:auto;max-height: 58vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>unit_index</th>
+              <th>segment_id</th>
+              <th>shot_id</th>
+              <th>B</th>
+              <th>C</th>
+              <th>D</th>
+              <th>错误摘要</th>
+            </tr>
+          </thead>
+          <tbody id="chain-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const query = new URLSearchParams(window.location.search);
+    const taskId = query.get("task_id") || "";
+    const taskIdNode = document.getElementById("task-id");
+    const taskStatusNode = document.getElementById("task-status");
+    const updatedAtNode = document.getElementById("updated-at");
+    const moduleGrid = document.getElementById("module-grid");
+    const chainCountsNode = document.getElementById("chain-counts");
+    const chainTableBody = document.getElementById("chain-table-body");
+    const moduleOrder = ["A", "B", "C", "D"];
+    let ws = null;
+    let reconnectTimer = null;
+    let fallbackPollTimer = null;
+    let lastSnapshotAt = 0;
+    taskIdNode.textContent = taskId || "-";
+
+    function statusClass(status) {
+      return `status-${String(status || "pending").replace(/[^a-z_]/gi, "_").toLowerCase()}`;
+    }
+
+    function makeStatusPill(status) {
+      const span = document.createElement("span");
+      span.className = `status-pill ${statusClass(status)}`;
+      span.textContent = status || "unknown";
+      return span;
+    }
+
+    function renderModuleOverview(moduleOverview) {
+      moduleGrid.innerHTML = "";
+      for (const moduleName of moduleOrder) {
+        const item = moduleOverview[moduleName] || {};
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const head = document.createElement("div");
+        head.className = "card-head";
+        const title = document.createElement("span");
+        title.className = "module-name";
+        title.textContent = `模块 ${moduleName}`;
+        head.appendChild(title);
+        head.appendChild(makeStatusPill(item.status || "pending"));
+
+        const progressWrap = document.createElement("div");
+        progressWrap.className = "progress";
+        const progressBar = document.createElement("span");
+        const pct = Number(item.progress || 0);
+        progressBar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+        progressWrap.appendChild(progressBar);
+
+        const stats = document.createElement("div");
+        stats.className = "stats";
+        stats.innerHTML = `<span>进度 ${pct.toFixed(2)}%</span><span>${Number(item.done || 0)}/${Number(item.total || 0)}</span>`;
+
+        const err = document.createElement("div");
+        err.className = "err";
+        err.textContent = item.error_message || "";
+
+        card.appendChild(head);
+        card.appendChild(progressWrap);
+        card.appendChild(stats);
+        card.appendChild(err);
+        moduleGrid.appendChild(card);
+      }
+    }
+
+    function renderChainCounts(chainCounts) {
+      chainCountsNode.innerHTML = "";
+      const order = ["pending", "running", "done", "failed"];
+      for (const key of order) {
+        const tag = document.createElement("span");
+        tag.className = "tag";
+        tag.textContent = `${key}: ${Number(chainCounts[key] || 0)}`;
+        chainCountsNode.appendChild(tag);
+      }
+    }
+
+    function renderChains(rows) {
+      chainTableBody.innerHTML = "";
+      if (!rows || rows.length === 0) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 7;
+        td.textContent = "暂无链路单元数据";
+        td.style.color = "#73809e";
+        tr.appendChild(td);
+        chainTableBody.appendChild(tr);
+        return;
+      }
+
+      for (const row of rows) {
+        const tr = document.createElement("tr");
+        const errorText = [row.b_error_message, row.c_error_message, row.d_error_message].filter(Boolean).join(" | ");
+        tr.innerHTML = `
+          <td class="mono">${row.unit_index ?? ""}</td>
+          <td class="mono">${row.segment_id ?? ""}</td>
+          <td class="mono">${row.shot_id ?? ""}</td>
+          <td>${row.b_status ?? ""}</td>
+          <td>${row.c_status ?? ""}</td>
+          <td>${row.d_status ?? ""}</td>
+          <td title="${errorText || ""}">${errorText || ""}</td>
+        `;
+        chainTableBody.appendChild(tr);
+      }
+    }
+
+    function applySnapshot(snapshot) {
+      lastSnapshotAt = Date.now();
+      taskIdNode.textContent = snapshot.task_id || "-";
+      taskStatusNode.className = `status-pill ${statusClass(snapshot.task_status)}`;
+      taskStatusNode.textContent = snapshot.task_status || "unknown";
+      updatedAtNode.textContent = snapshot.updated_at || "-";
+      renderModuleOverview(snapshot.module_overview || {});
+      renderChainCounts(snapshot.chain_counts || {});
+      renderChains(snapshot.bcd_chains || []);
+    }
+
+    async function fetchSnapshot() {
+      const response = await fetch(`/snapshot?task_id=${encodeURIComponent(taskId)}`, { cache: "no-store" });
+      if (!response.ok) {
+        return;
+      }
+      const snapshot = await response.json();
+      applySnapshot(snapshot);
+    }
+
+    function scheduleReconnect(delayMs = 1000) {
+      if (reconnectTimer) {
+        return;
+      }
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectSocket();
+      }, delayMs);
+    }
+
+    function connectSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const protocol = location.protocol === "https:" ? "wss" : "ws";
+      ws = new WebSocket(`${protocol}://${location.host}/ws?task_id=${encodeURIComponent(taskId)}`);
+      ws.onopen = () => {
+        lastSnapshotAt = Date.now();
+      };
+      ws.onmessage = (event) => {
+        try {
+          applySnapshot(JSON.parse(event.data));
+        } catch (_error) {
+          console.error("快照解析失败");
+        }
+      };
+      ws.onclose = () => {
+        scheduleReconnect(1000);
+      };
+    }
+
+    function startFallbackPolling() {
+      fallbackPollTimer = setInterval(() => {
+        const wsReady = ws && ws.readyState === WebSocket.OPEN;
+        const stale = Date.now() - lastSnapshotAt > 5000;
+        if (!wsReady || stale) {
+          fetchSnapshot().catch(() => {});
+        }
+      }, 2000);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        fetchSnapshot().catch(() => {});
+        connectSocket();
+      }
+    });
+
+    fetchSnapshot().catch(() => {});
+    connectSocket();
+    startFallbackPolling();
+  </script>
+</body>
+</html>
