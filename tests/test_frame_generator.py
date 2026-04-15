@@ -45,10 +45,15 @@ def test_mock_frame_generator_should_render_chinese_scene_text(tmp_path: Path) -
         }
     ]
 
-    frame_items = generator.generate(shots=shots, output_dir=tmp_path / "frames", width=960, height=540)
-    assert len(frame_items) == 1
+    frame_item = generator.generate_one(
+        shot=shots[0],
+        output_dir=tmp_path / "frames",
+        width=960,
+        height=540,
+        shot_index=0,
+    )
 
-    frame_path = Path(frame_items[0]["frame_path"])
+    frame_path = Path(frame_item["frame_path"])
     assert frame_path.exists()
 
     image = Image.open(frame_path)
@@ -85,9 +90,14 @@ def test_mock_frame_generator_should_render_lyrics_text_with_new_fields(tmp_path
         }
     ]
 
-    frame_items = generator.generate(shots=shots, output_dir=tmp_path / "frames", width=960, height=540)
-    assert len(frame_items) == 1
-    assert Path(frame_items[0]["frame_path"]).exists()
+    frame_item = generator.generate_one(
+        shot=shots[0],
+        output_dir=tmp_path / "frames",
+        width=960,
+        height=540,
+        shot_index=0,
+    )
+    assert Path(frame_item["frame_path"]).exists()
 
 
 def test_extract_lyric_text_for_shot_should_fallback_to_lyric_units() -> None:
