@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "bindings": [
+    {
+      "binding_name": "xiantiao_style",
+      "model_series": "15",
+      "remote_dir": "/lora/15/xiantiao_style",
+      "lora_file": "models/lora/15/xiantiao_style/xiantiao_style.safetensors",
+      "meta_file": "models/lora/15/xiantiao_style/xiantiao_style.txt",
+      "base_model_key": "base_15_diffusers_revanimated_v122",
+      "base_model_path": "models/base_model/15/diffusers/revAnimated_v122",
+      "meta_base_model_text": "",
+      "updated_at": "2026-04-16T21:35:18"
+    },
+    {
+      "binding_name": "极简黑白线稿风格Black And White Basics Style（LoRA 模型）网盘免费下载",
+      "model_series": "fl",
+      "remote_dir": "/lora/fl/极简黑白线稿风格Black And White Basics Style（LoRA 模型）网盘免费下载",
+      "lora_file": "models/lora/fl/极简黑白线稿风格Black And White Basics Style（LoRA 模型）网盘免费下载/BlackWhiteBasicsStyleFlux.safetensors",
+      "meta_file": "models/lora/fl/极简黑白线稿风格Black And White Basics Style（LoRA 模型）网盘免费下载/基本参考值.txt",
+      "base_model_key": "fl_base_default",
+      "base_model_path": "models/base_model/fl/diffusers",
+      "meta_base_model_text": "Flux.1 D",
+      "updated_at": "2026-04-16T19:10:42"
+    }
+  ]
+}
