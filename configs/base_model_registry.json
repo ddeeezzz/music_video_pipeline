@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "base_models": [
+    {
+      "key": "sd15_base_default",
+      "series": "15",
+      "path": "models/base_model/15/diffusers/stable-diffusion-v1-5",
+      "type": "directory",
+      "enabled": true,
+      "description": "SD1.5 基础模型目录（diffusers/stable-diffusion-v1-5）",
+      "format": "diffusers"
+    },
+    {
+      "key": "sdxl_base_default",
+      "series": "xl",
+      "path": "models/base_model/xl/diffusers/stable-diffusion-xl-base-1.0",
+      "type": "directory",
+      "enabled": true,
+      "description": "SDXL 基础模型目录（diffusers/stable-diffusion-xl-base-1.0）",
+      "format": "diffusers"
+    },
+    {
+      "key": "fl_base_default",
+      "series": "fl",
+      "path": "models/base_model/fl/diffusers",
+      "type": "directory",
+      "enabled": true,
+      "description": "FL 系列基础模型目录（diffusers）",
+      "format": "diffusers"
+    },
+    {
+      "key": "base_15_single_revanimated_v122",
+      "series": "15",
+      "format": "single",
+      "path": "models/base_model/15/single/revAnimated_v122",
+      "type": "directory",
+      "enabled": true,
+      "description": "SD1.5 单文件底模目录（single/revAnimated_v122）"
+    },
+    {
+      "key": "base_15_diffusers_revanimated_v122",
+      "series": "15",
+      "format": "diffusers",
+      "path": "models/base_model/15/diffusers/revAnimated_v122",
+      "type": "directory",
+      "enabled": true,
+      "description": "HF 仓库下载基础模型目录（排除示例图）：LottePeisch/RevAnimated-Diffusers@main"
+    }
+  ]
+}
