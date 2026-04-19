@@ -154,8 +154,8 @@ def execute_one_unit_with_retry(
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
-                width=context.config.mock.video_width,
-                height=context.config.mock.video_height,
+                width=context.config.render.video_width,
+                height=context.config.render.video_height,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
             return frame_item
@@ -201,8 +201,8 @@ def _execute_units_serial(
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
-                width=context.config.mock.video_width,
-                height=context.config.mock.video_height,
+                width=context.config.render.video_width,
+                height=context.config.render.video_height,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
         except Exception as error:  # noqa: BLE001
@@ -239,8 +239,8 @@ def _execute_units_parallel(
                 generator,
                 unit,
                 frames_dir,
-                context.config.mock.video_width,
-                context.config.mock.video_height,
+                context.config.render.video_width,
+                context.config.render.video_height,
             ): unit
             for unit in pending_units
         }

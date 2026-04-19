@@ -13,6 +13,8 @@ from pathlib import Path
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：关键帧生成器工厂
 from music_video_pipeline.generators import build_frame_generator
+# 项目内模块：模块C扩散元信息解析
+from music_video_pipeline.generators.frame_generator import resolve_module_c_diffusion_trace_metadata
 # 项目内模块：JSON 工具
 from music_video_pipeline.io_utils import read_json, write_json
 # 项目内模块：模块C单元执行器
@@ -87,6 +89,17 @@ def run_module_c(context: RuntimeContext) -> Path:
         done_shot_ids = {str(item["shot_id"]) for item in frame_items}
         missing_unit_ids = [unit.unit_id for unit in units if unit.unit_id not in done_shot_ids]
         raise RuntimeError(f"模块C执行失败：存在未完成单元，missing_unit_ids={missing_unit_ids}")
+    if str(context.config.mode.frame_generator).strip().lower() == "diffusion":
+        trace_metadata = resolve_module_c_diffusion_trace_metadata()
+        frame_items = [
+            {
+                **item,
+                "binding_name": str(trace_metadata["binding_name"]),
+                "base_model_key": str(trace_metadata["base_model_key"]),
+                "lora_file": str(trace_metadata["lora_file"]),
+            }
+            for item in frame_items
+        ]
 
     output_data = build_module_c_output(
         task_id=context.task_id,
