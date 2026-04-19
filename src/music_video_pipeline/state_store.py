@@ -176,6 +176,64 @@ class StateStore:
             row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             return dict(row) if row else None
 
+    def list_tasks(self) -> list[dict[str, Any]]:
+        """
+        功能说明：按更新时间倒序读取任务列表（用于交互式任务选择）。
+        参数说明：无。
+        返回值：
+        - list[dict[str, Any]]: 任务概览数组，包含 task_id/status/config_path/audio_path/updated_at。
+        异常说明：查询失败时抛出 sqlite3.Error。
+        边界条件：无任务时返回空数组。
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT task_id, status, config_path, audio_path, updated_at
+                FROM tasks
+                ORDER BY updated_at DESC, task_id ASC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def list_task_module_status_map(self, task_ids: list[str]) -> dict[str, dict[str, str]]:
+        """
+        功能说明：批量读取任务的 A/B/C/D 模块状态映射。
+        参数说明：
+        - task_ids: 任务ID数组。
+        返回值：
+        - dict[str, dict[str, str]]: task_id -> {A/B/C/D: status}。
+        异常说明：查询失败时抛出 sqlite3.Error。
+        边界条件：入参为空时返回空字典；缺失模块默认补为 pending。
+        """
+        normalized_task_ids = [str(task_id).strip() for task_id in task_ids if str(task_id).strip()]
+        if not normalized_task_ids:
+            return {}
+
+        summary_map: dict[str, dict[str, str]] = {
+            task_id: {module_name: "pending" for module_name in MODULE_ORDER}
+            for task_id in normalized_task_ids
+        }
+        placeholders = ",".join("?" for _ in normalized_task_ids)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT task_id, module_name, status
+                FROM module_runs
+                WHERE task_id IN ({placeholders})
+                """,
+                tuple(normalized_task_ids),
+            ).fetchall()
+        for row in rows:
+            task_id = str(row["task_id"])
+            module_name = str(row["module_name"])
+            status_text = str(row["status"])
+            if task_id not in summary_map:
+                continue
+            if module_name not in MODULE_ORDER:
+                continue
+            summary_map[task_id][module_name] = status_text
+        return summary_map
+
     def get_audio_path(self, task_id: str) -> str | None:
         """
         功能说明：读取任务绑定的音频路径。
@@ -232,6 +290,66 @@ class StateStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT module_name, status FROM module_runs WHERE task_id = ?", (task_id,)).fetchall()
             return {str(row["module_name"]): str(row["status"]) for row in rows}
+
+    def reconcile_bcd_module_statuses_by_units(self, task_id: str) -> dict[str, str]:
+        """
+        功能说明：基于 B/C/D 单元状态自愈模块级状态，避免中断后模块状态滞留在 running。
+        参数说明：
+        - task_id: 任务唯一标识。
+        返回值：
+        - dict[str, str]: 自愈后的模块状态映射。
+        异常说明：数据库读写失败时抛出 sqlite3.Error。
+        边界条件：无单元记录的模块保持原状态不变。
+        """
+        for module_name in ("B", "C", "D"):
+            module_record = self.get_module_record(task_id=task_id, module_name=module_name) or {}
+            current_status = str(module_record.get("status", "pending"))
+            summary = self.get_module_unit_status_summary(task_id=task_id, module_name=module_name)
+            total_units = int(summary.get("total_units", 0))
+            if total_units <= 0:
+                continue
+
+            status_counts = summary.get("status_counts", {})
+            done_count = int(status_counts.get("done", 0))
+            failed_count = int(status_counts.get("failed", 0))
+            running_count = int(status_counts.get("running", 0))
+            pending_count = int(status_counts.get("pending", 0))
+
+            expected_status = current_status
+            if done_count == total_units:
+                expected_status = "done"
+            elif failed_count > 0:
+                expected_status = "failed"
+            elif running_count > 0:
+                expected_status = "running"
+            elif pending_count > 0:
+                expected_status = "pending"
+
+            if expected_status == current_status:
+                continue
+
+            artifact_path = str(module_record.get("artifact_path", ""))
+            error_message = ""
+            if expected_status == "failed":
+                problem_unit_ids = list(summary.get("problem_unit_ids", []))
+                error_message = f"模块{module_name}存在未完成链路，problem_unit_ids={problem_unit_ids}"
+            self.set_module_status(
+                task_id=task_id,
+                module_name=module_name,
+                status=expected_status,
+                artifact_path=artifact_path,
+                error_message=error_message,
+            )
+
+        status_map = self.get_module_status_map(task_id=task_id)
+        if all(status_map.get(module_name) == "done" for module_name in MODULE_ORDER):
+            task_record = self.get_task(task_id=task_id) or {}
+            if str(task_record.get("status", "")) != "done":
+                module_d_record = self.get_module_record(task_id=task_id, module_name="D") or {}
+                output_video_path = str(module_d_record.get("artifact_path", ""))
+                self.update_task_status(task_id=task_id, status="done", output_video_path=output_video_path)
+                status_map = self.get_module_status_map(task_id=task_id)
+        return status_map
 
     def get_module_record(self, task_id: str, module_name: str) -> dict[str, Any] | None:
         """

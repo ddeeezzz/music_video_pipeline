@@ -1,0 +1,63 @@
+flowchart TD
+    A["入口：uv run mvpl"] --> B{"是否带子命令?"}
+    B -->|否| C["进入交互模式<br/>显示项目根目录 / 默认配置 / runs_dir / 最近输入"]
+    B -->|是| P["参数模式（argparse）"]
+
+    P --> P1["构建 CommandRequest"]
+    P1 --> P2["MvplCommandService.execute"]
+    P2 --> P3{"执行结果"}
+    P3 -->|成功| P4["输出摘要并退出"]
+    P3 -->|失败| P5["输出错误并非零退出"]
+
+    C --> D{"主菜单"}
+    D -->|run| M1["采集：task_id / config / audio(可空)"]
+    D -->|resume| M2["采集：task_id / config"]
+    D -->|run-module| M3["采集：task_id / module / config / audio(可空)"]
+    D -->|b/c/d/bcd-task-status| M4["采集：task_id / config"]
+    D -->|monitor| M5["采集：task_id / config"]
+    D -->|upload-worker| M6["采集：config / once或drain / 可选task_id过滤"]
+    D -->|显示高级操作| H0{"二次确认?"}
+    D -->|清除最近输入| D1["清空本地会话记忆"] --> D
+    D -->|退出| Z["结束"]
+
+    M1 --> G0
+    M2 --> G0
+    M3 --> G0
+    M4 --> G0
+    M5 --> G0
+    M6 --> G0
+
+    H0 -->|否| D
+    H0 -->|是| H{"高级菜单"}
+    H -->|run-force / resume-force / run-module-force| R0["重跑采集流程"]
+    H -->|b-retry-segment / c-retry-shot / d-retry-shot / bcd-retry-segment| R0
+    H -->|返回主菜单| D
+    H -->|退出| Z
+
+    R0 --> R1["步骤1：选择状态库 pipeline_state.sqlite3"]
+    R1 --> R2{"有可用DB?"}
+    R2 -->|否| H
+    R2 -->|是| R3["步骤2：选择任务<br/>展示 task_id + task_status + A/B/C/D + updated_at"]
+    R3 --> R4{"库中有任务?"}
+    R4 -->|否| H
+    R4 -->|是| R5["自动注入 task_id/config_path/audio_path"]
+    R5 --> R6["采集补充参数：force-module 或 segment_id/shot_id"]
+    R6 --> G1
+
+    G0["参数预览 + 风险提示"] --> G2{"确认执行?"}
+    G1["参数预览 + 风险提示"] --> G2
+    G2 -->|否| D
+    G2 -->|是| E1["调用 MvplCommandService.execute"]
+    E1 --> E2{"执行结果"}
+    E2 -->|成功（主菜单命令）| D
+    E2 -->|成功（高级命令）| H
+    E2 -->|失败| E3{"失败后操作"}
+    E3 -->|重试本次参数| E1
+    E3 -->|修改参数| D
+    E3 -->|返回菜单| D
+    E3 -->|退出| Z
+
+    R3 -. "q 返回上一步" .-> R1
+    R6 -. "q 返回上一步" .-> R3
+    D -. "Ctrl+C -> 返回主菜单/退出确认" .-> D
+    H -. "Ctrl+C -> 返回主菜单/退出确认" .-> H

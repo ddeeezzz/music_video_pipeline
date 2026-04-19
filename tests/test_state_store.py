@@ -44,6 +44,57 @@ def test_state_store_should_follow_basic_flow(tmp_path: Path) -> None:
     assert store.first_non_done_module(task_id="task_001") is None
 
 
+def test_state_store_should_list_tasks_in_updated_order(tmp_path: Path) -> None:
+    """
+    功能说明：验证任务列表会按 updated_at 倒序返回关键字段。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：同秒场景下允许 task_id 次级排序。
+    """
+    store = StateStore(db_path=tmp_path / "state.sqlite3")
+    store.init_task(task_id="task_old", audio_path="old.mp3", config_path="old.json")
+    store.init_task(task_id="task_new", audio_path="new.mp3", config_path="new.json")
+    store.update_task_status(task_id="task_old", status="running")
+    store.update_task_status(task_id="task_new", status="failed")
+
+    with store._connect() as connection:  # type: ignore[attr-defined]
+        connection.execute("UPDATE tasks SET updated_at = ? WHERE task_id = ?", ("2026-04-17T12:00:00+08:00", "task_old"))
+        connection.execute("UPDATE tasks SET updated_at = ? WHERE task_id = ?", ("2026-04-17T12:10:00+08:00", "task_new"))
+        connection.commit()
+
+    rows = store.list_tasks()
+    assert [item["task_id"] for item in rows] == ["task_new", "task_old"]
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["config_path"] == "new.json"
+    assert rows[0]["audio_path"] == "new.mp3"
+    assert rows[0]["updated_at"] == "2026-04-17T12:10:00+08:00"
+
+
+def test_state_store_should_list_task_module_status_map(tmp_path: Path) -> None:
+    """
+    功能说明：验证可批量返回任务 A/B/C/D 模块状态映射。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：缺失模块状态默认 pending。
+    """
+    store = StateStore(db_path=tmp_path / "state.sqlite3")
+    store.init_task(task_id="task_map_001", audio_path="a.mp3", config_path="a.json")
+    store.init_task(task_id="task_map_002", audio_path="b.mp3", config_path="b.json")
+    store.set_module_status(task_id="task_map_001", module_name="A", status="done", artifact_path="a_out.json")
+    store.set_module_status(task_id="task_map_001", module_name="B", status="failed", error_message="mock")
+
+    summary = store.list_task_module_status_map(task_ids=["task_map_001", "task_map_002"])
+    assert summary["task_map_001"]["A"] == "done"
+    assert summary["task_map_001"]["B"] == "failed"
+    assert summary["task_map_001"]["C"] == "pending"
+    assert summary["task_map_001"]["D"] == "pending"
+    assert summary["task_map_002"] == {"A": "pending", "B": "pending", "C": "pending", "D": "pending"}
+
+
 def test_state_store_should_block_downstream_when_upstream_not_done(tmp_path: Path) -> None:
     """
     功能说明：验证上游未完成时下游不可执行。
@@ -100,6 +151,60 @@ def test_state_store_should_reject_invalid_status(tmp_path: Path) -> None:
     store.init_task(task_id="task_004", audio_path="a.mp3", config_path="c.json")
     with pytest.raises(ValueError):
         store.set_module_status(task_id="task_004", module_name="A", status="unknown")
+
+
+def test_reconcile_bcd_module_statuses_by_units_should_heal_stale_running_state(tmp_path: Path) -> None:
+    """
+    功能说明：验证当 B/C 单元已全部 done 时，模块级 running 状态会被自动自愈为 done。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：D 未完成时仅修正 B/C，不提前标记任务 done。
+    """
+    store = StateStore(db_path=tmp_path / "state.sqlite3")
+    store.init_task(task_id="task_heal_001", audio_path="a.mp3", config_path="c.json")
+    store.update_task_status(task_id="task_heal_001", status="running")
+    store.set_module_status(task_id="task_heal_001", module_name="A", status="done", artifact_path="a.json")
+    store.set_module_status(task_id="task_heal_001", module_name="B", status="running")
+    store.set_module_status(task_id="task_heal_001", module_name="C", status="running")
+    store.set_module_status(task_id="task_heal_001", module_name="D", status="running", artifact_path="final.mp4")
+
+    store.sync_module_units(
+        task_id="task_heal_001",
+        module_name="B",
+        units=[{"unit_id": "seg_001", "unit_index": 0, "start_time": 0.0, "end_time": 1.0, "duration": 1.0}],
+    )
+    store.sync_module_units(
+        task_id="task_heal_001",
+        module_name="C",
+        units=[{"unit_id": "shot_001", "unit_index": 0, "start_time": 0.0, "end_time": 1.0, "duration": 1.0}],
+    )
+    store.sync_module_units(
+        task_id="task_heal_001",
+        module_name="D",
+        units=[
+            {"unit_id": "shot_001", "unit_index": 0, "start_time": 0.0, "end_time": 1.0, "duration": 1.0},
+            {"unit_id": "shot_002", "unit_index": 1, "start_time": 1.0, "end_time": 2.0, "duration": 1.0},
+        ],
+    )
+
+    store.set_module_unit_status(task_id="task_heal_001", module_name="B", unit_id="seg_001", status="done")
+    store.set_module_unit_status(task_id="task_heal_001", module_name="C", unit_id="shot_001", status="done")
+    store.set_module_unit_status(task_id="task_heal_001", module_name="D", unit_id="shot_001", status="done")
+    store.set_module_unit_status(task_id="task_heal_001", module_name="D", unit_id="shot_002", status="running")
+
+    healed_status_map = store.reconcile_bcd_module_statuses_by_units(task_id="task_heal_001")
+    assert healed_status_map["A"] == "done"
+    assert healed_status_map["B"] == "done"
+    assert healed_status_map["C"] == "done"
+    assert healed_status_map["D"] == "running"
+    assert store.get_task(task_id="task_heal_001")["status"] == "running"
+
+    store.set_module_unit_status(task_id="task_heal_001", module_name="D", unit_id="shot_002", status="done")
+    healed_all_done = store.reconcile_bcd_module_statuses_by_units(task_id="task_heal_001")
+    assert healed_all_done["D"] == "done"
+    assert store.get_task(task_id="task_heal_001")["status"] == "done"
 
 
 def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None:

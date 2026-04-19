@@ -11,6 +11,9 @@ import argparse
 # 标准库：用于路径处理
 from pathlib import Path
 
+# 第三方库：用于异常断言
+import pytest
+
 # 项目内模块：配置数据类
 from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
 # 项目内模块：CLI实现
@@ -136,6 +139,95 @@ def test_dispatch_command_should_route_to_module_c_status_and_retry_methods(tmp_
     assert fake_runner.calls[1][1]["task_id"] == "task_dispatch_001"
     assert fake_runner.calls[1][1]["shot_id"] == "shot_003"
     assert fake_runner.calls[1][1]["config_path"] == str(config_path)
+
+
+def test_build_parser_should_allow_no_subcommand_for_interactive_mode(tmp_path: Path) -> None:
+    """
+    功能说明：验证解析器允许无子命令输入，以支持交互模式入口。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：无参数时 command 应为空。
+    """
+    workspace_root = tmp_path / "workspace_interactive"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    args = parser.parse_args([])
+    assert getattr(args, "command", None) is None
+    assert cli._should_enter_interactive_mode(args=args) is True
+
+
+def test_build_parser_should_reject_removed_upload_worker_command(tmp_path: Path) -> None:
+    """
+    功能说明：验证 upload-worker 旧命令入口已下线。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：
+    - SystemExit: argparse 解析未知子命令时会退出。
+    边界条件：仅验证命令入口是否移除，不涉及执行流程。
+    """
+    workspace_root = tmp_path / "workspace_removed_upload_worker"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["upload-worker", "--once"])
+
+
+def test_main_without_subcommand_should_enter_interactive_mode(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证 mvpl 无子命令时会进入交互模式。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    - monkeypatch: pytest 补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：交互模式在本测试中使用假实现防止阻塞。
+    """
+    called: list[Path] = []
+
+    def _fake_run_interactive_cli(*, workspace_root: Path, default_config_path: Path, execute_request):  # noqa: ANN001
+        _ = execute_request
+        called.append(workspace_root)
+        assert str(default_config_path).endswith("configs/default.json")
+        return 0
+
+    monkeypatch.setattr(cli, "run_interactive_cli", _fake_run_interactive_cli)
+    monkeypatch.setattr(cli.sys, "argv", ["mvpl"])
+
+    # 直接调用 main，不应抛异常。
+    cli.main()
+    assert called, "预期应进入交互模式"
+
+
+def test_apply_user_custom_prompt_override_should_patch_runtime_config(tmp_path: Path) -> None:
+    """
+    功能说明：验证命令请求携带 user_custom_prompt 覆盖值时会注入运行时配置。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：覆盖值为空字符串时同样视为有效覆盖。
+    """
+    config = _build_test_config(runs_dir=str(tmp_path / "runs_cli_override"))
+    request = cli.CommandRequest(
+        command="run",
+        task_id="task_override_001",
+        config_path=(tmp_path / "config.json"),
+        user_custom_prompt_override="赛博朋克女孩",
+    )
+    patched = cli._apply_user_custom_prompt_override(config=config, request=request)
+    assert patched.module_b.llm.user_custom_prompt == "赛博朋克女孩"
+
+    empty_override_request = cli.CommandRequest(
+        command="run",
+        task_id="task_override_001",
+        config_path=(tmp_path / "config.json"),
+        user_custom_prompt_override="",
+    )
+    empty_patched = cli._apply_user_custom_prompt_override(config=config, request=empty_override_request)
+    assert empty_patched.module_b.llm.user_custom_prompt == ""
 
 
 def _build_test_config(runs_dir: str) -> AppConfig:

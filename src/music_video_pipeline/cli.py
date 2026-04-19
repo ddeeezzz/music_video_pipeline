@@ -10,6 +10,8 @@
 import argparse
 # 标准库：用于HTML转义
 from html import escape
+# 标准库：用于 dataclass 局部替换
+from dataclasses import replace
 # 标准库：用于日志对象
 import logging
 # 标准库：用于路径处理
@@ -19,14 +21,22 @@ import sys
 # 标准库：用于类型提示
 from typing import Any
 
+# 项目内模块：运行期噪声过滤器（需最早安装，避免导入期噪声刷屏）
+from music_video_pipeline.log_filters import install_runtime_noise_filters
+
+install_runtime_noise_filters()
+
+# 项目内模块：命令服务层
+from music_video_pipeline.command_service import CommandRequest, MvplCommandService
 # 项目内模块：配置加载
 from music_video_pipeline.config import AppConfig, load_config
+# 项目内模块：交互式 CLI
+from music_video_pipeline.interactive_cli import run_interactive_cli
 # 项目内模块：日志初始化
 from music_video_pipeline.logging_utils import setup_logging
-# 项目内模块：任务监督服务
-from music_video_pipeline.monitoring import TaskMonitorService
-# 项目内模块：流水线调度器
-from music_video_pipeline.pipeline import PipelineRunner
+
+# 任务监督服务类采用延迟导入，避免交互菜单启动时加载重依赖。
+TaskMonitorService: Any | None = None
 
 
 def main() -> None:
@@ -41,19 +51,40 @@ def main() -> None:
     parser = _build_parser(workspace_root=workspace_root)
     args = parser.parse_args()
 
+    if _should_enter_interactive_mode(args=args):
+        interactive_exit_code = run_interactive_cli(
+            workspace_root=workspace_root,
+            default_config_path=(workspace_root / "configs" / "default.json"),
+            execute_request=lambda request: _execute_request_with_loaded_runtime(
+                workspace_root=workspace_root,
+                request=request,
+            ),
+        )
+        if interactive_exit_code != 0:
+            sys.exit(interactive_exit_code)
+        return
+
     config_path = _resolve_path(workspace_root=workspace_root, input_path=Path(args.config))
     config = load_config(config_path=config_path)
     logger = setup_logging(level=config.logging.level)
 
-    runner = PipelineRunner(workspace_root=workspace_root, config=config, logger=logger)
+    runner = _build_pipeline_runner(
+        workspace_root=workspace_root,
+        config=config,
+        logger=logger,
+    )
     command_failed = False
     try:
-        summary = _dispatch_command(
+        request = _build_command_request(
             args=args,
+            config_path=config_path,
+        )
+        config = _apply_user_custom_prompt_override(config=config, request=request)
+        summary = _execute_request(
+            request=request,
             runner=runner,
             workspace_root=workspace_root,
             config=config,
-            config_path=config_path,
             logger=logger,
         )
         logger.info("任务执行摘要：%s", summary)
@@ -65,6 +96,23 @@ def main() -> None:
         logger.error("命令执行失败：%s", error)
     if command_failed:
         sys.exit(1)
+
+
+def _should_enter_interactive_mode(args: argparse.Namespace) -> bool:
+    """
+    功能说明：判断当前是否应进入交互模式。
+    参数说明：
+    - args: 解析后的命令行参数。
+    返回值：
+    - bool: True 表示进入交互模式。
+    异常说明：无。
+    边界条件：无子命令或显式 --interactive 均进入交互。
+    """
+    interactive_enabled = bool(getattr(args, "interactive", False))
+    command = str(getattr(args, "command", "") or "").strip()
+    if interactive_enabled:
+        return True
+    return not command
 
 
 def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
@@ -79,7 +127,12 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
     """
     default_config_path = workspace_root / "configs" / "default.json"
     parser = argparse.ArgumentParser(description="MVP 音画同步流水线 CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="进入交互模式（无子命令时默认进入）",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=False)
 
     run_parser = subparsers.add_parser("run", help="执行全链路运行")
     run_parser.add_argument("--task-id", required=True, help="任务唯一标识")
@@ -142,31 +195,24 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
     return parser
 
 
-def _dispatch_command(
+def _build_command_request(
     args: argparse.Namespace,
-    runner: PipelineRunner,
-    workspace_root: Path,
-    config: AppConfig,
     config_path: Path,
-    logger: Any | None = None,
-) -> dict:
+) -> CommandRequest:
     """
-    功能说明：根据子命令调用对应执行逻辑。
+    功能说明：根据子命令构建结构化命令请求。
     参数说明：
     - args: 命令行解析结果。
-    - runner: 流水线调度器。
-    - workspace_root: 项目根目录。
-    - config: 应用配置对象。
     - config_path: 已解析的配置路径。
     返回值：
-    - dict: 执行摘要。
+    - CommandRequest: 结构化命令请求。
     异常说明：参数缺失或执行失败时抛 RuntimeError。
     边界条件：run 命令若未给音频路径，使用配置默认音频。
     """
     if args.command == "run":
-        audio_path_text = args.audio_path if args.audio_path else config.paths.default_audio_path
-        audio_path = _resolve_path(workspace_root=workspace_root, input_path=Path(audio_path_text))
-        return runner.run(
+        audio_path = Path(args.audio_path) if args.audio_path else None
+        return CommandRequest(
+            command="run",
             task_id=args.task_id,
             audio_path=audio_path,
             config_path=config_path,
@@ -174,92 +220,230 @@ def _dispatch_command(
         )
 
     if args.command == "resume":
-        return runner.resume(
+        return CommandRequest(
+            command="resume",
             task_id=args.task_id,
             config_path=config_path,
             force_module=args.force_module,
         )
 
     if args.command == "run-module":
-        audio_path = _resolve_path(workspace_root=workspace_root, input_path=Path(args.audio_path)) if args.audio_path else None
-        return runner.run_single_module(
+        audio_path = Path(args.audio_path) if args.audio_path else None
+        return CommandRequest(
+            command="run-module",
             task_id=args.task_id,
-            module_name=args.module,
+            module=args.module,
             audio_path=audio_path,
             force=args.force,
             config_path=config_path,
         )
 
     if args.command == "c-task-status":
-        return runner.get_module_c_status_summary(
+        return CommandRequest(
+            command="c-task-status",
             task_id=args.task_id,
             config_path=config_path,
         )
 
     if args.command == "c-retry-shot":
-        return runner.retry_module_c_shot(
+        return CommandRequest(
+            command="c-retry-shot",
             task_id=args.task_id,
             shot_id=args.shot_id,
             config_path=config_path,
         )
 
     if args.command == "b-task-status":
-        return runner.get_module_b_status_summary(
+        return CommandRequest(
+            command="b-task-status",
             task_id=args.task_id,
             config_path=config_path,
         )
 
     if args.command == "b-retry-segment":
-        return runner.retry_module_b_segment(
+        return CommandRequest(
+            command="b-retry-segment",
             task_id=args.task_id,
             segment_id=args.segment_id,
             config_path=config_path,
         )
 
     if args.command == "d-task-status":
-        return runner.get_module_d_status_summary(
+        return CommandRequest(
+            command="d-task-status",
             task_id=args.task_id,
             config_path=config_path,
         )
 
     if args.command == "d-retry-shot":
-        return runner.retry_module_d_shot(
+        return CommandRequest(
+            command="d-retry-shot",
             task_id=args.task_id,
             shot_id=args.shot_id,
             config_path=config_path,
         )
 
     if args.command == "bcd-task-status":
-        return runner.get_bcd_status_summary(
+        return CommandRequest(
+            command="bcd-task-status",
             task_id=args.task_id,
             config_path=config_path,
         )
 
     if args.command == "bcd-retry-segment":
-        return runner.retry_bcd_segment(
+        return CommandRequest(
+            command="bcd-retry-segment",
             task_id=args.task_id,
             segment_id=args.segment_id,
             config_path=config_path,
         )
 
     if args.command == "monitor":
-        dispatch_logger = logger if logger is not None else logging.getLogger("music_video_pipeline.cli")
-        return _run_task_monitor_command(
-            args=args,
-            runner=runner,
-            logger=dispatch_logger,
+        return CommandRequest(
+            command="monitor",
+            task_id=args.task_id,
+            config_path=config_path,
         )
 
     raise RuntimeError(f"未知命令: {args.command}")
 
 
+def _execute_request(
+    *,
+    request: CommandRequest,
+    runner: Any,
+    workspace_root: Path,
+    config: AppConfig,
+    logger: Any | None = None,
+) -> dict:
+    """
+    功能说明：执行命令请求并返回摘要。
+    参数说明：
+    - request: 命令请求对象。
+    - runner: 流水线调度器（提供状态库与 runs_dir）。
+    - workspace_root: 项目根目录。
+    - config: 应用配置。
+    - logger: 日志对象。
+    返回值：
+    - dict: 执行摘要。
+    异常说明：下游执行失败时透传异常。
+    边界条件：monitor 命令会走专用 handler。
+    """
+    service_logger = logger if logger is not None else logging.getLogger("SYS")
+    service = MvplCommandService(
+        runner=runner,
+        workspace_root=workspace_root,
+        config=config,
+        logger=service_logger,
+        monitor_handler=_monitor_handler_for_service,
+    )
+    return service.execute(request)
+
+
+def _monitor_handler_for_service(task_id: str, runner: Any, logger: Any) -> dict:
+    """
+    功能说明：为命令服务层提供 monitor 兼容桥接。
+    参数说明：
+    - task_id: 任务标识。
+    - runner: 流水线调度器。
+    - logger: 日志对象。
+    返回值：
+    - dict: monitor 执行摘要。
+    异常说明：透传 monitor 执行异常。
+    边界条件：通过旧签名函数调用，兼容 monkeypatch 钩子。
+    """
+    return _run_task_monitor_command(
+        args=argparse.Namespace(task_id=task_id),
+        runner=runner,
+        logger=logger,
+    )
+
+
+def _execute_request_with_loaded_runtime(*, workspace_root: Path, request: CommandRequest) -> dict:
+    """
+    功能说明：按请求中的配置路径初始化运行时并执行命令。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - request: 命令请求对象。
+    返回值：
+    - dict: 执行摘要。
+    异常说明：配置加载或执行失败时抛出异常。
+    边界条件：每次执行按请求配置独立初始化 logger/runner。
+    """
+    config = load_config(config_path=request.config_path)
+    config = _apply_user_custom_prompt_override(config=config, request=request)
+    logger = setup_logging(level=config.logging.level)
+    runner = _build_pipeline_runner(
+        workspace_root=workspace_root,
+        config=config,
+        logger=logger,
+    )
+    return _execute_request(
+        request=request,
+        runner=runner,
+        workspace_root=workspace_root,
+        config=config,
+        logger=logger,
+    )
+
+
+def _apply_user_custom_prompt_override(*, config: AppConfig, request: CommandRequest) -> AppConfig:
+    """
+    功能说明：将命令请求中的 user_custom_prompt 覆盖值注入到运行时配置。
+    参数说明：
+    - config: 已加载配置对象。
+    - request: 命令请求对象。
+    返回值：
+    - AppConfig: 注入后的配置对象（若无覆盖值则返回原对象）。
+    异常说明：无。
+    边界条件：覆盖值为 None 时不改写配置；空字符串属于有效覆盖值。
+    """
+    if request.user_custom_prompt_override is None:
+        return config
+    patched_llm = replace(config.module_b.llm, user_custom_prompt=request.user_custom_prompt_override)
+    patched_module_b = replace(config.module_b, llm=patched_llm)
+    return replace(config, module_b=patched_module_b)
+
+
+def _dispatch_command(
+    args: argparse.Namespace,
+    runner: Any,
+    workspace_root: Path,
+    config: AppConfig,
+    config_path: Path,
+    logger: Any | None = None,
+) -> dict:
+    """
+    功能说明：兼容旧测试与调用方的分发函数。
+    参数说明：
+    - args: 命令行解析结果。
+    - runner: 流水线调度器。
+    - workspace_root: 项目根目录。
+    - config: 应用配置对象。
+    - config_path: 配置路径。
+    - logger: 日志对象。
+    返回值：
+    - dict: 执行摘要。
+    异常说明：参数缺失或执行失败时抛 RuntimeError。
+    边界条件：内部委托给 command service。
+    """
+    request = _build_command_request(args=args, config_path=config_path)
+    return _execute_request(
+        request=request,
+        runner=runner,
+        workspace_root=workspace_root,
+        config=config,
+        logger=logger,
+    )
+
+
 def _run_task_monitor_command(
     args: argparse.Namespace,
-    runner: PipelineRunner,
+    runner: Any,
     logger: Any,
 ) -> dict:
     """
-    功能说明：手动启动任务监督服务，并生成任务目录入口页。
+    功能说明：手动启动任务监督服务（兼容旧签名）。
     参数说明：
     - args: 命令行参数对象。
     - runner: 流水线调度器（提供状态库与 runs_dir）。
@@ -271,15 +455,43 @@ def _run_task_monitor_command(
     边界条件：服务默认持续运行，直到用户中断（Ctrl+C）或显式停止。
     """
     task_id = str(getattr(args, "task_id", "")).strip()
+    return _run_task_monitor_command_by_task(
+        task_id=task_id,
+        runner=runner,
+        logger=logger,
+    )
+
+
+def _run_task_monitor_command_by_task(
+    task_id: str,
+    runner: Any,
+    logger: Any,
+) -> dict:
+    """
+    功能说明：按 task_id 手动启动任务监督服务，并生成任务目录入口页。
+    参数说明：
+    - task_id: 任务标识。
+    - runner: 流水线调度器（提供状态库与 runs_dir）。
+    - logger: 日志对象。
+    返回值：
+    - dict: 监督服务摘要信息。
+    异常说明：
+    - RuntimeError: task_id 不存在或服务启动失败时抛出。
+    边界条件：服务默认持续运行，直到用户中断（Ctrl+C）或显式停止。
+    """
     if not task_id:
         raise RuntimeError("monitor 命令缺少 task_id。")
     if not runner.state_store.get_task(task_id=task_id):
         raise RuntimeError(f"任务不存在，无法启动监督服务：task_id={task_id}")
+    monitor_host, monitor_port = _resolve_monitor_host_port(runner=runner)
 
-    monitor_service = TaskMonitorService(
+    monitor_service_class = _get_task_monitor_service_class()
+    monitor_service = monitor_service_class(
         state_store=runner.state_store,
         task_id=task_id,
         logger=logger,
+        host=monitor_host,
+        port=monitor_port,
         auto_stop_on_terminal=False,
     )
     monitor_service.start()
@@ -311,6 +523,62 @@ def _run_task_monitor_command(
         "launch_page_path": str(launch_page_path),
         "interrupted_by_user": interrupted_by_user,
     }
+
+
+def _resolve_monitor_host_port(*, runner: Any) -> tuple[str, int]:
+    """
+    功能说明：解析任务监督服务监听 host/port（优先读取运行配置，缺失时回退默认值）。
+    参数说明：
+    - runner: 流水线调度器对象。
+    返回值：
+    - tuple[str, int]: (host, port)。
+    异常说明：无。
+    边界条件：非法端口值回退到 45705。
+    """
+    default_host = "127.0.0.1"
+    default_port = 45705
+    config = getattr(runner, "config", None)
+    monitoring = getattr(config, "monitoring", None) if config is not None else None
+    host = str(getattr(monitoring, "host", default_host) or default_host).strip() or default_host
+    try:
+        port = int(getattr(monitoring, "port", default_port))
+    except (TypeError, ValueError):
+        port = default_port
+    return host, port
+
+
+def _build_pipeline_runner(*, workspace_root: Path, config: AppConfig, logger: Any) -> Any:
+    """
+    功能说明：延迟导入并构建 PipelineRunner，降低交互菜单首屏启动耗时。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - config: 运行时配置。
+    - logger: 日志对象。
+    返回值：
+    - Any: PipelineRunner 实例。
+    异常说明：透传导入或构造异常。
+    边界条件：仅在实际执行命令时触发导入。
+    """
+    from music_video_pipeline.pipeline import PipelineRunner
+
+    return PipelineRunner(workspace_root=workspace_root, config=config, logger=logger)
+
+
+def _get_task_monitor_service_class() -> Any:
+    """
+    功能说明：按需加载 TaskMonitorService，兼容测试中的 monkeypatch。
+    参数说明：无。
+    返回值：
+    - Any: TaskMonitorService 类对象。
+    异常说明：导入失败时透传异常。
+    边界条件：若模块级 TaskMonitorService 已被替换（测试桩），直接复用。
+    """
+    global TaskMonitorService
+    if TaskMonitorService is None:
+        from music_video_pipeline.monitoring import TaskMonitorService as _TaskMonitorService
+
+        TaskMonitorService = _TaskMonitorService
+    return TaskMonitorService
 
 
 def _write_task_monitor_launch_page(task_dir: Path, task_id: str, monitor_url: str) -> Path:

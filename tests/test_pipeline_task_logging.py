@@ -53,6 +53,7 @@ def test_pipeline_should_write_task_log_for_run_and_resume(tmp_path: Path) -> No
     log_dir = task_dir / "log"
     run_logs = sorted(log_dir.glob("run_*.log"))
     assert run_logs, "run 命令未生成任务日志文件"
+    assert (log_dir / "run_1.log").exists()
     assert "模块A准备执行" in run_logs[-1].read_text(encoding="utf-8")
     run_log_text = run_logs[-1].read_text(encoding="utf-8")
     assert "任务监督入口页链接=file://" in run_log_text
@@ -60,6 +61,7 @@ def test_pipeline_should_write_task_log_for_run_and_resume(tmp_path: Path) -> No
     runner.resume(task_id="task_log_resume", config_path=tmp_path / "config.json")
     resume_logs = sorted(log_dir.glob("resume_*.log"))
     assert resume_logs, "resume 命令未生成任务日志文件"
+    assert (log_dir / "resume_1.log").exists()
     resume_log_text = resume_logs[-1].read_text(encoding="utf-8")
     assert "模块C准备执行" in resume_log_text
     assert "任务监督入口页链接=file://" in resume_log_text
@@ -101,9 +103,32 @@ def test_pipeline_should_write_task_log_for_run_single_module(tmp_path: Path) ->
     log_dir = task_dir / "log"
     single_logs = sorted(log_dir.glob("run_module_a_*.log"))
     assert single_logs, "run-module 未生成任务日志文件"
+    assert (log_dir / "run_module_a_1.log").exists()
     single_log_text = single_logs[-1].read_text(encoding="utf-8")
     assert "模块A准备执行" in single_log_text
     assert "任务监督入口页链接=file://" in single_log_text
+
+
+def test_pipeline_should_generate_incremental_log_name_and_ignore_non_numeric_suffix(tmp_path: Path) -> None:
+    """
+    功能说明：验证任务日志文件使用递增编号，且会忽略非数字后缀同名前缀日志。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：已有日志前缀编号可不连续，取最大值+1。
+    """
+    config = _build_test_config(tmp_path=tmp_path)
+    runner = PipelineRunner(workspace_root=tmp_path / "workspace_log_name", config=config, logger=logging.getLogger("test"))
+    log_dir = tmp_path / "runs" / "task_001" / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "run_1.log").write_text("", encoding="utf-8")
+    (log_dir / "run_2.log").write_text("", encoding="utf-8")
+    (log_dir / "run_abc.log").write_text("", encoding="utf-8")
+    (log_dir / "run_2_extra.log").write_text("", encoding="utf-8")
+
+    next_path = runner._next_task_log_path(log_dir=log_dir, safe_command="run")
+    assert next_path.name == "run_3.log"
 
 
 def _build_success_runner(module_name: str):

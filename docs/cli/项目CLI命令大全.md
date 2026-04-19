@@ -2,6 +2,10 @@
 
 本文汇总 `t1` 项目当前可用的 CLI 命令，覆盖全链路运行、断点恢复、单模块调试、模块 B/C/D 排障，以及模块 A 可视化脚本命令。
 
+如果你主要关心“命令怎么组合、组合后会发生什么”，先看：
+
+- [命令组合与作用速查](./命令组合与作用速查.md)
+
 ## 常用命令（先看这里）
 
 ### 全链路运行（推荐）
@@ -48,6 +52,12 @@ uv run --no-sync mvpl run --task-id demo_20s --config configs/module_b_llm_silic
 
 以下示例默认使用 `mvpl`。
 
+补充：`mvpl` 现支持无参进入交互模式。
+
+```bash
+uv run --no-sync mvpl
+```
+
 ### 1.1 `uv run` 注意事项（建议先看）
 
 `uv run` 默认会先做环境同步检查；本项目包含直链依赖（如 `natten`），网络不稳定时可能在同步阶段超时失败。
@@ -72,6 +82,82 @@ uv run --project /home/sod2204/work/zonghe/t1 --no-sync mvpl run --task-id demo_
 .venv/bin/music-video-pipeline run --task-id demo_20s --config configs/wuli_v2.json
 ```
 
+### 1.2 交互模式（无参入口）
+
+无参执行 `mvpl` 会进入交互菜单，默认主菜单包含：
+
+- `run`
+- `resume`
+- `run-module`
+- `b-task-status / c-task-status / d-task-status / bcd-task-status`
+- `monitor`
+- `upload-worker`
+
+重跑相关能力（`--force-module`、`*-retry-*`）默认隐藏在“高级菜单”，需二次确认后进入。
+
+高级菜单中的重跑交互已统一为“从数据库选任务”，不再手填 `task_id/config`：
+
+- 第一步：先选择状态库（`pipeline_state.sqlite3`，仅展示真实存在的库）。
+- 第二步：再选择任务（展示 `task_id + task_status + A/B/C/D 状态 + 更新时间`）。
+- 选中后自动注入该任务的 `task_id/config_path`；`run --force-module` 同时复用任务 `audio_path`。
+- 若无可用状态库或库内无任务，直接返回高级菜单，不提供手工覆盖入口。
+
+### 1.3 交互式 CLI 快速说明（重点）
+
+适用场景：不想记参数，想通过菜单安全执行 `run/resume/run-module` 或排障命令。
+
+启动方式：
+
+```bash
+uv run --no-sync mvpl
+```
+
+或
+
+```bash
+uv run --no-sync mvpl --interactive
+```
+
+交互主流程：
+
+- 启动后展示：项目根目录、默认配置、默认 `runs_dir`、最近一次输入的 `task_id/config/audio`。
+- 进入主菜单，选择命令后按步骤录入参数。
+- 部分菜单项在选中后会先显示“操作提示”（前置条件、是否重跑下游、推荐使用方式）。
+- 执行前统一显示“参数预览”（会显示等价命令串），再二次确认是否执行。
+- 执行成功后可选择“返回主菜单”或“退出交互模式”。
+- 执行失败后可选择“重试本次参数 / 修改参数 / 返回主菜单 / 退出”。
+
+主菜单能力：
+
+- `run`
+- `resume`
+- `run-module`
+- `b-task-status / c-task-status / d-task-status / bcd-task-status`
+- `monitor`
+- `upload-worker`
+- `显示高级操作`
+- `清除最近输入`
+- `退出`
+
+高级菜单能力（重跑相关）：
+
+- `run（含 --force-module）`
+- `resume（含 --force-module）`
+- `run-module（含 --force）`
+- `b-retry-segment / c-retry-shot / d-retry-shot / bcd-retry-segment`
+
+交互输入约定：
+
+- 所有“数字序号输入”都支持 `q/quit/exit` 返回上一步。
+- 文本输入支持回车使用默认值；可选参数中输入 `-` 可清空已有默认值。
+- 任意阶段按 `Ctrl+C` 会出现二选一：返回主菜单或退出程序。
+
+会话记忆机制：
+
+- 最近输入会写入：
+- `~/.cache/music-video-pipeline/interactive_session.json`
+- 下次进入交互会自动回填默认值；如需重置可在主菜单执行“清除最近输入”。
+
 ## 2. 主流程命令（run / resume / run-module）
 
 ### 2.1 全链路运行
@@ -86,6 +172,8 @@ uv run mvpl run --task-id demo_20s --config configs/wuli_v2.json
 
 - `--audio-path`：覆盖配置中的默认音频路径。
 - `--force-module A|B|C|D`：从指定模块开始强制重跑（该模块及下游会重置）。
+
+说明：交互模式主菜单默认不展示 `--force-module`，需进入高级菜单使用。
 
 示例：
 
@@ -103,6 +191,8 @@ uv run mvpl resume --task-id demo_20s --config configs/wuli_v2.json
 
 - `--force-module A|B|C|D`：从指定模块强制恢复执行。
 
+说明：交互模式主菜单默认不展示 `--force-module`，需进入高级菜单使用。
+
 ### 2.3 单模块调试
 
 ```bash
@@ -113,6 +203,8 @@ uv run mvpl run-module --task-id demo_20s --module C --config configs/wuli_v2.js
 
 - `--audio-path`：首次初始化任务且无历史记录时可传入。
 - `--force`：重置当前模块及下游后执行本模块。
+
+说明：交互模式主菜单默认使用不带 `--force` 的执行路径；`--force` 在高级菜单中可用。
 
 ## 3. 模块B排障命令
 

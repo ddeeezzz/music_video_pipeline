@@ -10,8 +10,8 @@
 import logging
 # 标准库：用于上下文管理器
 from contextlib import contextmanager
-# 标准库：用于日志文件名时间戳
-from datetime import datetime
+# 标准库：用于 dataclass 局部替换
+from dataclasses import replace
 # 标准库：用于HTML转义
 from html import escape
 # 标准库：用于路径处理
@@ -31,11 +31,12 @@ from music_video_pipeline.io_utils import ensure_dir
 from music_video_pipeline.modules import run_module_a_v2, run_module_b, run_module_c, run_module_d
 # 项目内模块：跨模块 B/C/D 并行入口
 from music_video_pipeline.modules.cross_bcd import run_cross_module_bcd
+# 项目内模块：跨模块自适应窗口状态快照
+from music_video_pipeline.modules.cross_bcd.scheduler import collect_adaptive_window_status_snapshot
 # 项目内模块：任务监督服务
 from music_video_pipeline.monitoring import TaskMonitorService
 # 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
-
 ModuleRunner = Callable[[RuntimeContext], Path]
 
 # 常量：任务监督入口页文件名（由 monitor 命令写入任务目录）
@@ -79,12 +80,13 @@ class PipelineRunner:
         }
 
     @contextmanager
-    def _bind_task_log_file(self, task_dir: Path, command_name: str) -> Iterator[Path]:
+    def _bind_task_log_file(self, task_dir: Path, command_name: str, config_path: Path) -> Iterator[Path]:
         """
         功能说明：在任务执行期间挂载任务级日志文件处理器。
         参数说明：
         - task_dir: 任务目录路径。
         - command_name: 命令名标识（run/resume/run_module_xxx）。
+        - config_path: 本次命令使用的配置文件路径（用于异步 worker 启动参数）。
         返回值：
         - Iterator[Path]: 日志文件路径上下文迭代器。
         异常说明：异常由调用方或上层流程统一处理。
@@ -95,13 +97,13 @@ class PipelineRunner:
         safe_command = "".join(char if char.isalnum() or char in {"_", "-"} else "_" for char in command_name.lower()).strip("_")
         if not safe_command:
             safe_command = "task"
-        timestamp_text = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        log_path = log_dir / f"{safe_command}_{timestamp_text}.log"
+        log_path = self._next_task_log_path(log_dir=log_dir, safe_command=safe_command)
         log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(log_level)
         file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
-        self.logger.addHandler(file_handler)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(file_handler)
         monitor_service: TaskMonitorService | None = None
         try:
             self.logger.info("任务日志文件已挂载，task_id目录=%s，日志路径=%s", task_dir, log_path)
@@ -119,8 +121,32 @@ class PipelineRunner:
         finally:
             if monitor_service is not None:
                 monitor_service.stop()
-            self.logger.removeHandler(file_handler)
+            root_logger.removeHandler(file_handler)
             file_handler.close()
+
+    @staticmethod
+    def _next_task_log_path(*, log_dir: Path, safe_command: str) -> Path:
+        """
+        功能说明：按命令名前缀生成递增编号日志文件路径。
+        参数说明：
+        - log_dir: 任务日志目录。
+        - safe_command: 已清洗的命令名前缀。
+        返回值：
+        - Path: 形如 `<safe_command>_<n>.log` 的新日志路径。
+        异常说明：无。
+        边界条件：忽略不匹配编号模式的同名前缀文件。
+        """
+        max_index = 0
+        prefix = f"{safe_command}_"
+        for candidate in log_dir.glob(f"{safe_command}_*.log"):
+            stem_text = candidate.stem
+            if not stem_text.startswith(prefix):
+                continue
+            index_text = stem_text[len(prefix):]
+            if not index_text.isdigit():
+                continue
+            max_index = max(max_index, int(index_text))
+        return log_dir / f"{safe_command}_{max_index + 1}.log"
 
     def _start_task_monitor_service(self, task_id: str) -> TaskMonitorService | None:
         """
@@ -136,6 +162,8 @@ class PipelineRunner:
             state_store=self.state_store,
             task_id=task_id,
             logger=self.logger,
+            host=self.config.monitoring.host,
+            port=int(self.config.monitoring.port),
             auto_stop_on_terminal=True,
         )
         try:
@@ -222,7 +250,7 @@ class PipelineRunner:
         """
         normalized_audio_path = self._resolve_audio_path(audio_path=audio_path)
         context = self._prepare_context(task_id=task_id, audio_path=normalized_audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="run"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="run", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(normalized_audio_path), config_path=str(config_path))
 
             if force_module:
@@ -253,8 +281,9 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="resume"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="resume", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id=task_id)
 
             start_module = self.state_store.first_non_done_module(task_id=task_id)
             if force_module:
@@ -303,7 +332,11 @@ class PipelineRunner:
             raise RuntimeError("run-module 首次执行需要提供 --audio-path。")
 
         context = self._prepare_context(task_id=task_id, audio_path=resolved_audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name=f"run_module_{normalized_module.lower()}"):
+        with self._bind_task_log_file(
+            task_dir=context.task_dir,
+            command_name=f"run_module_{normalized_module.lower()}",
+            config_path=config_path,
+        ):
             self.state_store.init_task(task_id=task_id, audio_path=str(resolved_audio_path), config_path=str(config_path))
 
             if force:
@@ -335,7 +368,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="c_task_status"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="c_task_status", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             latest_task = self.state_store.get_task(task_id=task_id) or {}
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
@@ -373,7 +406,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_task_status"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_task_status", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             latest_task = self.state_store.get_task(task_id=task_id) or {}
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
@@ -416,7 +449,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_retry_segment"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_retry_segment", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
             if module_status_map.get("A") != "done":
@@ -490,7 +523,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="c_retry_shot"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="c_retry_shot", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
             if module_status_map.get("B") != "done":
@@ -556,7 +589,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="d_task_status"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="d_task_status", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             latest_task = self.state_store.get_task(task_id=task_id) or {}
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
@@ -599,7 +632,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="d_retry_shot"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="d_retry_shot", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
             if module_status_map.get("C") != "done":
@@ -664,7 +697,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="bcd_task_status"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="bcd_task_status", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             latest_task = self.state_store.get_task(task_id=task_id) or {}
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
@@ -685,6 +718,7 @@ class PipelineRunner:
                 "bcd_chain_status_counts": chain_status_counts,
                 "bcd_problem_chains": [item for item in chain_rows if str(item.get("chain_status", "")) != "done"],
                 "bcd_chains": chain_rows,
+                "adaptive_window": collect_adaptive_window_status_snapshot(context=context),
                 "output_video_path": str(latest_task.get("output_video_path", "")),
             }
             self.logger.info(
@@ -717,7 +751,7 @@ class PipelineRunner:
 
         audio_path = Path(str(task_record["audio_path"]))
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
-        with self._bind_task_log_file(task_dir=context.task_dir, command_name="bcd_retry_segment"):
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="bcd_retry_segment", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
             module_status_map = self.state_store.get_module_status_map(task_id=task_id)
             if module_status_map.get("A") != "done":
@@ -899,12 +933,16 @@ class PipelineRunner:
         if not can_run:
             raise RuntimeError(f"模块 {module_name} 无法执行：{reason}")
 
-        self.logger.info("模块%s准备执行，task_id=%s", module_name, context.task_id)
+        module_logger = logging.getLogger(module_name)
+        if module_logger.getEffectiveLevel() > self.logger.getEffectiveLevel():
+            module_logger.setLevel(self.logger.getEffectiveLevel())
+        module_context = replace(context, logger=module_logger)
+        module_logger.info("模块%s准备执行，task_id=%s", module_name, context.task_id)
         self.state_store.set_module_status(task_id=context.task_id, module_name=module_name, status="running")
 
         module_runner = self.module_runners[module_name]
         try:
-            artifact_path = module_runner(context)
+            artifact_path = module_runner(module_context)
         except Exception as error:  # noqa: BLE001
             self.state_store.set_module_status(
                 task_id=context.task_id,
@@ -914,7 +952,7 @@ class PipelineRunner:
                 error_message=str(error),
             )
             self.state_store.update_task_status(task_id=context.task_id, status="failed", error_message=str(error))
-            self.logger.error("模块%s执行失败，task_id=%s，错误=%s", module_name, context.task_id, error)
+            module_logger.error("模块%s执行失败，task_id=%s，错误=%s", module_name, context.task_id, error)
             raise RuntimeError(f"模块 {module_name} 执行失败: {error}") from error
 
         self.state_store.set_module_status(
@@ -926,9 +964,9 @@ class PipelineRunner:
         )
         is_module_a_v2 = module_name == "A" and str(context.config.module_a.implementation).lower() == "v2"
         if is_module_a_v2:
-            self.logger.debug("模块%s执行完成，task_id=%s，产物=%s", module_name, context.task_id, artifact_path)
+            module_logger.debug("模块%s执行完成，task_id=%s，产物=%s", module_name, context.task_id, artifact_path)
         else:
-            self.logger.info("模块%s执行完成，task_id=%s，产物=%s", module_name, context.task_id, artifact_path)
+            module_logger.info("模块%s执行完成，task_id=%s，产物=%s", module_name, context.task_id, artifact_path)
 
     def _resolve_audio_path(self, audio_path: Path) -> Path:
         """
@@ -972,6 +1010,7 @@ class PipelineRunner:
         异常说明：查询失败时抛 sqlite3.Error。
         边界条件：视频路径不存在时返回空字符串。
         """
+        self.state_store.reconcile_bcd_module_statuses_by_units(task_id=task_id)
         task_record = self.state_store.get_task(task_id=task_id) or {}
         module_status_map = self.state_store.get_module_status_map(task_id=task_id)
         return {
