@@ -25,6 +25,8 @@ from music_video_pipeline.modules.module_b.unit_models import build_module_b_uni
 from music_video_pipeline.modules.module_b.output_builder import build_module_b_output
 # 项目内模块：模块 C 输出构建器
 from music_video_pipeline.modules.module_c.output_builder import build_module_c_output
+# 项目内模块：模块C扩散元信息解析
+from music_video_pipeline.generators.frame_generator import resolve_module_c_diffusion_trace_metadata
 # 项目内模块：模块 D 终拼工具
 from music_video_pipeline.modules.module_d.finalizer import _concat_segment_videos, _probe_media_duration
 # 项目内模块：模块 D 输出构建器
@@ -253,6 +255,17 @@ def _refresh_module_c_output(context: RuntimeContext, frames_dir: Path) -> Path:
     边界条件：允许输出部分链路 frame_items（用于失败后恢复排障）。
     """
     frame_items = context.state_store.list_module_c_done_frame_items(task_id=context.task_id)
+    if str(context.config.mode.frame_generator).strip().lower() == "diffusion":
+        trace_metadata = resolve_module_c_diffusion_trace_metadata()
+        frame_items = [
+            {
+                **item,
+                "binding_name": str(trace_metadata["binding_name"]),
+                "base_model_key": str(trace_metadata["base_model_key"]),
+                "lora_file": str(trace_metadata["lora_file"]),
+            }
+            for item in frame_items
+        ]
     module_c_output = build_module_c_output(
         task_id=context.task_id,
         frames_dir=frames_dir,

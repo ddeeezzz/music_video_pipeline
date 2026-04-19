@@ -20,7 +20,7 @@ from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, 
 from music_video_pipeline.pipeline import PipelineRunner
 
 
-def test_get_bcd_status_summary_should_return_chain_aggregation(tmp_path: Path) -> None:
+def test_get_bcd_status_summary_should_return_chain_aggregation(tmp_path: Path, monkeypatch) -> None:
     """
     功能说明：验证跨模块链路状态摘要接口能返回链路级聚合信息。
     参数说明：
@@ -52,6 +52,10 @@ def test_get_bcd_status_summary_should_return_chain_aggregation(tmp_path: Path) 
     runner.state_store.set_module_unit_status(task_id=task_id, module_name="C", unit_id="shot_002", status="running")
 
     runner.state_store.set_module_unit_status(task_id=task_id, module_name="B", unit_id="seg_0003", status="failed", error_message="mock failed")
+    monkeypatch.setattr(
+        "music_video_pipeline.pipeline.collect_adaptive_window_status_snapshot",
+        lambda context: {"enabled": True, "c_dynamic_limit": 4, "d_dynamic_limit": 1},
+    )
 
     summary = runner.get_bcd_status_summary(task_id=task_id, config_path=config_path)
     assert summary["task_id"] == task_id
@@ -61,6 +65,9 @@ def test_get_bcd_status_summary_should_return_chain_aggregation(tmp_path: Path) 
     assert summary["bcd_chain_status_counts"]["running"] == 1
     assert summary["bcd_chain_status_counts"]["failed"] == 1
     assert len(summary["bcd_problem_chains"]) == 2
+    assert summary["adaptive_window"]["enabled"] is True
+    assert summary["adaptive_window"]["c_dynamic_limit"] == 4
+    assert summary["adaptive_window"]["d_dynamic_limit"] == 1
 
 
 def test_retry_bcd_segment_should_only_reset_target_chain_and_rerun(tmp_path: Path, monkeypatch) -> None:
