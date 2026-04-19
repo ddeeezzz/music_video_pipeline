@@ -248,7 +248,7 @@ def _concat_segment_videos(
     异常说明：ffmpeg 调用失败时抛 RuntimeError。
     边界条件：显式使用 -t 音频时长，避免最终视频长于音频。
     """
-    active_logger = logger or logging.getLogger("music_video_pipeline")
+    active_logger = logger or logging.getLogger("D")
     concat_file_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"file '{_escape_concat_path(str(path))}'" for path in segment_paths]
     concat_file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -256,6 +256,7 @@ def _concat_segment_videos(
     normalized_concat_mode = _normalize_concat_video_mode(concat_video_mode=concat_video_mode)
     copy_command = [
         ffmpeg_bin,
+        "-nostdin",
         "-y",
         "-f",
         "concat",
@@ -292,6 +293,7 @@ def _concat_segment_videos(
     )
     reencode_command = [
         ffmpeg_bin,
+        "-nostdin",
         "-y",
         "-f",
         "concat",
