@@ -24,6 +24,8 @@ from music_video_pipeline.io_utils import read_json, write_json
 from music_video_pipeline.modules.module_c import orchestrator as module_c_orchestrator
 # 项目内模块：关键帧生成器抽象
 from music_video_pipeline.generators import FrameGenerator
+# 项目内模块：关键帧生成器实现模块（用于打桩 diffusion 分支）
+from music_video_pipeline.generators import frame_generator as frame_generator_module
 # 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
 
@@ -163,7 +165,84 @@ def test_run_module_c_should_resume_only_failed_units_after_strict_failure(tmp_p
     assert [item["unit_id"] for item in done_units_after_resume] == ["shot_001", "shot_002", "shot_003"]
 
 
-def _build_context(tmp_path: Path, task_id: str, render_workers: int, unit_retry_times: int) -> RuntimeContext:
+def test_run_module_c_should_retry_failed_unit_in_diffusion_mode(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证 diffusion 模式下模块C单元失败可按既有机制重试并收敛为 done。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：通过打桩 DiffusionFrameGenerator.generate_one 避免真实模型依赖。
+    """
+    context = _build_context(
+        tmp_path=tmp_path,
+        task_id="task_c_diffusion_retry",
+        render_workers=2,
+        unit_retry_times=1,
+        frame_generator_mode="diffusion",
+    )
+    _write_module_b_output(context=context)
+    call_count_by_shot: dict[str, int] = {}
+    monkeypatch.setattr(
+        module_c_orchestrator,
+        "resolve_module_c_diffusion_trace_metadata",
+        lambda: {
+            "binding_name": "xiantiao_style",
+            "base_model_key": "base_15_diffusers_revanimated_v122",
+            "lora_file": "models/lora/15/xiantiao_style/xiantiao_style.safetensors",
+        },
+    )
+
+    def _fake_diffusion_generate_one(
+        self,
+        shot: dict,
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+    ) -> dict:
+        _ = (self, width, height)
+        shot_id = str(shot["shot_id"])
+        call_count_by_shot[shot_id] = call_count_by_shot.get(shot_id, 0) + 1
+        if shot_id == "shot_002" and call_count_by_shot[shot_id] == 1:
+            raise RuntimeError("mock diffusion failure for retry")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        frame_path = output_dir / f"frame_{shot_index + 1:03d}.png"
+        frame_path.write_bytes(b"fake-diffusion-frame")
+        start_time = float(shot["start_time"])
+        end_time = float(shot["end_time"])
+        duration = round(max(0.5, end_time - start_time), 3)
+        return {
+            "shot_id": shot_id,
+            "frame_path": str(frame_path),
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": duration,
+            "binding_name": "xiantiao_style",
+            "base_model_key": "base_15_diffusers_revanimated_v122",
+            "lora_file": "models/lora/15/xiantiao_style/xiantiao_style.safetensors",
+        }
+
+    monkeypatch.setattr(frame_generator_module.DiffusionFrameGenerator, "generate_one", _fake_diffusion_generate_one)
+
+    output_path = module_c_orchestrator.run_module_c(context)
+    output_data = read_json(output_path)
+    frame_items = output_data["frame_items"]
+    assert [item["shot_id"] for item in frame_items] == ["shot_001", "shot_002", "shot_003"]
+    assert call_count_by_shot["shot_001"] == 1
+    assert call_count_by_shot["shot_002"] == 2
+    assert call_count_by_shot["shot_003"] == 1
+    assert all(str(item.get("binding_name", "")) == "xiantiao_style" for item in frame_items)
+
+
+def _build_context(
+    tmp_path: Path,
+    task_id: str,
+    render_workers: int,
+    unit_retry_times: int,
+    frame_generator_mode: str = "mock",
+) -> RuntimeContext:
     """
     功能说明：构建模块C测试用运行上下文。
     参数说明：
@@ -171,6 +250,7 @@ def _build_context(tmp_path: Path, task_id: str, render_workers: int, unit_retry
     - task_id: 任务唯一标识。
     - render_workers: 模块C并行worker数。
     - unit_retry_times: 模块C单元重试次数。
+    - frame_generator_mode: 关键帧生成模式（mock/diffusion）。
     返回值：
     - RuntimeContext: 测试用上下文对象。
     异常说明：无。
@@ -187,7 +267,7 @@ def _build_context(tmp_path: Path, task_id: str, render_workers: int, unit_retry
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock", frame_generator=frame_generator_mode),
         paths=PathsConfig(runs_dir=str(runs_dir), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
