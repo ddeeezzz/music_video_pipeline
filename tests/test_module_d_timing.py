@@ -185,4 +185,5 @@ def test_concat_segment_videos_should_fallback_to_reencode_when_copy_failed(tmp_
     assert result["copy_fallback_triggered"] is True
     assert call_count["copy"] == 1
     assert len(commands) == 2
+    assert all("-nostdin" in command for command in commands)
     assert output_video_path.exists()
