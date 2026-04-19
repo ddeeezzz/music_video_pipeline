@@ -1,13 +1,11 @@
 """
-文件用途：实现模块 B 最小视觉单元并行执行与重试逻辑。
-核心流程：按待执行单元并行生成分镜，失败单元按配置重试并写入单元状态。
-输入输出：输入运行上下文、单元数组与生成器，输出执行副作用（状态与分镜文件）。
-依赖说明：依赖标准库并发工具与项目内 RuntimeContext/ScriptGenerator。
-维护说明：本层只负责 B 内部并行，不改变 A->B->C->D 的模块顺序。
+文件用途：实现模块 B 最小视觉单元串行执行、重试与滚动记忆写入逻辑。
+核心流程：按 unit_index 严格串行生成分镜，每段生成前重建 memory_context，成功后更新 rolling_memory。
+输入输出：输入运行上下文、单元数组与生成器，输出执行副作用（状态、分镜文件与 rolling_memory 文件）。
+依赖说明：依赖项目内 RuntimeContext/ScriptGenerator 与 JSON 工具。
+维护说明：本层仅负责模块 B 主链路串行执行，不改写 A->B->C->D 的模块顺序。
 """
 
-# 标准库：用于线程池并发
-from concurrent.futures import ThreadPoolExecutor, as_completed
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于正则清洗
@@ -17,12 +15,18 @@ from typing import Any
 
 # 项目内模块：运行上下文定义
 from music_video_pipeline.context import RuntimeContext
-# 项目内模块：JSON写入工具
-from music_video_pipeline.io_utils import write_json
+# 项目内模块：JSON读写工具
+from music_video_pipeline.io_utils import read_json, write_json
 # 项目内模块：分镜生成器抽象
 from music_video_pipeline.generators import ScriptGenerator
 # 项目内模块：模块B单元数据模型
 from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
+
+
+# 常量：滚动记忆文件名。
+ROLLING_MEMORY_FILENAME = "rolling_memory.json"
+# 常量：recent_history 默认滑动窗口大小。
+ROLLING_MEMORY_WINDOW_SIZE = 5
 
 
 def execute_units_with_retry(
@@ -33,7 +37,7 @@ def execute_units_with_retry(
     unit_outputs_dir: Path,
 ) -> None:
     """
-    功能说明：执行模块 B 待处理单元，并在失败时按配置重试。
+    功能说明：按 unit_index 严格串行执行模块 B 单元，并在失败时仅重试当前单元。
     参数说明：
     - context: 运行上下文对象。
     - units_to_run: 需要执行的单元数组。
@@ -42,32 +46,31 @@ def execute_units_with_retry(
     - unit_outputs_dir: 单元分镜输出目录。
     返回值：无。
     异常说明：
-    - RuntimeError: 单元重试耗尽仍失败时抛出。
-    边界条件：已完成单元由上层过滤，不在本函数内重跑。
+    - RuntimeError: 任一单元重试耗尽仍失败时抛出（fail-fast，后续单元不再执行）。
+    边界条件：
+    - 每个单元执行前都会基于“前序 done 单元”重建 memory_context，并写入 rolling_memory.json。
     """
     if not units_to_run:
         context.logger.info("模块B无待执行单元，task_id=%s", context.task_id)
         return
 
-    worker_count = _normalize_module_b_workers(context.config.module_b.script_workers)
     retry_times = _normalize_module_b_retry_times(context.config.module_b.unit_retry_times)
     pending_units = sorted(units_to_run, key=lambda item: item.unit_index)
-    hard_fail_messages: list[str] = []
+    segment_meta_index = _build_segment_meta_index(module_a_output=module_a_output)
+    rolling_memory_path = unit_outputs_dir / ROLLING_MEMORY_FILENAME
 
-    for attempt_index in range(retry_times + 1):
-        if not pending_units:
-            break
-        attempt_no = attempt_index + 1
-        context.logger.info(
-            "模块B单元执行轮次开始，task_id=%s，attempt=%s/%s，pending_count=%s，workers=%s",
-            context.task_id,
-            attempt_no,
-            retry_times + 1,
-            len(pending_units),
-            worker_count,
-        )
+    context.logger.info(
+        "模块B串行执行开始，task_id=%s，pending_count=%s，retry_times=%s",
+        context.task_id,
+        len(pending_units),
+        retry_times,
+    )
 
-        for unit in pending_units:
+    for unit in pending_units:
+        success = False
+        last_error: Exception | None = None
+        for attempt_index in range(retry_times + 1):
+            attempt_no = attempt_index + 1
             context.state_store.set_module_unit_status(
                 task_id=context.task_id,
                 module_name="B",
@@ -77,46 +80,57 @@ def execute_units_with_retry(
                 error_message="",
             )
 
-        if worker_count == 1:
-            failed_units = _execute_units_serial(
+            # 每次尝试前都基于“前序 done 单元”重建记忆，避免未来分镜信息泄漏。
+            memory_context = _build_memory_context_from_done_units(
                 context=context,
-                pending_units=pending_units,
-                generator=generator,
-                module_a_output=module_a_output,
-                unit_outputs_dir=unit_outputs_dir,
+                current_unit_index=unit.unit_index,
+                segment_meta_index=segment_meta_index,
             )
-        else:
-            failed_units = _execute_units_parallel(
-                context=context,
-                pending_units=pending_units,
-                generator=generator,
-                module_a_output=module_a_output,
-                unit_outputs_dir=unit_outputs_dir,
-                worker_count=worker_count,
+            _write_rolling_memory(memory_path=rolling_memory_path, memory_context=memory_context)
+
+            try:
+                shot_path = _generate_and_dump_one_shot(
+                    generator=generator,
+                    module_a_output=module_a_output,
+                    unit=unit,
+                    unit_outputs_dir=unit_outputs_dir,
+                    memory_context=memory_context,
+                )
+                _mark_unit_done(context=context, unit=unit, shot_path=shot_path)
+
+                shot_obj = read_json(shot_path)
+                if not isinstance(shot_obj, dict):
+                    raise RuntimeError(f"模块B单元执行失败：单元分镜内容不是dict，unit_id={unit.unit_id}")
+                memory_item = _build_memory_item(
+                    unit=unit,
+                    shot_obj=shot_obj,
+                    segment_meta_index=segment_meta_index,
+                )
+                updated_memory_context = _append_memory_item(
+                    memory_context=memory_context,
+                    memory_item=memory_item,
+                )
+                _write_rolling_memory(memory_path=rolling_memory_path, memory_context=updated_memory_context)
+                success = True
+                break
+            except Exception as error:  # noqa: BLE001
+                last_error = error
+                _mark_unit_failed(context=context, unit=unit, error=error)
+                if attempt_index < retry_times:
+                    context.logger.warning(
+                        "模块B串行单元重试中，task_id=%s，unit_id=%s，attempt=%s/%s，错误=%s",
+                        context.task_id,
+                        unit.unit_id,
+                        attempt_no,
+                        retry_times + 1,
+                        error,
+                    )
+                    continue
+
+        if not success:
+            raise RuntimeError(
+                f"模块B单元执行失败（已停止后续单元），unit_id={unit.unit_id}，错误={last_error}"
             )
-
-        if not failed_units:
-            pending_units = []
-            continue
-
-        if attempt_index < retry_times:
-            context.logger.warning(
-                "模块B单元执行有失败，准备重试，task_id=%s，attempt=%s/%s，failed_count=%s",
-                context.task_id,
-                attempt_no,
-                retry_times + 1,
-                len(failed_units),
-            )
-            pending_units = [unit for unit, _ in failed_units]
-            continue
-
-        for failed_unit, failed_error in failed_units:
-            hard_fail_messages.append(f"{failed_unit.unit_id}: {failed_error}")
-        pending_units = []
-
-    if hard_fail_messages:
-        error_text = "\n".join(hard_fail_messages)
-        raise RuntimeError(f"模块B单元生成失败，共{len(hard_fail_messages)}个单元失败：\n{error_text}")
 
 
 def execute_one_unit_with_retry(
@@ -184,85 +198,168 @@ def execute_one_unit_with_retry(
     raise RuntimeError(f"模块B单元执行失败，unit_id={unit.unit_id}，错误={last_error}")
 
 
-def _execute_units_serial(
+def _build_memory_context_from_done_units(
     context: RuntimeContext,
-    pending_units: list[ModuleBUnit],
-    generator: ScriptGenerator,
-    module_a_output: dict[str, Any],
-    unit_outputs_dir: Path,
-) -> list[tuple[ModuleBUnit, Exception]]:
+    current_unit_index: int,
+    segment_meta_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     """
-    功能说明：串行执行模块 B 单元生成任务。
+    功能说明：基于当前单元之前的 done 单元重建 memory_context。
     参数说明：
     - context: 运行上下文对象。
-    - pending_units: 待执行单元数组。
-    - generator: 分镜生成器实例。
-    - module_a_output: 模块 A 输出字典。
-    - unit_outputs_dir: 单元分镜输出目录。
+    - current_unit_index: 当前目标单元索引（仅收集更小索引的 done 单元）。
+    - segment_meta_index: segment_id 到段落元信息映射。
     返回值：
-    - list[tuple[ModuleBUnit, Exception]]: 失败单元与异常信息数组。
-    异常说明：无（异常转为失败列表返回）。
-    边界条件：执行顺序固定按 unit_index 升序。
+    - dict[str, Any]: memory_context 对象。
+    异常说明：
+    - RuntimeError: done 单元产物不存在或内容非法时抛出。
+    边界条件：recent_history 仅保留最近 5 条。
     """
-    failed_units: list[tuple[ModuleBUnit, Exception]] = []
-    for unit in pending_units:
-        try:
-            shot_path = _generate_and_dump_one_shot(
-                generator=generator,
-                module_a_output=module_a_output,
-                unit=unit,
-                unit_outputs_dir=unit_outputs_dir,
-            )
-            _mark_unit_done(context=context, unit=unit, shot_path=shot_path)
-        except Exception as error:  # noqa: BLE001
-            _mark_unit_failed(context=context, unit=unit, error=error)
-            failed_units.append((unit, error))
-    return failed_units
+    done_records = context.state_store.list_module_b_done_shot_items(task_id=context.task_id)
+    previous_records = [
+        item for item in done_records if int(item.get("unit_index", 0)) < int(current_unit_index)
+    ]
+    ordered_records = sorted(previous_records, key=lambda item: int(item.get("unit_index", 0)))
+
+    history_items: list[dict[str, Any]] = []
+    for record in ordered_records:
+        artifact_path_text = str(record.get("artifact_path", "")).strip()
+        if not artifact_path_text:
+            raise RuntimeError(f"模块B滚动记忆重建失败：空 artifact_path，record={record}")
+        artifact_path = Path(artifact_path_text)
+        if not artifact_path.exists():
+            raise RuntimeError(f"模块B滚动记忆重建失败：产物文件不存在，path={artifact_path}")
+
+        shot_obj = read_json(artifact_path)
+        if not isinstance(shot_obj, dict):
+            raise RuntimeError(f"模块B滚动记忆重建失败：产物内容不是dict，path={artifact_path}")
+
+        segment_id = str(record.get("unit_id", "")).strip()
+        segment_meta = segment_meta_index.get(segment_id, {})
+        history_items.append(
+            {
+                "segment_id": segment_id,
+                "lyric_text": str(shot_obj.get("lyric_text", "")),
+                "generated_scene": str(shot_obj.get("scene_desc", "")),
+                "keyframe_prompt": str(shot_obj.get("keyframe_prompt", "")),
+                "start_time": float(segment_meta.get("start_time", record.get("start_time", 0.0))),
+                "end_time": float(segment_meta.get("end_time", record.get("end_time", 0.0))),
+                "segment_label": str(segment_meta.get("segment_label", "")),
+                "big_segment_label": str(segment_meta.get("big_segment_label", "")),
+            }
+        )
+
+    recent_history = history_items[-ROLLING_MEMORY_WINDOW_SIZE:]
+    current_state = str(recent_history[-1].get("generated_scene", "")) if recent_history else ""
+    return {
+        "global_setting": "",
+        "current_state": current_state,
+        "recent_history": recent_history,
+    }
 
 
-def _execute_units_parallel(
-    context: RuntimeContext,
-    pending_units: list[ModuleBUnit],
-    generator: ScriptGenerator,
-    module_a_output: dict[str, Any],
-    unit_outputs_dir: Path,
-    worker_count: int,
-) -> list[tuple[ModuleBUnit, Exception]]:
+def _build_segment_meta_index(module_a_output: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """
-    功能说明：并行执行模块 B 单元生成任务。
+    功能说明：构建 segment_id 到段落元信息映射，用于 rolling memory 辅助字段。
     参数说明：
-    - context: 运行上下文对象。
-    - pending_units: 待执行单元数组。
-    - generator: 分镜生成器实例。
-    - module_a_output: 模块 A 输出字典。
-    - unit_outputs_dir: 单元分镜输出目录。
-    - worker_count: 并行 worker 数量。
+    - module_a_output: 模块A输出字典。
     返回值：
-    - list[tuple[ModuleBUnit, Exception]]: 失败单元与异常信息数组。
-    异常说明：无（异常转为失败列表返回）。
-    边界条件：状态写入统一在主线程完成，避免并发写库冲突。
+    - dict[str, dict[str, Any]]: 元信息映射。
+    异常说明：无。
+    边界条件：缺失字段时回退空字符串或 0。
     """
-    failed_units: list[tuple[ModuleBUnit, Exception]] = []
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        future_to_unit = {
-            executor.submit(
-                _generate_and_dump_one_shot,
-                generator,
-                module_a_output,
-                unit,
-                unit_outputs_dir,
-            ): unit
-            for unit in pending_units
+    segments = module_a_output.get("segments", [])
+    big_segments = module_a_output.get("big_segments", [])
+    big_label_by_id = {
+        str(item.get("segment_id", "")).strip(): str(item.get("label", "")).strip()
+        for item in big_segments
+        if isinstance(item, dict)
+    }
+
+    index: dict[str, dict[str, Any]] = {}
+    if not isinstance(segments, list):
+        return index
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        segment_id = str(segment.get("segment_id", "")).strip()
+        if not segment_id:
+            continue
+        big_segment_id = str(segment.get("big_segment_id", "")).strip()
+        start_time = float(segment.get("start_time", 0.0))
+        end_time = max(start_time, float(segment.get("end_time", start_time)))
+        index[segment_id] = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "segment_label": str(segment.get("label", "")).strip(),
+            "big_segment_label": big_label_by_id.get(big_segment_id, ""),
         }
-        for future in as_completed(future_to_unit):
-            unit = future_to_unit[future]
-            try:
-                shot_path = future.result()
-                _mark_unit_done(context=context, unit=unit, shot_path=shot_path)
-            except Exception as error:  # noqa: BLE001
-                _mark_unit_failed(context=context, unit=unit, error=error)
-                failed_units.append((unit, error))
-    return failed_units
+    return index
+
+
+def _build_memory_item(
+    unit: ModuleBUnit,
+    shot_obj: dict[str, Any],
+    segment_meta_index: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    功能说明：基于当前单元输出构建一条 recent_history 记录。
+    参数说明：
+    - unit: 当前模块B单元。
+    - shot_obj: 当前单元产物 JSON 对象。
+    - segment_meta_index: segment_id 到段落元信息映射。
+    返回值：
+    - dict[str, Any]: 可写入 recent_history 的记录。
+    异常说明：无。
+    边界条件：关键字段缺失时回退为空字符串。
+    """
+    segment_meta = segment_meta_index.get(unit.unit_id, {})
+    return {
+        "segment_id": unit.unit_id,
+        "lyric_text": str(shot_obj.get("lyric_text", "")),
+        "generated_scene": str(shot_obj.get("scene_desc", "")),
+        "keyframe_prompt": str(shot_obj.get("keyframe_prompt", "")),
+        "start_time": float(segment_meta.get("start_time", unit.start_time)),
+        "end_time": float(segment_meta.get("end_time", unit.end_time)),
+        "segment_label": str(segment_meta.get("segment_label", str(unit.segment.get("label", "")))),
+        "big_segment_label": str(segment_meta.get("big_segment_label", "")),
+    }
+
+
+def _append_memory_item(memory_context: dict[str, Any], memory_item: dict[str, Any]) -> dict[str, Any]:
+    """
+    功能说明：将新分镜写入 recent_history 并维护滑动窗口。
+    参数说明：
+    - memory_context: 旧 memory_context。
+    - memory_item: 新增历史记录。
+    返回值：
+    - dict[str, Any]: 更新后的 memory_context。
+    异常说明：无。
+    边界条件：recent_history 最多保留 5 条。
+    """
+    old_history = memory_context.get("recent_history", [])
+    history = [dict(item) for item in old_history if isinstance(item, dict)]
+    history.append(dict(memory_item))
+    recent_history = history[-ROLLING_MEMORY_WINDOW_SIZE:]
+    current_state = str(memory_item.get("generated_scene", "")).strip()
+    return {
+        "global_setting": str(memory_context.get("global_setting", "")),
+        "current_state": current_state,
+        "recent_history": recent_history,
+    }
+
+
+def _write_rolling_memory(memory_path: Path, memory_context: dict[str, Any]) -> None:
+    """
+    功能说明：覆盖写入 rolling_memory.json。
+    参数说明：
+    - memory_path: 记忆文件路径。
+    - memory_context: 记忆对象。
+    返回值：无。
+    异常说明：文件写入失败时抛 OSError。
+    边界条件：会自动创建父目录。
+    """
+    write_json(memory_path, memory_context)
 
 
 def _generate_and_dump_one_shot(
@@ -270,6 +367,7 @@ def _generate_and_dump_one_shot(
     module_a_output: dict[str, Any],
     unit: ModuleBUnit,
     unit_outputs_dir: Path,
+    memory_context: dict[str, Any] | None = None,
 ) -> Path:
     """
     功能说明：调用生成器执行单元分镜生成并落盘到单元JSON文件。
@@ -278,15 +376,17 @@ def _generate_and_dump_one_shot(
     - module_a_output: 模块 A 输出字典。
     - unit: 模块 B 单元对象。
     - unit_outputs_dir: 单元分镜输出目录。
+    - memory_context: 可选，滚动记忆上下文。
     返回值：
     - Path: 单元分镜JSON路径。
     异常说明：由生成器实现或JSON写入抛出异常。
     边界条件：单元输出文件名包含 unit_index 与 unit_id，保证唯一与可追溯。
     """
-    shot = generator.generate_one(
+    shot = _invoke_generate_one_with_optional_memory(
+        generator=generator,
         module_a_output=module_a_output,
-        segment=unit.segment,
-        segment_index=unit.unit_index,
+        unit=unit,
+        memory_context=memory_context,
     )
     if not isinstance(shot, dict):
         raise RuntimeError(f"模块B单元执行失败：返回值不是dict，unit_id={unit.unit_id}")
@@ -296,6 +396,48 @@ def _generate_and_dump_one_shot(
     shot_path = unit_outputs_dir / f"segment_{unit.unit_index + 1:03d}_{safe_unit_id}.json"
     write_json(shot_path, shot)
     return shot_path
+
+
+def _invoke_generate_one_with_optional_memory(
+    generator: ScriptGenerator,
+    module_a_output: dict[str, Any],
+    unit: ModuleBUnit,
+    memory_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    功能说明：兼容调用 generate_one（支持/不支持 memory_context 参数的实现）。
+    参数说明：
+    - generator: 分镜生成器实例。
+    - module_a_output: 模块A输出字典。
+    - unit: 当前模块B单元。
+    - memory_context: 可选滚动记忆上下文。
+    返回值：
+    - dict[str, Any]: 生成的分镜对象。
+    异常说明：透传 generate_one 抛出的异常。
+    边界条件：不支持 memory_context 的历史实现会自动回退为旧调用方式。
+    """
+    if memory_context is None:
+        return generator.generate_one(
+            module_a_output=module_a_output,
+            segment=unit.segment,
+            segment_index=unit.unit_index,
+        )
+
+    try:
+        return generator.generate_one(
+            module_a_output=module_a_output,
+            segment=unit.segment,
+            segment_index=unit.unit_index,
+            memory_context=memory_context,
+        )
+    except TypeError as error:
+        if "memory_context" not in str(error):
+            raise
+        return generator.generate_one(
+            module_a_output=module_a_output,
+            segment=unit.segment,
+            segment_index=unit.unit_index,
+        )
 
 
 def _mark_unit_done(context: RuntimeContext, unit: ModuleBUnit, shot_path: Path) -> None:

@@ -19,6 +19,13 @@
 - `module_b.llm.provider = "siliconflow"`
 - `module_b.llm.model = "deepseek-ai/DeepSeek-V3.2"`
 - `module_b.llm.api_key_file = ".secrets/siliconflow_api_key.txt"`
+- `module_b.llm.prompt_template_file = "configs/prompts/module_b_prompt.v1.md"`（必填）
+
+说明：
+
+- 当 `mode.script_generator = "llm"` 时，`module_b.llm.prompt_template_file` 不能为空。
+- Prompt 仅支持外置 Markdown 模板（`.md` / `.markdown`），不支持 JSON/TXT 作为运行输入。
+- 若模板路径不存在、Markdown格式非法或占位符缺失，模块 B 会直接失败，不再回退代码内置模板。
 
 ## 3. API Key 管理
 

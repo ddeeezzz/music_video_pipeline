@@ -1,6 +1,6 @@
 """
 文件用途：提供模块B真实LLM单段分镜双语提示词生成能力。
-核心流程：构建提示词 -> 调用SiliconFlow -> 解析并校验输出JSON。
+核心流程：加载外置模板 -> 构建提示词 -> 调用SiliconFlow -> 解析并校验输出JSON。
 输入输出：输入分镜上下文，输出 scene_desc 与 keyframe/video 中英文提示词。
 依赖说明：依赖 llm_prompt/llm_client/llm_parser 子模块。
 维护说明：本文件不负责模块B完整shot拼装，只负责LLM提示词字段。
@@ -20,7 +20,11 @@ from music_video_pipeline.modules.module_b.llm_client import ModuleBLlmClientErr
 # 项目内模块：LLM输出解析
 from music_video_pipeline.modules.module_b.llm_parser import ModuleBLlmParseError, parse_module_b_llm_output
 # 项目内模块：LLM提示词构建
-from music_video_pipeline.modules.module_b.llm_prompt import build_module_b_prompt_messages
+from music_video_pipeline.modules.module_b.llm_prompt import (
+    ModuleBLlmPromptTemplateError,
+    build_module_b_prompt_messages,
+    load_module_b_prompt_template,
+)
 
 
 class ModuleBLlmGenerationError(RuntimeError):
@@ -39,13 +43,21 @@ def generate_module_b_prompts(
     - logger: 日志对象。
     - llm_config: 模块B LLM配置。
     - llm_input_payload: 单段分镜输入上下文字典。
-    - project_root: 项目根目录，用于解析密钥相对路径。
+    - project_root: 项目根目录，用于解析密钥与模板相对路径。
     返回值：
     - dict[str, str]: scene_desc 与 keyframe/video 的中英文提示词。
     异常说明：
-    - ModuleBLlmGenerationError: 请求或解析重试耗尽时抛出。
+    - ModuleBLlmGenerationError: 模板、请求或解析重试耗尽时抛出。
     边界条件：JSON解析重试次数由 llm_config.json_retry_times 控制。
     """
+    try:
+        prompt_template = load_module_b_prompt_template(
+            project_root=project_root,
+            prompt_template_file=str(llm_config.prompt_template_file),
+        )
+    except ModuleBLlmPromptTemplateError as error:
+        raise ModuleBLlmGenerationError(f"模块B LLM提示词模板加载失败：{error}") from error
+
     parse_retry_times = max(0, int(llm_config.json_retry_times))
     last_error: Exception | None = None
     retry_hint = ""
@@ -54,6 +66,8 @@ def generate_module_b_prompts(
         try:
             messages = build_module_b_prompt_messages(
                 input_payload=llm_input_payload,
+                prompt_template=prompt_template,
+                user_custom_prompt=llm_config.user_custom_prompt,
                 retry_hint=retry_hint,
             )
             llm_output_text = call_module_b_llm_chat(

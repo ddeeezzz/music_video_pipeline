@@ -1,71 +1,258 @@
 """
-文件用途：构建模块B真实LLM分镜生成的系统与用户提示词。
-核心流程：将单段输入结构化为JSON文本，拼接严格输出约束。
-输入输出：输入分镜上下文字典，输出 chat completions messages 数组。
-依赖说明：依赖标准库 json 进行稳定序列化。
-维护说明：若输出字段契约变更，需同步更新本文件与解析器。
+文件用途：加载模块B外置Markdown Prompt模板并构建LLM请求消息。
+核心流程：读取Markdown模板 -> 校验契约与占位符 -> 渲染messages数组。
+输入输出：输入模板路径与分镜上下文，输出 chat completions messages 数组。
+依赖说明：依赖标准库 json/pathlib/re。
+维护说明：Prompt 文案必须由外置模板维护，不在代码内置默认值。
 """
 
-# 标准库：用于JSON序列化
+# 标准库：用于JSON序列化与反序列化
 import json
+# 标准库：用于路径处理
+from pathlib import Path
+# 标准库：用于正则匹配
+import re
 # 标准库：用于类型提示
 from typing import Any
 
 
-# 常量：模块B LLM 系统提示词，要求输出 scene_desc 与 keyframe/video 中英文双版本。
-SYSTEM_PROMPT = (
-    "你是音乐视频分镜生成助手。"
-    "你的任务是根据给定的单个音乐片段信息，生成适合当前片段的画面描述与提示词。\n"
-    "严格遵守以下规则：\n"
-    "1. 只返回一个合法 JSON 对象。\n"
-    "2. 不要输出任何解释、前后缀、标题、Markdown、代码块。\n"
-    "3. 返回 JSON 只能包含五个字段：scene_desc、keyframe_prompt_zh、keyframe_prompt_en、video_prompt_zh、video_prompt_en。\n"
-    "4. scene_desc 必须是中文，1 到 2 句话，描述当前片段主体、场景、氛围、情绪、镜头感。\n"
-    "5. keyframe_prompt_zh 必须是中文，用于关键帧图像生成，必须具体且有镜头感。\n"
-    "6. keyframe_prompt_en 必须是英文，用于关键帧图像生成，必须具体且有镜头感。\n"
-    "7. video_prompt_zh 必须是中文，用于文图生视频文本提示，需体现运动与镜头节奏。\n"
-    "8. video_prompt_en 必须是英文，用于文图生视频文本提示，需体现运动与镜头节奏。\n"
-    "9. 两种语言版本语义必须一致，不允许互相矛盾。\n"
-    "10. 英文提示词优先采用逗号分隔短语标签风格，避免空泛句子。\n"
-    "11. 中文提示词应精炼、可执行，不要口语化废话。\n"
-    "12. 必须结合 lyric_text、lyric_units、segment_label、big_segment_label、energy_level、trend。\n"
-    "13. 画面内容约束：除非输入中显式要求，否则尽量避免生成人类、歌手、角色等AIGC复杂元素；尽量避免强调复杂的灯光、光照等容易导致视频前后不一致或场景闪烁的元素。\n"
-    "14. camera_motion_rule 和 transition_rule 只作为节奏参考，不要作为输出字段返回。\n"
-    "15. 不要改写输入中的时间戳、segment_id、歌词文本与结构信息。\n"
-    "16. 输出必须能被 json.loads 直接解析。"
+# 常量：模板支持版本号。
+PROMPT_TEMPLATE_VERSION = 1
+# 常量：模板中输入JSON占位符。
+INPUT_PAYLOAD_JSON_PLACEHOLDER = "{{input_payload_json}}"
+# 常量：模板中用户自定义提示词占位符。
+USER_CUSTOM_PROMPT_PLACEHOLDER = "{{user_custom_prompt}}"
+# 常量：模板中补救提示占位符。
+RETRY_HINT_PLACEHOLDER = "{{retry_hint}}"
+# 常量：模板必填字段集合。
+PROMPT_TEMPLATE_REQUIRED_KEYS = {
+    "version",
+    "system_prompt",
+    "user_prompt_template",
+    "retry_hint_template",
+}
+# 常量：Markdown二级标题匹配规则。
+MARKDOWN_SECTION_PATTERN = re.compile(
+    r"^\s*##\s*(system_prompt|user_prompt_template|retry_hint_template)\s*$",
+    flags=re.IGNORECASE,
 )
 
 
-def build_module_b_prompt_messages(input_payload: dict[str, Any], retry_hint: str = "") -> list[dict[str, str]]:
+class ModuleBLlmPromptTemplateError(RuntimeError):
+    """模块B Prompt模板加载或渲染异常。"""
+
+
+class ModuleBPromptTemplate(dict[str, str]):
+    """模块B Prompt模板结构。"""
+
+
+def load_module_b_prompt_template(project_root: Path, prompt_template_file: str) -> ModuleBPromptTemplate:
     """
-    功能说明：构建模块B真实LLM请求 messages。
+    功能说明：加载并校验模块B外置Prompt模板。
+    参数说明：
+    - project_root: 项目根目录，用于解析相对模板路径。
+    - prompt_template_file: 模板文件路径（支持相对路径）。
+    返回值：
+    - ModuleBPromptTemplate: 已校验模板对象。
+    异常说明：
+    - ModuleBLlmPromptTemplateError: 路径、Markdown格式、字段或占位符非法时抛出。
+    边界条件：模板 version 当前仅支持 1。
+    """
+    normalized_path_text = str(prompt_template_file).strip()
+    if not normalized_path_text:
+        raise ModuleBLlmPromptTemplateError("module_b.llm.prompt_template_file 不能为空。")
+
+    template_path = Path(normalized_path_text)
+    if not template_path.is_absolute():
+        template_path = (project_root / template_path).resolve()
+
+    if not template_path.exists():
+        raise ModuleBLlmPromptTemplateError(f"Prompt模板文件不存在：{template_path}")
+    if not template_path.is_file():
+        raise ModuleBLlmPromptTemplateError(f"Prompt模板路径不是文件：{template_path}")
+
+    try:
+        template_text = template_path.read_text(encoding="utf-8-sig")
+    except OSError as error:
+        raise ModuleBLlmPromptTemplateError(f"Prompt模板读取失败：{template_path}，错误={error}") from error
+
+    template_ext = template_path.suffix.lower()
+    if template_ext in {".md", ".markdown"}:
+        parsed_template = _parse_markdown_prompt_template(template_text=template_text, template_path=template_path)
+    else:
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板格式不支持：{template_path}，仅支持 .md/.markdown"
+        )
+
+    return _validate_and_build_template(parsed_template=parsed_template, template_path=template_path)
+
+
+def build_module_b_prompt_messages(
+    input_payload: dict[str, Any],
+    prompt_template: ModuleBPromptTemplate,
+    user_custom_prompt: str = "",
+    retry_hint: str = "",
+) -> list[dict[str, str]]:
+    """
+    功能说明：基于外置模板构建模块B真实LLM请求 messages。
     参数说明：
     - input_payload: 当前分镜输入上下文字典。
+    - prompt_template: 已校验模板对象。
     - retry_hint: 解析失败后的补救提示（可选）。
     返回值：
     - list[dict[str, str]]: chat completions 标准消息数组。
-    异常说明：无。
-    边界条件：输入字段由上游构建，当前函数不做字段完整性校验。
+    异常说明：
+    - ModuleBLlmPromptTemplateError: 模板对象缺失关键字段时抛出。
+    边界条件：仅在 retry_hint 非空时附加补救提示段。
     """
+    system_prompt = str(prompt_template.get("system_prompt", "")).strip()
+    user_prompt_template = str(prompt_template.get("user_prompt_template", "")).strip()
+    retry_hint_template = str(prompt_template.get("retry_hint_template", "")).strip()
+    if not system_prompt or not user_prompt_template or not retry_hint_template:
+        raise ModuleBLlmPromptTemplateError("Prompt模板对象不完整，无法构建消息。")
+
     payload_text = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
-    user_prompt_lines = [
-        "请根据以下 JSON 信息，为当前音乐分镜生成结果。请只返回 JSON。",
-        payload_text,
-        "返回要求：",
-        "1. 只返回一个 JSON 对象。",
-        "2. 只能包含以下五个字段：scene_desc、keyframe_prompt_zh、keyframe_prompt_en、video_prompt_zh、video_prompt_en。",
-        "3. scene_desc 要贴合歌词内容、段落功能、能量等级和趋势。",
-        "4. keyframe_prompt_zh 与 keyframe_prompt_en 分别是中文/英文关键帧提示词，语义保持一致。",
-        "5. video_prompt_zh 与 video_prompt_en 分别是中文/英文文图生视频提示词，语义保持一致。",
-        "6. 英文提示词建议使用逗号分隔短语标签，中文提示词保持简洁可执行。",
-        "7. 画面安全约束：除非输入明确要求，否则绝对避免人类/歌手/角色等复杂实体，避免复杂的灯光/光照/光效等易导致画面闪烁的元素。",
-        "8. 不要输出任何额外说明，不要输出 Markdown，不要输出代码块，不要输出旧字段 keyframe_prompt/video_prompt。",
-    ]
+    system_prompt = system_prompt.replace(INPUT_PAYLOAD_JSON_PLACEHOLDER, payload_text)
+    user_prompt = user_prompt_template.replace(USER_CUSTOM_PROMPT_PLACEHOLDER, str(user_custom_prompt))
     normalized_retry_hint = str(retry_hint).strip()
     if normalized_retry_hint:
-        user_prompt_lines.append(f"补救要求：{normalized_retry_hint}")
-    user_prompt = "\n".join(user_prompt_lines)
+        retry_line = retry_hint_template.replace(RETRY_HINT_PLACEHOLDER, normalized_retry_hint)
+        user_prompt = f"{user_prompt}\n{retry_line}"
+
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def _parse_markdown_prompt_template(template_text: str, template_path: Path) -> dict[str, Any]:
+    """
+    功能说明：解析Markdown模板文本。
+    参数说明：
+    - template_text: 模板原始文本。
+    - template_path: 模板路径（用于错误定位）。
+    返回值：
+    - dict[str, Any]: 转换后的模板对象（含固定 version=1）。
+    异常说明：
+    - ModuleBLlmPromptTemplateError: 段落缺失或重复时抛出。
+    边界条件：通过二级标题 `## <section_name>` 切分段落内容。
+    """
+    sections: dict[str, str] = {}
+    current_section_key = ""
+    current_buffer: list[str] = []
+
+    for raw_line in str(template_text).splitlines():
+        matched = MARKDOWN_SECTION_PATTERN.match(raw_line)
+        if matched:
+            if current_section_key:
+                sections[current_section_key] = "\n".join(current_buffer).strip()
+            normalized_section_key = str(matched.group(1)).strip().lower()
+            if normalized_section_key in sections:
+                raise ModuleBLlmPromptTemplateError(
+                    f"Markdown模板段落重复：{template_path}，section={normalized_section_key}"
+                )
+            current_section_key = normalized_section_key
+            current_buffer = []
+            continue
+
+        if current_section_key:
+            current_buffer.append(raw_line)
+
+    if current_section_key:
+        sections[current_section_key] = "\n".join(current_buffer).strip()
+
+    if not sections:
+        raise ModuleBLlmPromptTemplateError(
+            f"Markdown模板缺少有效段落：{template_path}，需要使用 ## system_prompt / ## user_prompt_template / ## retry_hint_template"
+        )
+
+    return {
+        "version": PROMPT_TEMPLATE_VERSION,
+        "system_prompt": sections.get("system_prompt", ""),
+        "user_prompt_template": sections.get("user_prompt_template", ""),
+        "retry_hint_template": sections.get("retry_hint_template", ""),
+    }
+
+
+def _validate_and_build_template(parsed_template: dict[str, Any], template_path: Path) -> ModuleBPromptTemplate:
+    """
+    功能说明：校验模板结构并转换为内部对象。
+    参数说明：
+    - parsed_template: JSON/Markdown解析后的模板对象。
+    - template_path: 模板路径（用于错误定位）。
+    返回值：
+    - ModuleBPromptTemplate: 已校验模板对象。
+    异常说明：
+    - ModuleBLlmPromptTemplateError: 字段集合、版本或占位符非法时抛出。
+    边界条件：字段集合必须与契约完全一致。
+    """
+    actual_keys = set(parsed_template.keys())
+    if actual_keys != PROMPT_TEMPLATE_REQUIRED_KEYS:
+        missing_keys = sorted(PROMPT_TEMPLATE_REQUIRED_KEYS - actual_keys)
+        extra_keys = sorted(actual_keys - PROMPT_TEMPLATE_REQUIRED_KEYS)
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板字段不匹配：{template_path}，missing={missing_keys}，extra={extra_keys}"
+        )
+
+    version_value = parsed_template.get("version")
+    if not isinstance(version_value, int) or int(version_value) != PROMPT_TEMPLATE_VERSION:
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板 version 非法：{template_path}，期望={PROMPT_TEMPLATE_VERSION}，实际={version_value}"
+        )
+
+    system_prompt = _normalize_non_empty_template_text(
+        field_name="system_prompt",
+        value=parsed_template.get("system_prompt"),
+        template_path=template_path,
+    )
+    user_prompt_template = _normalize_non_empty_template_text(
+        field_name="user_prompt_template",
+        value=parsed_template.get("user_prompt_template"),
+        template_path=template_path,
+    )
+    retry_hint_template = _normalize_non_empty_template_text(
+        field_name="retry_hint_template",
+        value=parsed_template.get("retry_hint_template"),
+        template_path=template_path,
+    )
+
+    if INPUT_PAYLOAD_JSON_PLACEHOLDER not in system_prompt:
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板缺失占位符 {INPUT_PAYLOAD_JSON_PLACEHOLDER}：{template_path}"
+        )
+    if USER_CUSTOM_PROMPT_PLACEHOLDER not in user_prompt_template:
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板缺失占位符 {USER_CUSTOM_PROMPT_PLACEHOLDER}：{template_path}"
+        )
+    if RETRY_HINT_PLACEHOLDER not in retry_hint_template:
+        raise ModuleBLlmPromptTemplateError(
+            f"Prompt模板缺失占位符 {RETRY_HINT_PLACEHOLDER}：{template_path}"
+        )
+
+    return ModuleBPromptTemplate(
+        system_prompt=system_prompt,
+        user_prompt_template=user_prompt_template,
+        retry_hint_template=retry_hint_template,
+        source_path=str(template_path),
+    )
+
+
+def _normalize_non_empty_template_text(field_name: str, value: object, template_path: Path) -> str:
+    """
+    功能说明：校验模板文本字段为非空字符串。
+    参数说明：
+    - field_name: 字段名。
+    - value: 字段值。
+    - template_path: 模板路径（用于错误定位）。
+    返回值：
+    - str: 去首尾空白后的文本。
+    异常说明：
+    - ModuleBLlmPromptTemplateError: 字段类型或内容非法时抛出。
+    边界条件：空白字符串视为非法。
+    """
+    if not isinstance(value, str):
+        raise ModuleBLlmPromptTemplateError(f"Prompt模板字段类型非法：{template_path}，{field_name} 必须是字符串。")
+    normalized = value.strip()
+    if not normalized:
+        raise ModuleBLlmPromptTemplateError(f"Prompt模板字段为空：{template_path}，{field_name} 不能为空。")
+    return normalized

@@ -1,5 +1,5 @@
 """
-文件用途：验证模块B最小视觉单元并行执行、失败重试与断点恢复行为。
+文件用途：验证模块B最小视觉单元串行执行、失败重试、滚动记忆与断点恢复行为。
 核心流程：构造模块A输入，打桩分镜生成器，检查单元状态与输出顺序。
 输入输出：输入临时任务目录，输出模块B执行结果断言。
 依赖说明：依赖 pytest 与项目内模块B编排实现。
@@ -105,6 +105,51 @@ class _ScriptedScriptGenerator:
         }
 
 
+class _MemoryAwareScriptGenerator:
+    """
+    功能说明：测试用分镜生成器，记录每个 segment 收到的 memory_context 快照。
+    参数说明：无。
+    返回值：不适用。
+    异常说明：无。
+    边界条件：仅用于验证滚动记忆传递与滑动窗口行为。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.memory_by_segment: dict[str, dict] = {}
+
+    def generate(self, module_a_output: dict) -> list[dict]:
+        _ = module_a_output
+        return []
+
+    def generate_one(
+        self,
+        module_a_output: dict,
+        segment: dict,
+        segment_index: int,
+        memory_context: dict | None = None,
+    ) -> dict:
+        _ = module_a_output
+        segment_id = str(segment["segment_id"])
+        self.calls.append(segment_id)
+        self.memory_by_segment[segment_id] = dict(memory_context or {})
+        start_time = float(segment["start_time"])
+        end_time = float(segment["end_time"])
+        return {
+            "shot_id": f"shot_{segment_index + 1:03d}",
+            "start_time": start_time,
+            "end_time": end_time,
+            "scene_desc": f"scene-{segment_id}",
+            "keyframe_prompt": f"prompt-{segment_id}",
+            "video_prompt": f"video-{segment_id}",
+            "camera_motion": "zoom_in",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "lyric_text": f"lyric-{segment_id}",
+            "lyric_units": [],
+        }
+
+
 def test_run_module_b_should_retry_failed_unit_and_keep_output_order(tmp_path: Path, monkeypatch) -> None:
     """
     功能说明：验证单元失败后会按配置重试，最终输出顺序仍稳定。
@@ -113,7 +158,7 @@ def test_run_module_b_should_retry_failed_unit_and_keep_output_order(tmp_path: P
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：本用例开启并行执行（script_workers=3）。
+    边界条件：本用例配置 script_workers=3，但模块B执行应强制串行语义。
     """
     context = _build_context(tmp_path=tmp_path, task_id="task_b_retry_order", script_workers=3, unit_retry_times=1)
     _write_module_a_output(context=context)
@@ -138,7 +183,7 @@ def test_run_module_b_should_retry_failed_unit_and_keep_output_order(tmp_path: P
 
 def test_run_module_b_should_resume_only_failed_units_after_strict_failure(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证严格失败后再次执行仅补跑 failed 单元，done 单元不重跑。
+    功能说明：验证严格失败后再次执行按“失败点继续串行”补跑，前序 done 单元不重跑。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
@@ -165,19 +210,111 @@ def test_run_module_b_should_resume_only_failed_units_after_strict_failure(tmp_p
         module_name="B",
         statuses=["done"],
     )
-    assert [item["unit_id"] for item in done_units] == ["seg_0001", "seg_0003"]
+    assert [item["unit_id"] for item in done_units] == ["seg_0001"]
+    pending_units = context.state_store.list_module_units_by_status(
+        task_id=context.task_id,
+        module_name="B",
+        statuses=["pending"],
+    )
+    assert [item["unit_id"] for item in pending_units] == ["seg_0003"]
 
     resume_generator = _ScriptedScriptGenerator()
     monkeypatch.setattr(module_b_orchestrator, "build_script_generator", lambda mode, logger, module_b_config=None: resume_generator)
     module_b_orchestrator.run_module_b(context)
 
-    assert resume_generator.calls == ["seg_0002"]
+    assert resume_generator.calls == ["seg_0002", "seg_0003"]
     done_units_after_resume = context.state_store.list_module_units_by_status(
         task_id=context.task_id,
         module_name="B",
         statuses=["done"],
     )
     assert [item["unit_id"] for item in done_units_after_resume] == ["seg_0001", "seg_0002", "seg_0003"]
+
+
+def test_run_module_b_should_write_rolling_memory_and_keep_recent_five_items(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证模块B会落盘 rolling_memory，且 recent_history 采用长度为5的滑动窗口。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：构造6个分镜，最终 rolling_memory 仅保留 seg_0002 ~ seg_0006。
+    """
+    context = _build_context(tmp_path=tmp_path, task_id="task_b_rolling_memory_window", script_workers=3, unit_retry_times=1)
+    _write_module_a_output(context=context, segment_count=6)
+    memory_generator = _MemoryAwareScriptGenerator()
+    monkeypatch.setattr(module_b_orchestrator, "build_script_generator", lambda mode, logger, module_b_config=None: memory_generator)
+
+    module_b_orchestrator.run_module_b(context)
+
+    memory_path = context.artifacts_dir / "module_b_units" / "rolling_memory.json"
+    memory_obj = read_json(memory_path)
+    assert memory_obj["global_setting"] == ""
+    assert memory_obj["current_state"] == "scene-seg_0006"
+    history = memory_obj["recent_history"]
+    assert len(history) == 5
+    assert [item["segment_id"] for item in history] == [
+        "seg_0002",
+        "seg_0003",
+        "seg_0004",
+        "seg_0005",
+        "seg_0006",
+    ]
+    assert memory_generator.memory_by_segment["seg_0001"]["recent_history"] == []
+    assert [item["segment_id"] for item in memory_generator.memory_by_segment["seg_0002"]["recent_history"]] == ["seg_0001"]
+
+
+def test_run_module_b_should_rebuild_memory_from_only_previous_done_units(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证恢复执行时，当前段 memory_context 只包含前序 done 单元，不包含未来单元。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    - monkeypatch: pytest 提供的补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：手工制造 seg_0003 的 done 状态，验证 seg_0002 生成时不会看到该“未来段”。
+    """
+    context = _build_context(tmp_path=tmp_path, task_id="task_b_memory_resume_no_future", script_workers=2, unit_retry_times=0)
+    _write_module_a_output(context=context, segment_count=3)
+
+    fail_generator = _ScriptedScriptGenerator(fail_plan={"seg_0002": 100})
+    monkeypatch.setattr(module_b_orchestrator, "build_script_generator", lambda mode, logger, module_b_config=None: fail_generator)
+    with pytest.raises(RuntimeError):
+        module_b_orchestrator.run_module_b(context)
+
+    manual_seg3_path = context.artifacts_dir / "module_b_units" / "manual_seg_0003.json"
+    write_json(
+        manual_seg3_path,
+        {
+            "shot_id": "shot_003",
+            "start_time": 2.0,
+            "end_time": 3.0,
+            "scene_desc": "scene-seg_0003-manual",
+            "keyframe_prompt": "prompt-seg_0003-manual",
+            "video_prompt": "video-seg_0003-manual",
+            "camera_motion": "zoom_in",
+            "transition": "crossfade",
+            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+            "lyric_text": "lyric-seg_0003-manual",
+            "lyric_units": [],
+        },
+    )
+    context.state_store.set_module_unit_status(
+        task_id=context.task_id,
+        module_name="B",
+        unit_id="seg_0003",
+        status="done",
+        artifact_path=str(manual_seg3_path),
+        error_message="",
+    )
+
+    memory_generator = _MemoryAwareScriptGenerator()
+    monkeypatch.setattr(module_b_orchestrator, "build_script_generator", lambda mode, logger, module_b_config=None: memory_generator)
+    module_b_orchestrator.run_module_b(context)
+
+    seg2_memory = memory_generator.memory_by_segment["seg_0002"]
+    assert [item["segment_id"] for item in seg2_memory["recent_history"]] == ["seg_0001"]
 
 
 def _build_context(tmp_path: Path, task_id: str, script_workers: int, unit_retry_times: int) -> RuntimeContext:
@@ -236,35 +373,56 @@ def _build_context(tmp_path: Path, task_id: str, script_workers: int, unit_retry
     )
 
 
-def _write_module_a_output(context: RuntimeContext) -> None:
+def _write_module_a_output(context: RuntimeContext, segment_count: int = 3) -> None:
     """
     功能说明：写入模块B测试所需的模块A输入文件。
     参数说明：
     - context: 运行上下文对象。
+    - segment_count: 生成的 segment 数量。
     返回值：无。
     异常说明：文件写入失败时抛 OSError。
-    边界条件：segments 时间轴连续且包含3个 segment。
+    边界条件：segments 时间轴连续且至少包含1个 segment。
     """
+    if segment_count < 1:
+        raise ValueError("segment_count 必须大于等于 1")
+
+    segments = []
+    energy_features = []
+    for index in range(segment_count):
+        start_time = float(index)
+        end_time = float(index + 1)
+        segment_id = f"seg_{index + 1:04d}"
+        segments.append(
+            {
+                "segment_id": segment_id,
+                "big_segment_id": "big_001",
+                "start_time": start_time,
+                "end_time": end_time,
+                "label": "verse",
+            }
+        )
+        energy_features.append(
+            {
+                "start_time": start_time,
+                "end_time": end_time,
+                "energy_level": "mid",
+                "trend": "flat",
+                "rhythm_tension": 0.5,
+            }
+        )
+
     module_a_output = {
         "task_id": context.task_id,
         "audio_path": str(context.audio_path),
         "big_segments": [
-            {"segment_id": "big_001", "start_time": 0.0, "end_time": 3.0, "label": "verse"},
+            {"segment_id": "big_001", "start_time": 0.0, "end_time": float(segment_count), "label": "verse"},
         ],
-        "segments": [
-            {"segment_id": "seg_0001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 1.0, "label": "verse"},
-            {"segment_id": "seg_0002", "big_segment_id": "big_001", "start_time": 1.0, "end_time": 2.0, "label": "verse"},
-            {"segment_id": "seg_0003", "big_segment_id": "big_001", "start_time": 2.0, "end_time": 3.0, "label": "verse"},
-        ],
+        "segments": segments,
         "beats": [
             {"time": 0.0, "type": "major", "source": "beat"},
-            {"time": 3.0, "type": "major", "source": "beat"},
+            {"time": float(segment_count), "type": "major", "source": "beat"},
         ],
         "lyric_units": [],
-        "energy_features": [
-            {"start_time": 0.0, "end_time": 1.0, "energy_level": "mid", "trend": "flat", "rhythm_tension": 0.4},
-            {"start_time": 1.0, "end_time": 2.0, "energy_level": "high", "trend": "up", "rhythm_tension": 0.8},
-            {"start_time": 2.0, "end_time": 3.0, "energy_level": "low", "trend": "down", "rhythm_tension": 0.2},
-        ],
+        "energy_features": energy_features,
     }
     write_json(context.artifacts_dir / "module_a_output.json", module_a_output)

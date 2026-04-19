@@ -39,7 +39,7 @@ def generate_module_b_prompts(
     参数说明：
     - logger: 日志对象。
     - llm_config: 模块B LLM配置对象。
-    - llm_input_payload: 单段分镜输入上下文字典。
+    - llm_input_payload: 单段分镜输入上下文字典（含 memory_context + current_segment）。
     - project_root: 项目根目录，用于解析密钥相对路径。
     返回值：
     - dict[str, str]: scene_desc/keyframe_prompt/video_prompt。
@@ -72,6 +72,7 @@ class ScriptGenerator(ABC):
         module_a_output: dict[str, Any],
         segment: dict[str, Any],
         segment_index: int,
+        memory_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """根据单个segment生成单个分镜。"""
         raise NotImplementedError
@@ -130,6 +131,7 @@ class MockScriptGenerator(ScriptGenerator):
         module_a_output: dict[str, Any],
         segment: dict[str, Any],
         segment_index: int,
+        memory_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         功能说明：按单个segment生成一个分镜条目。
@@ -142,6 +144,7 @@ class MockScriptGenerator(ScriptGenerator):
         异常说明：异常由调用方或上层流程统一处理。
         边界条件：歌词挂载策略保持 segment_id 优先+时间重叠兜底。
         """
+        _ = memory_context
         big_segments = module_a_output.get("big_segments", [])
         energy_features = module_a_output.get("energy_features", [])
         lyric_units = module_a_output.get("lyric_units", [])
@@ -426,6 +429,7 @@ class LlmScriptGenerator(MockScriptGenerator):
         module_a_output: dict[str, Any],
         segment: dict[str, Any],
         segment_index: int,
+        memory_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         功能说明：执行单段LLM分镜生成，并回填到标准shot结构。
@@ -458,7 +462,7 @@ class LlmScriptGenerator(MockScriptGenerator):
         )
         segment_label = str(segment.get("label", "unknown"))
         big_segment_label = big_segment_label_map.get(str(segment.get("big_segment_id", "")), segment_label)
-        llm_input_payload = {
+        current_segment_payload = {
             "segment_id": str(segment.get("segment_id", "")),
             "start_time": float(segment.get("start_time", 0.0)),
             "end_time": float(segment.get("end_time", segment.get("start_time", 0.0))),
@@ -471,6 +475,14 @@ class LlmScriptGenerator(MockScriptGenerator):
             "lyric_text": str(baseline_shot.get("lyric_text", "")),
             "lyric_units": baseline_shot.get("lyric_units", []),
         }
+        llm_input_payload = {
+            "memory_context": memory_context or {
+                "global_setting": "",
+                "current_state": "",
+                "recent_history": [],
+            },
+            "current_segment": current_segment_payload,
+        }
         try:
             # 延迟导入：避免 generators <-> modules 包初始化阶段的循环导入。
             from music_video_pipeline.modules.module_b.llm_generator import ModuleBLlmGenerationError
@@ -482,7 +494,9 @@ class LlmScriptGenerator(MockScriptGenerator):
                 project_root=self.project_root,
             )
         except ModuleBLlmGenerationError as error:
-            raise RuntimeError(f"模块B LLM单元生成失败，segment_id={llm_input_payload['segment_id']}，错误={error}") from error
+            raise RuntimeError(
+                f"模块B LLM单元生成失败，segment_id={current_segment_payload['segment_id']}，错误={error}"
+            ) from error
 
         baseline_shot["scene_desc"] = llm_result["scene_desc"]
         baseline_shot["keyframe_prompt_zh"] = llm_result["keyframe_prompt_zh"]
