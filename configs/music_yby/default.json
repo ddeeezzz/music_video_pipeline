@@ -4,7 +4,7 @@
     "frame_generator": "diffusion"
   },
   "paths": {
-    "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
+    "runs_dir": "/root/data/runs",
     "default_audio_path": "resources/juebieshu.m4a"
   },
   "ffmpeg": {
@@ -15,7 +15,8 @@
     "fps": 24,
     "video_preset": "veryfast",
     "video_crf": 30,
-    "render_batch_size": 1
+    "render_batch_size": 1,
+    "video_accel_mode": "cpu_only"
   },
   "logging": {
     "level": "INFO"
@@ -24,8 +25,8 @@
     "beat_interval_seconds": 0.5
   },
   "render": {
-    "video_width": 848,
-    "video_height": 480
+    "video_width": 768,
+    "video_height": 432
   },
   "module_b": {
     "script_workers": 3,
@@ -45,9 +46,7 @@
       "scene_desc_max_chars": 120,
       "keyframe_prompt_max_chars": 400,
       "video_prompt_max_chars": 500,
-      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md",
-      "user_custom_prompt": ""
-    }
+      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
   },
   "module_c": {
     "render_workers": 3,
@@ -55,7 +54,25 @@
   },
   "module_d": {
     "segment_workers": 3,
-    "unit_retry_times": 1
+    "unit_retry_times": 1,
+    "render_backend": "animatediff",
+    "animatediff": {
+      "binding_name": "xiantiao_style",
+      "model_series": "15",
+      "lora_scale": 0.8,
+      "steps": 18,
+      "guidance_scale": 7.0,
+      "negative_prompt": "lowres, blurry, bad anatomy",
+      "device": "auto",
+      "torch_dtype": "float16",
+      "num_frames": 16,
+      "seed_mode": "shot_index",
+      "motion_adapter_repo_id": "guoyww/animatediff-motion-adapter-v1-5-2",
+      "motion_adapter_revision": "main",
+      "motion_adapter_local_dir": "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2",
+      "hf_endpoint": "https://hf-mirror.com",
+      "fallback_to_ffmpeg": false
+    }
   },
   "cross_module": {
     "global_render_limit": 3,
@@ -63,6 +80,15 @@
   },
   "monitoring": {
     "max_wait_after_terminal_minutes": 20.0
+  },
+  "bypy_upload": {
+    "enabled": true,
+    "bypy_bin": "/root/data/t1/.venv/bin/bypy",
+    "remote_runs_dir": "/runs",
+    "retry_times": 2,
+    "timeout_seconds": 1800.0,
+    "config_dir": "~/.bypy",
+    "require_auth_file": true
   },
   "module_a": {
     "mode": "real_auto",

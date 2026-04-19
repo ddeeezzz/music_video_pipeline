@@ -374,10 +374,12 @@ def test_load_config_should_fill_module_b_llm_defaults(tmp_path: Path) -> None:
     assert app_config.module_b.llm.temperature == 0.30
     assert app_config.module_b.llm.top_p == 0.90
     assert app_config.module_b.llm.max_tokens == 350
-    assert app_config.module_b.llm.use_response_format_json_object is False
+    assert app_config.module_b.llm.use_response_format_json_object is True
     assert app_config.module_b.llm.scene_desc_max_chars == 120
     assert app_config.module_b.llm.keyframe_prompt_max_chars == 400
     assert app_config.module_b.llm.video_prompt_max_chars == 500
+    assert app_config.module_b.llm.prompt_template_file == ""
+    assert app_config.module_b.llm.user_custom_prompt == ""
 
 
 def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> None:
@@ -407,6 +409,8 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
                         "top_p": 0.85,
                         "json_retry_times": 4,
                         "scene_desc_max_chars": 80,
+                        "prompt_template_file": "configs/prompts/custom_prompt.v1.json",
+                        "user_custom_prompt": "赛博朋克女孩",
                     },
                 },
             },
@@ -426,6 +430,70 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
     assert app_config.module_b.llm.json_retry_times == 4
     assert app_config.module_b.llm.scene_desc_max_chars == 80
     assert app_config.module_b.llm.video_prompt_max_chars == 500
+    assert app_config.module_b.llm.prompt_template_file == "configs/prompts/custom_prompt.v1.json"
+    assert app_config.module_b.llm.user_custom_prompt == "赛博朋克女孩"
+
+
+def test_load_config_should_raise_when_llm_mode_missing_prompt_template_file(tmp_path: Path) -> None:
+    """
+    功能说明：验证 script_generator=llm 且未配置 prompt_template_file 时会失败。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：module_b.llm 缺省或空字符串都应视为非法。
+    """
+    config_path = tmp_path / "config_llm_missing_prompt_template_file.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mode": {"script_generator": "llm", "frame_generator": "mock"},
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "module_b": {
+                    "llm": {
+                        "prompt_template_file": "   ",
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="prompt_template_file"):
+        load_config(config_path=config_path)
+
+
+def test_load_config_should_not_require_prompt_template_file_in_mock_mode(tmp_path: Path) -> None:
+    """
+    功能说明：验证 script_generator=mock 时不强制要求 prompt_template_file。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：module_b.llm 缺省时应保持空字符串默认值。
+    """
+    config_path = tmp_path / "config_mock_without_prompt_template_file.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mode": {"script_generator": "mock", "frame_generator": "mock"},
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    app_config = load_config(config_path=config_path)
+    assert app_config.mode.script_generator == "mock"
+    assert app_config.module_b.llm.prompt_template_file == ""
 
 
 def test_load_config_should_fill_cross_module_defaults(tmp_path: Path) -> None:
@@ -453,6 +521,17 @@ def test_load_config_should_fill_cross_module_defaults(tmp_path: Path) -> None:
     app_config = load_config(config_path=config_path)
     assert app_config.cross_module.global_render_limit == 3
     assert app_config.cross_module.scheduler_tick_ms == 50
+    adaptive = app_config.cross_module.adaptive_window
+    assert adaptive.enabled is True
+    assert adaptive.probe_interval_ms == 1000
+    assert adaptive.low_watermark == 0.65
+    assert adaptive.high_watermark == 0.96
+    assert adaptive.c_gpu_index == 0
+    assert adaptive.d_gpu_index == 1
+    assert adaptive.c_limit_min == 1
+    assert adaptive.c_limit_max == 6
+    assert adaptive.d_limit_min == 1
+    assert adaptive.d_limit_max == 2
 
 
 def test_load_config_should_accept_explicit_cross_module_values(tmp_path: Path) -> None:
@@ -474,6 +553,22 @@ def test_load_config_should_accept_explicit_cross_module_values(tmp_path: Path) 
                 "cross_module": {
                     "global_render_limit": 4,
                     "scheduler_tick_ms": 80,
+                    "adaptive_window": {
+                        "enabled": False,
+                        "probe_interval_ms": 1500,
+                        "low_watermark": 0.60,
+                        "high_watermark": 0.92,
+                        "c_gpu_index": 2,
+                        "d_gpu_index": 3,
+                        "c_limit_min": 2,
+                        "c_limit_max": 5,
+                        "d_limit_min": 1,
+                        "d_limit_max": 1,
+                    },
+                },
+                "module_d": {
+                    "render_backend": "animatediff",
+                    "animatediff": {},
                 },
             },
             ensure_ascii=False,
@@ -484,6 +579,50 @@ def test_load_config_should_accept_explicit_cross_module_values(tmp_path: Path) 
     app_config = load_config(config_path=config_path)
     assert app_config.cross_module.global_render_limit == 4
     assert app_config.cross_module.scheduler_tick_ms == 80
+    adaptive = app_config.cross_module.adaptive_window
+    assert adaptive.enabled is False
+    assert adaptive.probe_interval_ms == 1500
+    assert adaptive.low_watermark == 0.60
+    assert adaptive.high_watermark == 0.92
+    assert adaptive.c_gpu_index == 2
+    assert adaptive.d_gpu_index == 3
+    assert adaptive.c_limit_min == 2
+    assert adaptive.c_limit_max == 5
+    assert adaptive.d_limit_min == 1
+    assert adaptive.d_limit_max == 1
+
+
+def test_load_config_should_reject_unknown_animatediff_field(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_d.animatediff 出现未知字段时会直接报错。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：未知字段会触发 TypeError。
+    边界条件：用于防止旧配置静默通过导致语义漂移。
+    """
+    config_path = tmp_path / "config_animatediff_unknown_field.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "module_d": {
+                    "render_backend": "animatediff",
+                    "animatediff": {
+                        "max_parallel_units": 2,
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="max_parallel_units"):
+        load_config(config_path=config_path)
 
 
 def test_load_config_should_accept_explicit_module_c_config(tmp_path: Path) -> None:
@@ -656,6 +795,8 @@ def test_load_config_should_fill_monitoring_defaults(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
+    assert app_config.monitoring.host == "127.0.0.1"
+    assert app_config.monitoring.port == 45705
     assert app_config.monitoring.max_wait_after_terminal_minutes == 20.0
 
 
@@ -676,6 +817,8 @@ def test_load_config_should_accept_explicit_monitoring_config(tmp_path: Path) ->
                     "funasr_language": "auto",
                 },
                 "monitoring": {
+                    "host": "0.0.0.0",
+                    "port": 19090,
                     "max_wait_after_terminal_minutes": 7.5,
                 },
             },
@@ -685,4 +828,295 @@ def test_load_config_should_accept_explicit_monitoring_config(tmp_path: Path) ->
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
+    assert app_config.monitoring.host == "0.0.0.0"
+    assert app_config.monitoring.port == 19090
     assert app_config.monitoring.max_wait_after_terminal_minutes == 7.5
+
+
+def test_load_config_should_fill_bypy_upload_defaults(tmp_path: Path) -> None:
+    """
+    功能说明：验证 bypy_upload 配置缺省时会自动补齐运行参数默认值。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：默认值来自配置加载器，不依赖具体业务配置文件。
+    """
+    config_path = tmp_path / "config_bypy_upload_defaults.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.bypy_upload.enabled is True
+    assert app_config.bypy_upload.bypy_bin == "bypy"
+    assert app_config.bypy_upload.remote_runs_dir == "/runs"
+    assert app_config.bypy_upload.retry_times == 2
+    assert app_config.bypy_upload.timeout_seconds == 1800.0
+    assert app_config.bypy_upload.config_dir == "~/.bypy"
+    assert app_config.bypy_upload.require_auth_file is True
+    assert app_config.bypy_upload.selection_profile == "whitelist_v1"
+
+
+def test_load_config_should_fill_render_defaults(tmp_path: Path) -> None:
+    """
+    功能说明：验证 render 配置缺省时会自动补齐默认 848x480。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：不依赖旧 mock.video_width/video_height 字段。
+    """
+    config_path = tmp_path / "config_render_defaults.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.render.video_width == 848
+    assert app_config.render.video_height == 480
+
+
+def test_load_config_should_map_legacy_mock_resolution_to_render(tmp_path: Path, caplog) -> None:
+    """
+    功能说明：验证旧配置 mock.video_width/video_height 会被兼容映射到 render。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    - caplog: pytest 日志捕获工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：当显式 render 存在时，不应再使用 mock 分辨率覆盖。
+    """
+    config_path = tmp_path / "config_render_legacy_mock_map.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "mock": {
+                    "beat_interval_seconds": 0.5,
+                    "video_width": 960,
+                    "video_height": 540,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING"):
+        app_config = load_config(config_path=config_path)
+    assert app_config.render.video_width == 960
+    assert app_config.render.video_height == 540
+    assert "mock.video_width" in caplog.text
+    assert "mock.video_height" in caplog.text
+
+
+def test_load_config_should_accept_explicit_bypy_upload_config(tmp_path: Path) -> None:
+    """
+    功能说明：验证 bypy_upload 配置支持显式覆盖默认值。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：本用例覆盖关闭上传与自定义远端目录等关键字段。
+    """
+    config_path = tmp_path / "config_bypy_upload_explicit.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "bypy_upload": {
+                    "enabled": False,
+                    "bypy_bin": "/opt/tools/bypy",
+                    "remote_runs_dir": "/custom_runs",
+                    "retry_times": 5,
+                    "timeout_seconds": 600.0,
+                    "config_dir": "/tmp/custom_bypy",
+                    "require_auth_file": False,
+                    "selection_profile": "whitelist_v1",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.bypy_upload.enabled is False
+    assert app_config.bypy_upload.bypy_bin == "/opt/tools/bypy"
+    assert app_config.bypy_upload.remote_runs_dir == "/custom_runs"
+    assert app_config.bypy_upload.retry_times == 5
+    assert app_config.bypy_upload.timeout_seconds == 600.0
+    assert app_config.bypy_upload.config_dir == "/tmp/custom_bypy"
+    assert app_config.bypy_upload.require_auth_file is False
+    assert app_config.bypy_upload.selection_profile == "whitelist_v1"
+
+
+def test_load_config_should_raise_when_bypy_upload_has_legacy_queue_fields(tmp_path: Path) -> None:
+    """
+    功能说明：验证 bypy_upload 含已下线队列字段时会直接报错并提示字段名。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：
+    - TypeError: 检测到旧字段时抛出。
+    边界条件：多字段同时出现时应在同一错误文本中给出字段名。
+    """
+    config_path = tmp_path / "config_bypy_upload_legacy_fields.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "bypy_upload": {
+                    "enabled": True,
+                    "mode": "queue_process",
+                    "max_attempts": 3,
+                    "retry_delay_seconds": 30.0,
+                    "auto_start_worker": True,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError) as error_info:
+        load_config(config_path=config_path)
+    assert "bypy_upload.mode" in str(error_info.value)
+    assert "bypy_upload.max_attempts" in str(error_info.value)
+    assert "bypy_upload.retry_delay_seconds" in str(error_info.value)
+    assert "bypy_upload.auto_start_worker" in str(error_info.value)
+
+
+def test_load_config_should_fill_module_d_render_backend_defaults(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_d 新增后端配置在缺省场景可自动补齐默认值。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：默认后端必须保持 ffmpeg，以避免影响旧链路。
+    """
+    config_path = tmp_path / "config_module_d_backend_defaults.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.module_d.render_backend == "ffmpeg"
+    assert app_config.module_d.animatediff.binding_name == "xiantiao_style"
+    assert app_config.module_d.animatediff.model_series == "15"
+    assert app_config.module_d.animatediff.lora_scale == 0.8
+
+
+def test_load_config_should_accept_module_d_animatediff_cuda_device(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_d.animatediff 支持显式 cuda:N 设备配置。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证配置加载层，不依赖本机真实 GPU 数量。
+    """
+    config_path = tmp_path / "config_module_d_animatediff_cuda_device.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "module_d": {
+                    "render_backend": "animatediff",
+                    "animatediff": {
+                        "device": "cuda:1",
+                        "model_series": "15",
+                        "seed_mode": "shot_index",
+                        "torch_dtype": "float16",
+                    },
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    app_config = load_config(config_path=config_path)
+    assert app_config.module_d.render_backend == "animatediff"
+    assert app_config.module_d.animatediff.device == "cuda:1"
+
+
+def test_load_config_should_fail_when_module_d_render_backend_invalid(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_d.render_backend 非法值会触发配置错误。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅允许 ffmpeg/animatediff 两种后端。
+    """
+    config_path = tmp_path / "config_module_d_backend_invalid.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "module_d": {
+                    "render_backend": "unknown_backend",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="module_d.render_backend"):
+        load_config(config_path=config_path)
+
+
+def test_music_yby_configs_should_default_to_module_d_animatediff() -> None:
+    """
+    功能说明：验证 music_yby 配置目录默认显式覆盖为 module_d.render_backend=animatediff。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅校验 *.json 配置文件。
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    config_dir = project_root / "configs" / "music_yby"
+    config_files = sorted(config_dir.glob("*.json"))
+    assert config_files, "music_yby 配置目录为空，无法执行覆盖断言。"
+    for config_path in config_files:
+        app_config = load_config(config_path=config_path)
+        assert app_config.module_d.render_backend == "animatediff", f"配置未覆盖 animatediff: {config_path}"
+        assert app_config.module_d.animatediff.device == "auto", f"配置未统一为 auto 设备策略: {config_path}"

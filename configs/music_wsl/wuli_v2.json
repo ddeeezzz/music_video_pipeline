@@ -1,11 +1,11 @@
 {
   "mode": {
     "script_generator": "llm",
-    "frame_generator": "mock"
+    "frame_generator": "diffusion"
   },
   "paths": {
     "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
-    "default_audio_path": "resources/juebieshu20s.mp3"
+    "default_audio_path": "resources/wuli.m4a"
   },
   "ffmpeg": {
     "ffmpeg_bin": "ffmpeg",
@@ -21,9 +21,11 @@
     "level": "INFO"
   },
   "mock": {
-    "beat_interval_seconds": 0.5,
-    "video_width": 960,
-    "video_height": 540
+    "beat_interval_seconds": 0.5
+  },
+  "render": {
+    "video_width": 848,
+    "video_height": 480
   },
   "module_b": {
     "script_workers": 3,
@@ -39,11 +41,11 @@
       "temperature": 0.3,
       "top_p": 0.9,
       "max_tokens": 350,
-      "use_response_format_json_object": false,
+      "use_response_format_json_object": true,
       "scene_desc_max_chars": 120,
       "keyframe_prompt_max_chars": 400,
-      "video_prompt_max_chars": 500
-    }
+      "video_prompt_max_chars": 500,
+      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
   },
   "module_c": {
     "render_workers": 3,
@@ -59,6 +61,15 @@
   },
   "monitoring": {
     "max_wait_after_terminal_minutes": 20.0
+  },
+  "bypy_upload": {
+    "enabled": true,
+    "bypy_bin": "/root/data/t1/.venv/bin/bypy",
+    "remote_runs_dir": "/runs",
+    "retry_times": 2,
+    "timeout_seconds": 1800.0,
+    "config_dir": "~/.bypy",
+    "require_auth_file": true
   },
   "module_a": {
     "mode": "real_auto",
