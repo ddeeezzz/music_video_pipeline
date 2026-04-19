@@ -15,7 +15,7 @@ def prompt_main_action() -> str | None:
     功能说明：提示用户选择主功能。
     参数说明：无。
     返回值：
-    - str | None: 返回 sync_lora/sync_base_model/rebind_lora/download_assets；输入 q 时返回 None。
+    - str | None: 返回 sync_lora/sync_base_model/rebind_lora/download_assets/sync_tasks；输入 q 时返回 None。
     异常说明：无。
     边界条件：非法输入会循环提示。
     """
@@ -26,6 +26,7 @@ def prompt_main_action() -> str | None:
         print("  [2] 同步 BaseModel")
         print("  [3] 重绑 LoRA key")
         print("  [4] 下载模型资源（HF/直链）")
+        print("  [5] 任务同步（手动）")
         answer = input("输入序号继续，输入 q 退出：").strip().lower()
 
         if answer in {"q", "quit", "exit"}:
@@ -38,6 +39,8 @@ def prompt_main_action() -> str | None:
             return "rebind_lora"
         if answer == "4":
             return "download_assets"
+        if answer == "5":
+            return "sync_tasks"
         print(f"输入无效：{answer}，请重新输入。")
 
 

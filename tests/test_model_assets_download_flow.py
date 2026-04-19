@@ -12,11 +12,16 @@ import json
 import logging
 # 标准库：用于路径处理
 from pathlib import Path
+# 标准库：用于导入路径补齐
+import sys
 # 标准库：用于简单命名空间桩对象
 from types import SimpleNamespace
 
 # 第三方库：用于测试断言与异常校验
 import pytest
+
+# 兼容 pytest 默认 pythonpath=src：补齐项目根目录，确保可导入 scripts.* 包。
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # 项目内模块：model_assets 主入口
 import scripts.model_assets.main as main_cli
@@ -60,6 +65,39 @@ def test_main_should_route_to_download_assets_flow(tmp_path: Path, monkeypatch) 
     assert called["project_root"] == str(tmp_path)
     assert called["base_registry_path"].endswith("configs/base_model_registry.json")
     assert called["bindings_path"].endswith("configs/lora_bindings.json")
+
+
+def test_main_should_route_to_task_sync_flow(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证主菜单选择“任务同步（手动）”时会路由到 task_sync 子流程。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    - monkeypatch: pytest 打桩工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：通过打桩避免触发真实 bypy 与交互循环。
+    """
+
+    class _FakeParser:
+        def parse_args(self):
+            return SimpleNamespace(log_path="log/model_assets.log")
+
+    called: dict[str, str] = {}
+
+    monkeypatch.setattr(main_cli, "build_parser", lambda: _FakeParser())
+    monkeypatch.setattr(main_cli, "resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr(main_cli, "BypyClient", lambda logger: object())
+    monkeypatch.setattr(main_cli, "prompt_main_action", lambda: "sync_tasks")
+
+    def _fake_run_task_sync_flow(project_root, logger):  # noqa: ANN001
+        _ = logger
+        called["project_root"] = str(project_root)
+        return 0
+
+    monkeypatch.setattr(main_cli, "run_task_sync_flow", _fake_run_task_sync_flow)
+    exit_code = main_cli.main()
+    assert exit_code == 0
+    assert called["project_root"] == str(tmp_path)
 
 
 def test_run_lora_direct_download_should_write_binding_with_direct_url(tmp_path: Path, monkeypatch) -> None:

@@ -18,6 +18,8 @@ try:
     from .rebind_lora import apply_lora_rebind, build_lora_binding_options, get_rebind_candidates
     # 包内导入：下载流程
     from .download_flow import run_download_assets_flow
+    # 包内导入：任务同步流程
+    from .task_sync import run_task_sync_flow
     # 包内导入：BaseModel 同步
     from .sync_base_model import sync_base_model_item
     # 包内导入：LoRA 同步
@@ -49,6 +51,7 @@ except ImportError:
     from indexer import build_remote_options
     from rebind_lora import apply_lora_rebind, build_lora_binding_options, get_rebind_candidates
     from download_flow import run_download_assets_flow
+    from task_sync import run_task_sync_flow
     from sync_base_model import sync_base_model_item
     from sync_lora import sync_lora_item
     from store import (
@@ -326,6 +329,12 @@ def main() -> int:
                 logger=logger,
                 base_registry_path=base_registry_path,
                 bindings_path=bindings_path,
+            )
+
+        if action == "sync_tasks":
+            return run_task_sync_flow(
+                project_root=project_root,
+                logger=logger,
             )
 
         return run_lora_rebind_flow(
