@@ -317,6 +317,7 @@ def run_perception_stage(
                 raw_response_path=artifacts.perception_model_allin1_raw_response_path,
                 stems_input=stems_input,
                 work_dir=allin1_work_dir,
+                runtime_device=device,
             )
             big_segments_stage1 = list(allin1_analysis.get("big_segments", []))
             beat_candidates = [float(item) for item in allin1_analysis.get("beat_times", [])]
