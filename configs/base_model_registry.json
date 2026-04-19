@@ -45,6 +45,15 @@
       "type": "directory",
       "enabled": true,
       "description": "HF 仓库下载基础模型目录（排除示例图）：LottePeisch/RevAnimated-Diffusers@main"
+    },
+    {
+      "key": "base_xl_diffusers_stable_diffusion_xl_base_1_0",
+      "series": "xl",
+      "format": "diffusers",
+      "path": "models/base_model/xl/diffusers/stable-diffusion-xl-base-1.0",
+      "type": "directory",
+      "enabled": true,
+      "description": "HF 仓库下载基础模型目录：stabilityai/stable-diffusion-xl-base-1.0@main"
     }
   ]
 }

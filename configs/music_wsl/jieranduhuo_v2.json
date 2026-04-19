@@ -5,7 +5,7 @@
   },
   "paths": {
     "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
-    "default_audio_path": "resources/juebieshu.m4a"
+    "default_audio_path": "resources/jieranduhuo.mp3"
   },
   "ffmpeg": {
     "ffmpeg_bin": "ffmpeg",
@@ -45,9 +45,7 @@
       "scene_desc_max_chars": 120,
       "keyframe_prompt_max_chars": 400,
       "video_prompt_max_chars": 500,
-      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md",
-      "user_custom_prompt": ""
-    }
+      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
   },
   "module_c": {
     "render_workers": 3,
@@ -63,6 +61,15 @@
   },
   "monitoring": {
     "max_wait_after_terminal_minutes": 20.0
+  },
+  "bypy_upload": {
+    "enabled": true,
+    "bypy_bin": "/root/data/t1/.venv/bin/bypy",
+    "remote_runs_dir": "/runs",
+    "retry_times": 2,
+    "timeout_seconds": 1800.0,
+    "config_dir": "~/.bypy",
+    "require_auth_file": true
   },
   "module_a": {
     "mode": "real_auto",

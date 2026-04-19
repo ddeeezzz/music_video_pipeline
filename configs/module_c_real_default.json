@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "module_c_real": {
+    "binding_name": "xiantiao_style",
+    "model_series": "15",
+    "lora_scale": 1.0,
+    "steps": 24,
+    "guidance_scale": 7.0,
+    "negative_prompt": "lowres, blurry, bad anatomy",
+    "device": "auto",
+    "torch_dtype": "auto",
+    "scheduler": "default",
+    "seed_mode": "shot_index"
+  }
+}
