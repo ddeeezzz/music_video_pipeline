@@ -27,11 +27,14 @@ dependencies = [
   "setuptools<81",
   "bypy>=1.8.9",
   "diffusers",
-]
-
-[project.optional-dependencies]
-test = [
-  "pytest>=8.0.0"
+  "tiktoken>=0.12.0",
+  "accelerate==1.13.0",
+  "iniconfig==2.3.0",
+  "peft==0.19.1",
+  "pip==26.0.1",
+  "pluggy==1.6.0",
+  "psutil==7.2.2",
+  "pytest==9.0.3",
 ]
 
 [project.scripts]
