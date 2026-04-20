@@ -42,7 +42,7 @@
       "top_p": 0.9,
       "max_tokens": 350,
       "use_response_format_json_object": true,
-      "scene_desc_max_chars": 120,
+      "scene_desc_max_chars": 200,
       "keyframe_prompt_max_chars": 400,
       "video_prompt_max_chars": 500,
       "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}

@@ -43,7 +43,7 @@
       "top_p": 0.9,
       "max_tokens": 350,
       "use_response_format_json_object": true,
-      "scene_desc_max_chars": 120,
+      "scene_desc_max_chars": 200,
       "keyframe_prompt_max_chars": 400,
       "video_prompt_max_chars": 500,
       "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
@@ -61,7 +61,7 @@
       "model_series": "15",
       "lora_scale": 0.8,
       "steps": 18,
-      "guidance_scale": 7.0,
+      "guidance_scale": 10.0,
       "negative_prompt": "lowres, blurry, bad anatomy",
       "device": "auto",
       "torch_dtype": "float16",
@@ -70,6 +70,8 @@
       "motion_adapter_repo_id": "guoyww/animatediff-motion-adapter-v1-5-2",
       "motion_adapter_revision": "main",
       "motion_adapter_local_dir": "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2",
+      "controlnet_local_dir": "models/controlnet/15/controlnet-canny-sd15",
+      "controlnet_conditioning_scale": 0.8,
       "hf_endpoint": "https://hf-mirror.com",
       "fallback_to_ffmpeg": false
     }
