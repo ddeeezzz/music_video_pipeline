@@ -29,7 +29,7 @@
     "video_height": 432
   },
   "module_b": {
-    "script_workers": 3,
+    "script_workers": 1,
     "unit_retry_times": 1,
     "llm": {
       "provider": "siliconflow",
@@ -49,11 +49,11 @@
       "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
   },
   "module_c": {
-    "render_workers": 3,
+    "render_workers": 1,
     "unit_retry_times": 1
   },
   "module_d": {
-    "segment_workers": 3,
+    "segment_workers": 1,
     "unit_retry_times": 1,
     "render_backend": "animatediff",
     "animatediff": {
@@ -77,7 +77,7 @@
     }
   },
   "cross_module": {
-    "global_render_limit": 3,
+    "global_render_limit": 1,
     "scheduler_tick_ms": 50
   },
   "monitoring": {
