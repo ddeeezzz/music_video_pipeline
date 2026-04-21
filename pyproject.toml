@@ -12,6 +12,7 @@ dependencies = [
   "Pillow>=10.0.0",
   "mutagen>=1.47.0",
   "numpy>=1.26.0",
+  "opencv-python-headless>=4.10.0",
   "huggingface_hub>=0.24.0",
   "requests>=2.31.0",
   "librosa>=0.10.2",
@@ -41,6 +42,7 @@ dependencies = [
 music-video-pipeline = "music_video_pipeline.cli:main"
 mvpl = "music_video_pipeline.cli:main"
 model_assets = "music_video_pipeline.model_assets_cli:main"
+eval = "music_video_pipeline.eval_cli:main"
 
 [tool.uv]
 override-dependencies = [
