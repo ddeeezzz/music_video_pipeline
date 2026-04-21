@@ -1037,6 +1037,9 @@ def test_load_config_should_fill_module_d_render_backend_defaults(tmp_path: Path
     assert app_config.module_d.animatediff.binding_name == "xiantiao_style"
     assert app_config.module_d.animatediff.model_series == "15"
     assert app_config.module_d.animatediff.lora_scale == 0.8
+    assert app_config.module_d.animatediff.guidance_scale == 10.0
+    assert app_config.module_d.animatediff.controlnet_local_dir == "models/controlnet/15/controlnet-canny-sd15"
+    assert app_config.module_d.animatediff.controlnet_conditioning_scale == 0.8
 
 
 def test_load_config_should_accept_module_d_animatediff_cuda_device(tmp_path: Path) -> None:

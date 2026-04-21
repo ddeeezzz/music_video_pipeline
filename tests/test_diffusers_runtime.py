@@ -51,8 +51,11 @@ def _build_fake_diffusers_module() -> ModuleType:
     module.EulerAncestralDiscreteScheduler = object()  # type: ignore[attr-defined]
     module.DDIMScheduler = object()  # type: ignore[attr-defined]
     module.AnimateDiffPipeline = object()  # type: ignore[attr-defined]
+    module.AnimateDiffControlNetPipeline = object()  # type: ignore[attr-defined]
     module.AnimateDiffSDXLPipeline = object()  # type: ignore[attr-defined]
     module.MotionAdapter = object()  # type: ignore[attr-defined]
+    module.ControlNetModel = object()  # type: ignore[attr-defined]
+    module.AutoencoderKL = object()  # type: ignore[attr-defined]
     return module
 
 

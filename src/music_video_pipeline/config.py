@@ -259,6 +259,8 @@ class ModuleDConfig:
         - motion_adapter_repo_id: Motion Adapter HF 仓库。
         - motion_adapter_revision: Motion Adapter 版本。
         - motion_adapter_local_dir: Motion Adapter 本地缓存目录（相对项目根）。
+        - controlnet_local_dir: ControlNet 本地目录（相对项目根，当前用于 SD1.5 canny 控制）。
+        - controlnet_conditioning_scale: ControlNet 约束强度。
         - hf_endpoint: HF 镜像地址（空字符串表示使用环境变量/默认）。
         - fallback_to_ffmpeg: AnimateDiff 失败时是否回退 ffmpeg。
         返回值：不适用。
@@ -270,7 +272,7 @@ class ModuleDConfig:
         model_series: str = "15"
         lora_scale: float = 0.8
         steps: int = 24
-        guidance_scale: float = 7.0
+        guidance_scale: float = 10.0
         negative_prompt: str = "lowres, blurry, bad anatomy"
         device: str = "auto"
         torch_dtype: str = "float16"
@@ -279,6 +281,8 @@ class ModuleDConfig:
         motion_adapter_repo_id: str = "guoyww/animatediff-motion-adapter-v1-5-2"
         motion_adapter_revision: str = "main"
         motion_adapter_local_dir: str = "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2"
+        controlnet_local_dir: str = "models/controlnet/15/controlnet-canny-sd15"
+        controlnet_conditioning_scale: float = 0.8
         hf_endpoint: str = "https://hf-mirror.com"
         fallback_to_ffmpeg: bool = False
 
@@ -428,6 +432,7 @@ class ModuleAConfig:
     fallback_enabled: bool = True
     device: str = "auto"
     funasr_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
+    vad_model: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
     demucs_model: str = "htdemucs"
     vocal_energy_enter_quantile: float = 0.70
     vocal_energy_exit_quantile: float = 0.45
@@ -569,7 +574,7 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "model_series": "15",
                 "lora_scale": 0.8,
                 "steps": 24,
-                "guidance_scale": 7.0,
+                "guidance_scale": 10.0,
                 "negative_prompt": "lowres, blurry, bad anatomy",
                 "device": "auto",
                 "torch_dtype": "float16",
@@ -578,6 +583,8 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "motion_adapter_repo_id": "guoyww/animatediff-motion-adapter-v1-5-2",
                 "motion_adapter_revision": "main",
                 "motion_adapter_local_dir": "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2",
+                "controlnet_local_dir": "models/controlnet/15/controlnet-canny-sd15",
+                "controlnet_conditioning_scale": 0.8,
                 "hf_endpoint": "https://hf-mirror.com",
                 "fallback_to_ffmpeg": False,
             },
@@ -624,6 +631,7 @@ def _merge_defaults(raw_data: dict) -> dict:
             "merge_gap_seconds": 0.25,
             "max_visual_unit_seconds": 6.0,
             "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
+            "vad_model": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
             "demucs_model": "htdemucs",
             "vocal_energy_enter_quantile": 0.70,
             "vocal_energy_exit_quantile": 0.45,
@@ -749,6 +757,19 @@ def load_config(config_path: Path) -> AppConfig:
     if not _is_valid_device_spec(module_d_device):
         raise TypeError("配置错误：module_d.animatediff.device 非法，支持 auto/cpu/cuda/cuda:N。")
     module_d_animatediff_data["device"] = module_d_device
+    controlnet_local_dir = str(
+        module_d_animatediff_data.get("controlnet_local_dir", "models/controlnet/15/controlnet-canny-sd15")
+    ).strip()
+    if not controlnet_local_dir:
+        raise TypeError("配置错误：module_d.animatediff.controlnet_local_dir 不能为空。")
+    module_d_animatediff_data["controlnet_local_dir"] = controlnet_local_dir
+    try:
+        controlnet_scale = float(module_d_animatediff_data.get("controlnet_conditioning_scale", 0.8))
+    except (TypeError, ValueError) as error:
+        raise TypeError("配置错误：module_d.animatediff.controlnet_conditioning_scale 必须是数字。") from error
+    if controlnet_scale <= 0:
+        raise TypeError("配置错误：module_d.animatediff.controlnet_conditioning_scale 必须大于 0。")
+    module_d_animatediff_data["controlnet_conditioning_scale"] = controlnet_scale
     bypy_upload_data = merged.get("bypy_upload", {})
     if not isinstance(bypy_upload_data, dict):
         raise TypeError("配置错误：bypy_upload 必须是对象。")

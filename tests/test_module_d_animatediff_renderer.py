@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 # 第三方库：用于伪造帧
+import numpy as np
 from PIL import Image
 # 第三方库：用于异常断言
 import pytest
@@ -150,6 +151,67 @@ def test_resolve_device_should_choose_cuda1_when_two_gpus_available(caplog) -> N
     assert "设备索引越界" in caplog.text
 
 
+def test_ensure_controlnet_dir_should_raise_when_missing(tmp_path: Path) -> None:
+    """
+    功能说明：验证 ControlNet 本地目录缺失时会抛出可定位错误。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅支持 series=15，且不做自动下载。
+    """
+    with pytest.raises(RuntimeError, match="ControlNet 本地目录不存在"):
+        renderer._ensure_controlnet_dir(
+            project_root=tmp_path,
+            local_dir_text="models/controlnet/15/controlnet-canny-sd15",
+            model_series="15",
+        )
+
+
+def test_build_control_image_from_frame_should_write_preview(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证 frame_path 经过 Canny 处理后会写出 control_images 预览图。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    - monkeypatch: pytest 打桩工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：通过 fake cv2 隔离 OpenCV 真实依赖。
+    """
+    frame_path = tmp_path / "frame_001.png"
+    Image.new(mode="RGB", size=(32, 32), color=(255, 255, 255)).save(frame_path)
+
+    class _FakeCv2:
+        COLOR_RGB2GRAY = 1
+        COLOR_GRAY2RGB = 2
+
+        @staticmethod
+        def cvtColor(image_array, code):  # noqa: ANN001
+            if code == _FakeCv2.COLOR_RGB2GRAY:
+                return image_array[..., 0]
+            if code == _FakeCv2.COLOR_GRAY2RGB:
+                return np.stack([image_array, image_array, image_array], axis=2)
+            return image_array
+
+        @staticmethod
+        def Canny(gray, low, high):  # noqa: ANN001
+            _ = (low, high)
+            return gray
+
+    monkeypatch.setattr(renderer, "_load_cv2_module", lambda: _FakeCv2)
+
+    control_image, control_path = renderer._build_control_image_from_frame(
+        frame_path=frame_path,
+        control_images_dir=tmp_path / "artifacts" / "control_images",
+        shot_id="shot_001",
+    )
+
+    assert isinstance(control_image, Image.Image)
+    assert control_image.size == (32, 32)
+    assert control_path.exists()
+    assert control_path.name == "shot_001_canny.png"
+
+
 def test_render_one_unit_animatediff_should_use_8fps_density_and_ignore_num_frames_cap(tmp_path: Path, monkeypatch) -> None:
     """
     功能说明：验证普通段按 8fps 计算推理帧，且不再受 num_frames 上限约束。
@@ -166,6 +228,7 @@ def test_render_one_unit_animatediff_should_use_8fps_density_and_ignore_num_fram
 
     context = SimpleNamespace(
         task_id="task_ad_density_default",
+        artifacts_dir=tmp_path / "artifacts",
         config=SimpleNamespace(
             ffmpeg=SimpleNamespace(ffmpeg_bin="ffmpeg", fps=24),
             render=SimpleNamespace(video_width=848, video_height=480),
@@ -186,7 +249,7 @@ def test_render_one_unit_animatediff_should_use_8fps_density_and_ignore_num_fram
         unit_id="shot_001",
         unit_index=0,
         duration=4.0,
-        shot={"big_segment_label": "verse", "segment_label": "verse"},
+        shot={"big_segment_label": "verse", "segment_label": "verse", "frame_path": "/tmp/fake_frame.png"},
         exact_frames=98,
         temp_segment_path=temp_segment_path,
         segment_path=final_segment_path,
@@ -206,8 +269,38 @@ def test_render_one_unit_animatediff_should_use_8fps_density_and_ignore_num_fram
         },
     )
 
-    def _fake_generate_mv_clip(*, prompt, num_frames, runtime, width, height, negative_prompt, guidance_scale, steps, seed):  # noqa: ANN001
-        _ = (prompt, runtime, width, height, negative_prompt, guidance_scale, steps, seed)
+    def _fake_generate_mv_clip(
+        *,
+        prompt,
+        num_frames,
+        runtime,
+        width,
+        height,
+        negative_prompt,
+        guidance_scale,
+        steps,
+        seed,
+        frame_path,
+        control_images_dir,
+        shot_id,
+        controlnet_conditioning_scale,
+        logger,
+    ):  # noqa: ANN001
+        _ = (
+            prompt,
+            runtime,
+            width,
+            height,
+            negative_prompt,
+            guidance_scale,
+            steps,
+            seed,
+            frame_path,
+            control_images_dir,
+            shot_id,
+            controlnet_conditioning_scale,
+            logger,
+        )
         captured["inference_frames"] = int(num_frames)
         return [Image.new(mode="RGB", size=(64, 64), color=(0, 0, 0)) for _ in range(int(num_frames))]
 
@@ -256,6 +349,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
 
     context = SimpleNamespace(
         task_id="task_ad_density_solo",
+        artifacts_dir=tmp_path / "artifacts",
         config=SimpleNamespace(
             ffmpeg=SimpleNamespace(ffmpeg_bin="ffmpeg", fps=24),
             render=SimpleNamespace(video_width=848, video_height=480),
@@ -276,7 +370,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
         unit_id="shot_001",
         unit_index=0,
         duration=4.0,
-        shot={"big_segment_label": "solo", "segment_label": "verse"},
+        shot={"big_segment_label": "solo", "segment_label": "verse", "frame_path": "/tmp/fake_frame.png"},
         exact_frames=98,
         temp_segment_path=temp_segment_path,
         segment_path=final_segment_path,
@@ -293,8 +387,38 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
         },
     )
 
-    def _fake_generate_mv_clip(*, prompt, num_frames, runtime, width, height, negative_prompt, guidance_scale, steps, seed):  # noqa: ANN001
-        _ = (prompt, runtime, width, height, negative_prompt, guidance_scale, steps, seed)
+    def _fake_generate_mv_clip(
+        *,
+        prompt,
+        num_frames,
+        runtime,
+        width,
+        height,
+        negative_prompt,
+        guidance_scale,
+        steps,
+        seed,
+        frame_path,
+        control_images_dir,
+        shot_id,
+        controlnet_conditioning_scale,
+        logger,
+    ):  # noqa: ANN001
+        _ = (
+            prompt,
+            runtime,
+            width,
+            height,
+            negative_prompt,
+            guidance_scale,
+            steps,
+            seed,
+            frame_path,
+            control_images_dir,
+            shot_id,
+            controlnet_conditioning_scale,
+            logger,
+        )
         captured["inference_frames"] = int(num_frames)
         return [Image.new(mode="RGB", size=(64, 64), color=(0, 0, 0)) for _ in range(int(num_frames))]
 
@@ -315,7 +439,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
         encoder_command_args=["-c:v", "libx264"],
     )
 
-    assert captured["inference_frames"] == 64
+    assert captured["inference_frames"] == 32
     assert captured["encoded_frames"] == 98
     assert result["target_effective_fps"] == 16
 
@@ -336,6 +460,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
 
     context = SimpleNamespace(
         task_id="task_ad_density_chorus",
+        artifacts_dir=tmp_path / "artifacts",
         config=SimpleNamespace(
             ffmpeg=SimpleNamespace(ffmpeg_bin="ffmpeg", fps=24),
             render=SimpleNamespace(video_width=848, video_height=480),
@@ -356,7 +481,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
         unit_id="shot_001",
         unit_index=0,
         duration=4.0,
-        shot={"big_segment_label": "chorus", "segment_label": "verse"},
+        shot={"big_segment_label": "chorus", "segment_label": "verse", "frame_path": "/tmp/fake_frame.png"},
         exact_frames=98,
         temp_segment_path=temp_segment_path,
         segment_path=final_segment_path,
@@ -372,8 +497,38 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
             "device": str(device_override or "cuda:1"),
         },
     )
-    def _fake_generate_mv_clip(*, prompt, num_frames, runtime, width, height, negative_prompt, guidance_scale, steps, seed):  # noqa: ANN001
-        _ = (prompt, runtime, width, height, negative_prompt, guidance_scale, steps, seed)
+    def _fake_generate_mv_clip(
+        *,
+        prompt,
+        num_frames,
+        runtime,
+        width,
+        height,
+        negative_prompt,
+        guidance_scale,
+        steps,
+        seed,
+        frame_path,
+        control_images_dir,
+        shot_id,
+        controlnet_conditioning_scale,
+        logger,
+    ):  # noqa: ANN001
+        _ = (
+            prompt,
+            runtime,
+            width,
+            height,
+            negative_prompt,
+            guidance_scale,
+            steps,
+            seed,
+            frame_path,
+            control_images_dir,
+            shot_id,
+            controlnet_conditioning_scale,
+            logger,
+        )
         captured["inference_frames"] = int(num_frames)
         return [Image.new(mode="RGB", size=(64, 64), color=(0, 0, 0)) for _ in range(int(num_frames))]
 
@@ -394,7 +549,7 @@ def test_render_one_unit_animatediff_should_use_16fps_when_big_segment_label_is_
         encoder_command_args=["-c:v", "libx264"],
     )
 
-    assert captured["inference_frames"] == 64
+    assert captured["inference_frames"] == 32
     assert result["segment_path"] == str(final_segment_path)
     assert captured["encoded_frames"] == 98
 
@@ -414,6 +569,7 @@ def test_render_one_unit_animatediff_should_prioritize_big_segment_label_over_se
     final_segment_path = tmp_path / "segments" / "segment_001.mp4"
     context = SimpleNamespace(
         task_id="task_ad_density_priority",
+        artifacts_dir=tmp_path / "artifacts",
         config=SimpleNamespace(
             ffmpeg=SimpleNamespace(ffmpeg_bin="ffmpeg", fps=24),
             render=SimpleNamespace(video_width=848, video_height=480),
@@ -434,7 +590,7 @@ def test_render_one_unit_animatediff_should_prioritize_big_segment_label_over_se
         unit_id="shot_001",
         unit_index=0,
         duration=4.0,
-        shot={"big_segment_label": "verse", "segment_label": "solo"},
+        shot={"big_segment_label": "verse", "segment_label": "solo", "frame_path": "/tmp/fake_frame.png"},
         exact_frames=98,
         temp_segment_path=temp_segment_path,
         segment_path=final_segment_path,
@@ -451,8 +607,38 @@ def test_render_one_unit_animatediff_should_prioritize_big_segment_label_over_se
         },
     )
 
-    def _fake_generate_mv_clip(*, prompt, num_frames, runtime, width, height, negative_prompt, guidance_scale, steps, seed):  # noqa: ANN001
-        _ = (prompt, runtime, width, height, negative_prompt, guidance_scale, steps, seed)
+    def _fake_generate_mv_clip(
+        *,
+        prompt,
+        num_frames,
+        runtime,
+        width,
+        height,
+        negative_prompt,
+        guidance_scale,
+        steps,
+        seed,
+        frame_path,
+        control_images_dir,
+        shot_id,
+        controlnet_conditioning_scale,
+        logger,
+    ):  # noqa: ANN001
+        _ = (
+            prompt,
+            runtime,
+            width,
+            height,
+            negative_prompt,
+            guidance_scale,
+            steps,
+            seed,
+            frame_path,
+            control_images_dir,
+            shot_id,
+            controlnet_conditioning_scale,
+            logger,
+        )
         captured["inference_frames"] = int(num_frames)
         return [Image.new(mode="RGB", size=(64, 64), color=(0, 0, 0)) for _ in range(int(num_frames))]
 
@@ -490,6 +676,7 @@ def test_render_one_unit_animatediff_should_forward_device_override_to_runtime(t
 
     context = SimpleNamespace(
         task_id="task_ad_device_override",
+        artifacts_dir=tmp_path / "artifacts",
         config=SimpleNamespace(
             ffmpeg=SimpleNamespace(ffmpeg_bin="ffmpeg", fps=24),
             render=SimpleNamespace(video_width=848, video_height=480),
@@ -510,7 +697,7 @@ def test_render_one_unit_animatediff_should_forward_device_override_to_runtime(t
         unit_id="shot_001",
         unit_index=0,
         duration=0.5,
-        shot={"big_segment_label": "verse", "segment_label": "verse"},
+        shot={"big_segment_label": "verse", "segment_label": "verse", "frame_path": "/tmp/fake_frame.png"},
         exact_frames=12,
         temp_segment_path=temp_segment_path,
         segment_path=final_segment_path,
@@ -622,6 +809,13 @@ def test_generate_mv_clip_should_use_inference_mode_and_empty_cuda_cache() -> No
         "torch": _FakeTorch(),
         "device": "cuda:1",
     }
+    fake_control_image = Image.new(mode="RGB", size=(32, 32), color=(255, 255, 255))
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        renderer,
+        "_build_control_image_from_frame",
+        lambda **kwargs: (fake_control_image, Path("/tmp/shot_001_canny.png")),
+    )
 
     frames = renderer.generate_mv_clip(
         prompt="line art city",
@@ -633,7 +827,13 @@ def test_generate_mv_clip_should_use_inference_mode_and_empty_cuda_cache() -> No
         guidance_scale=7.0,
         steps=12,
         seed=None,
+        frame_path="/tmp/frame_001.png",
+        control_images_dir=Path("/tmp"),
+        shot_id="shot_001",
+        controlnet_conditioning_scale=0.8,
+        logger=None,
     )
+    monkeypatch.undo()
 
     assert len(frames) == 1
     assert called["inference_mode_entered"] is True

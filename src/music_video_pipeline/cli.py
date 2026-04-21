@@ -30,10 +30,21 @@ install_runtime_noise_filters()
 from music_video_pipeline.command_service import CommandRequest, MvplCommandService
 # 项目内模块：配置加载
 from music_video_pipeline.config import AppConfig, load_config
+# 项目内模块：日志配置
+from music_video_pipeline.logging_utils import setup_logging
 # 项目内模块：交互式 CLI
 from music_video_pipeline.interactive_cli import run_interactive_cli
 # 项目内模块：日志初始化
-from music_video_pipeline.logging_utils import setup_logging
+import os
+import sys
+
+# 强制设置本地化与离线模式环境变量
+os.environ["HF_HOME"] = "/root/data/hf_cache"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["MODELSCOPE_OFFLINE"] = "1"
+
+import logging
 
 # 任务监督服务类采用延迟导入，避免交互菜单启动时加载重依赖。
 TaskMonitorService: Any | None = None
