@@ -14,6 +14,8 @@ import json
 import logging
 # 标准库：用于环境变量控制
 import os
+# 标准库：用于依赖探测
+import inspect
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于目录清理
@@ -26,6 +28,7 @@ import threading
 from typing import Any
 
 # 第三方库：用于保存图像帧
+import numpy as np
 from PIL import Image
 
 # 项目内模块：运行上下文
@@ -45,6 +48,18 @@ LORA_BINDINGS_RELATIVE_PATH = Path("configs/lora_bindings.json")
 DEFAULT_MOTION_ADAPTER_REPO_ID_15 = "guoyww/animatediff-motion-adapter-v1-5-2"
 # 常量：默认 Motion Adapter 本地缓存目录（SD1.5）。
 DEFAULT_MOTION_ADAPTER_LOCAL_DIR_15 = "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2"
+# 常量：默认 ControlNet（SD1.5 canny）本地目录。
+DEFAULT_CONTROLNET_LOCAL_DIR_15 = "models/controlnet/15/controlnet-canny-sd15"
+# 常量：默认 Canny 低阈值。
+DEFAULT_CANNY_THRESHOLD_LOW = 100
+# 常量：默认 Canny 高阈值。
+DEFAULT_CANNY_THRESHOLD_HIGH = 200
+# 常量：单次 AnimateDiff 推理最大帧数硬上限（稳定性保护）。
+MAX_ANIMATEDIFF_INFERENCE_FRAMES = 32
+# 常量：线稿风格保真用 CFG（强制抬高，抑制动作模块压制）。
+LINEART_FORCED_GUIDANCE_SCALE = 12.0
+# 常量：线稿风格保真用负向提示词补强片段。
+LINEART_FORCED_NEGATIVE_PROMPT = "(worst quality, low quality:1.4), blurry, muddy, grey, brown, colorful"
 
 # 全局缓存：避免每个 shot 重复加载 pipeline。
 _RUNTIME_CACHE: dict[str, dict[str, Any]] = {}
@@ -313,11 +328,47 @@ def _ensure_motion_adapter_dir(
     return local_dir
 
 
+def _ensure_controlnet_dir(*, project_root: Path, local_dir_text: str, model_series: str) -> Path:
+    """
+    功能说明：校验 ControlNet 本地目录可用性（当前仅支持 SD1.5）。
+    参数说明：
+    - project_root: 项目根目录。
+    - local_dir_text: 本地目录文本（相对项目根或绝对路径）。
+    - model_series: 模型系列（15/xl）。
+    返回值：
+    - Path: ControlNet 本地目录绝对路径。
+    异常说明：
+    - RuntimeError: 系列不支持、目录缺失或为空时抛出。
+    边界条件：本函数不做自动下载，严格要求手工放置权重。
+    """
+    series = str(model_series).strip().lower()
+    if series != "15":
+        raise RuntimeError(
+            f"AnimateDiff ControlNet 当前仅支持 model_series=15，当前={series}。"
+            "请暂时改用 15，xl ControlNet 将在后续版本接入。"
+        )
+    candidate = Path(str(local_dir_text).strip() or DEFAULT_CONTROLNET_LOCAL_DIR_15)
+    local_dir = candidate if candidate.is_absolute() else (project_root / candidate)
+    resolved_dir = local_dir.resolve()
+    if not resolved_dir.exists() or not resolved_dir.is_dir():
+        raise RuntimeError(
+            "AnimateDiff ControlNet 本地目录不存在："
+            f"{resolved_dir}。请先手工放置 controlnet-canny-sd15 权重到该目录。"
+        )
+    if not any(resolved_dir.iterdir()):
+        raise RuntimeError(
+            "AnimateDiff ControlNet 本地目录为空："
+            f"{resolved_dir}。请先手工放置 controlnet-canny-sd15 权重到该目录。"
+        )
+    return resolved_dir
+
+
 def _build_runtime_cache_key(
     *,
     base_model_path: Path,
     lora_file_path: Path,
     motion_adapter_dir: Path,
+    controlnet_dir: Path,
     model_series: str,
     device: str,
     torch_dtype_text: str,
@@ -325,7 +376,7 @@ def _build_runtime_cache_key(
     """
     功能说明：构建 runtime 缓存 key。
     参数说明：
-    - base_model_path/lora_file_path/motion_adapter_dir/model_series/device/torch_dtype_text: 运行关键参数。
+    - base_model_path/lora_file_path/motion_adapter_dir/controlnet_dir/model_series/device/torch_dtype_text: 运行关键参数。
     返回值：
     - str: 稳定缓存 key。
     异常说明：无。
@@ -336,12 +387,83 @@ def _build_runtime_cache_key(
             str(base_model_path),
             str(lora_file_path),
             str(motion_adapter_dir),
+            str(controlnet_dir),
             str(model_series).strip().lower(),
             str(device).strip().lower(),
             str(torch_dtype_text).strip().lower(),
         ]
     )
     return hashlib.sha256(key_source.encode("utf-8")).hexdigest()
+
+
+def _collect_pipeline_adapter_names(pipeline: Any) -> list[str]:
+    """
+    功能说明：收集 pipeline 当前可见的 LoRA adapter 名称。
+    参数说明：
+    - pipeline: diffusers pipeline 对象。
+    返回值：
+    - list[str]: 去重后的 adapter 名称列表（保持发现顺序）。
+    异常说明：无（探测失败时返回空列表）。
+    边界条件：兼容 get_active_adapters/get_list_adapters 两种接口。
+    """
+    discovered: list[str] = []
+
+    def _append_name(value: Any) -> None:
+        text = str(value).strip()
+        if text and text not in discovered:
+            discovered.append(text)
+
+    try:
+        get_active = getattr(pipeline, "get_active_adapters", None)
+        if callable(get_active):
+            active = get_active()
+            if isinstance(active, (list, tuple, set)):
+                for item in active:
+                    _append_name(item)
+            elif active is not None:
+                _append_name(active)
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        get_list = getattr(pipeline, "get_list_adapters", None)
+        if callable(get_list):
+            listed = get_list()
+            if isinstance(listed, dict):
+                for value in listed.values():
+                    if isinstance(value, (list, tuple, set)):
+                        for item in value:
+                            _append_name(item)
+                    elif value is not None:
+                        _append_name(value)
+            elif isinstance(listed, (list, tuple, set)):
+                for item in listed:
+                    _append_name(item)
+            elif listed is not None:
+                _append_name(listed)
+    except Exception:  # noqa: BLE001
+        pass
+
+    return discovered
+
+
+def _merge_lineart_negative_prompt(base_negative_prompt: str) -> str:
+    """
+    功能说明：将线稿风格保真负向提示词片段并入现有 negative prompt。
+    参数说明：
+    - base_negative_prompt: 配置中的负向提示词。
+    返回值：
+    - str: 合并后的负向提示词。
+    异常说明：无。
+    边界条件：当已有提示词已包含补强片段时不重复追加。
+    """
+    base_text = str(base_negative_prompt).strip()
+    forced_text = str(LINEART_FORCED_NEGATIVE_PROMPT).strip()
+    if not base_text:
+        return forced_text
+    if forced_text.lower() in base_text.lower():
+        return base_text
+    return f"{base_text}, {forced_text}"
 
 
 def _ensure_runtime(context: RuntimeContext, device_override: str | None = None) -> dict[str, Any]:
@@ -372,13 +494,20 @@ def _ensure_runtime(context: RuntimeContext, device_override: str | None = None)
         local_dir_text=local_dir_text,
         hf_endpoint=anim_cfg.hf_endpoint,
     )
+    controlnet_local_dir_text = str(getattr(anim_cfg, "controlnet_local_dir", DEFAULT_CONTROLNET_LOCAL_DIR_15)).strip()
+    controlnet_dir = _ensure_controlnet_dir(
+        project_root=project_root,
+        local_dir_text=controlnet_local_dir_text,
+        model_series=str(anim_cfg.model_series),
+    )
 
     try:
         runtime_dependencies = load_module_d_animatediff_dependencies()
         torch = runtime_dependencies["torch"]
-        AnimateDiffPipeline = runtime_dependencies["AnimateDiffPipeline"]
-        AnimateDiffSDXLPipeline = runtime_dependencies["AnimateDiffSDXLPipeline"]
+        AnimateDiffControlNetPipeline = runtime_dependencies["AnimateDiffControlNetPipeline"]
         MotionAdapter = runtime_dependencies["MotionAdapter"]
+        ControlNetModel = runtime_dependencies["ControlNetModel"]
+        AutoencoderKL = runtime_dependencies["AutoencoderKL"]
     except Exception as error:  # noqa: BLE001
         raise RuntimeError(f"AnimateDiff 依赖导入失败，请检查 diffusers/torch 环境：{error}") from error
 
@@ -389,6 +518,7 @@ def _ensure_runtime(context: RuntimeContext, device_override: str | None = None)
         base_model_path=assets["base_model_path"],
         lora_file_path=assets["lora_file_path"],
         motion_adapter_dir=motion_adapter_dir,
+        controlnet_dir=controlnet_dir,
         model_series=anim_cfg.model_series,
         device=device,
         torch_dtype_text=anim_cfg.torch_dtype,
@@ -433,21 +563,42 @@ def _ensure_runtime(context: RuntimeContext, device_override: str | None = None)
                     f"{motion_adapter_dir}，加载参数={motion_adapter_load_kwargs}，错误={first_error}"
                 ) from first_error
 
+        controlnet_load_kwargs: dict[str, Any] = {
+            "torch_dtype": resolved_dtype,
+            "local_files_only": True,
+        }
         try:
-            if str(anim_cfg.model_series).strip().lower() == "xl":
-                pipeline = AnimateDiffSDXLPipeline.from_pretrained(
-                    str(assets["base_model_path"]),
-                    motion_adapter=motion_adapter,
-                    torch_dtype=resolved_dtype,
-                    local_files_only=True,
-                )
-            else:
-                pipeline = AnimateDiffPipeline.from_pretrained(
-                    str(assets["base_model_path"]),
-                    motion_adapter=motion_adapter,
-                    torch_dtype=resolved_dtype,
-                    local_files_only=True,
-                )
+            controlnet = ControlNetModel.from_pretrained(
+                str(controlnet_dir),
+                **controlnet_load_kwargs,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeError(
+                "AnimateDiff ControlNet 加载失败："
+                f"{controlnet_dir}，加载参数={controlnet_load_kwargs}，错误={error}"
+            ) from error
+
+        vae_dir = (Path(str(assets["base_model_path"])) / "vae").resolve()
+        if not vae_dir.exists() or not vae_dir.is_dir():
+            raise RuntimeError(f"AnimateDiff 底模缺少 VAE 目录：{vae_dir}")
+        try:
+            vae = AutoencoderKL.from_pretrained(
+                str(vae_dir),
+                torch_dtype=resolved_dtype,
+                local_files_only=True,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise RuntimeError(f"AnimateDiff 加载 VAE 失败：{vae_dir}，错误={error}") from error
+
+        try:
+            pipeline = AnimateDiffControlNetPipeline.from_pretrained(
+                str(assets["base_model_path"]),
+                motion_adapter=motion_adapter,
+                controlnet=controlnet,
+                vae=vae,
+                torch_dtype=resolved_dtype,
+                local_files_only=True,
+            )
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"AnimateDiff pipeline 初始化失败：{assets['base_model_path']}，错误={error}") from error
 
@@ -455,14 +606,94 @@ def _ensure_runtime(context: RuntimeContext, device_override: str | None = None)
             pipeline = pipeline.to(device)
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"AnimateDiff 切换设备失败：device={device}，错误={error}") from error
-
         try:
+            if hasattr(pipeline, "vae"):
+                pipeline.vae.to(dtype=torch.float32)
+                context.logger.info("AnimateDiff 已强制 VAE 使用 float32（线稿亮度保真）。")
+        except Exception as error:  # noqa: BLE001
+            context.logger.warning("AnimateDiff VAE 切换 float32 失败，已继续执行，错误=%s", error)
+        try:
+            original_decode_latents = getattr(pipeline, "decode_latents", None)
+            if callable(original_decode_latents):
+                def _decode_latents_fp32_compatible(latents, decode_chunk_size: int = 16):  # type: ignore[no-untyped-def]
+                    normalized_latents = latents
+                    try:
+                        normalized_latents = latents.to(dtype=torch.float32)
+                    except Exception:
+                        pass
+                    return original_decode_latents(normalized_latents, decode_chunk_size=decode_chunk_size)
+
+                pipeline.decode_latents = _decode_latents_fp32_compatible  # type: ignore[assignment]
+                context.logger.info("AnimateDiff 已启用 VAE float32 解码兼容补丁（latents -> float32）。")
+        except Exception as error:  # noqa: BLE001
+            context.logger.warning("AnimateDiff VAE float32 解码兼容补丁启用失败，已继续执行，错误=%s", error)
+
+        preferred_adapter_name = "default"
+        try:
+            load_lora_kwargs: dict[str, Any] = {
+                "weight_name": assets["lora_file_path"].name,
+            }
+            try:
+                load_lora_signature = inspect.signature(pipeline.load_lora_weights)
+                if "adapter_name" in load_lora_signature.parameters:
+                    load_lora_kwargs["adapter_name"] = preferred_adapter_name
+                    context.logger.info(
+                        "AnimateDiff LoRA 加载启用显式 adapter_name=%s",
+                        preferred_adapter_name,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
             pipeline.load_lora_weights(
                 str(assets["lora_file_path"].parent),
-                weight_name=assets["lora_file_path"].name,
+                **load_lora_kwargs,
             )
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"AnimateDiff 加载 LoRA 失败：{assets['lora_file_path']}，错误={error}") from error
+
+        try:
+            adapter_weight = 1.5
+            if hasattr(pipeline, "set_adapters"):
+                active_adapter = ""
+                get_active = getattr(pipeline, "get_active_adapters", None)
+                if callable(get_active):
+                    active_adapters = get_active()
+                    if isinstance(active_adapters, (list, tuple)) and active_adapters:
+                        active_adapter = str(active_adapters[0]).strip()
+                    elif active_adapters is not None:
+                        active_adapter = str(active_adapters).strip()
+                if not active_adapter:
+                    detected_adapter_names = _collect_pipeline_adapter_names(pipeline)
+                    if detected_adapter_names:
+                        active_adapter = str(detected_adapter_names[0]).strip()
+                if not active_adapter:
+                    raise RuntimeError("未能获取有效 LoRA adapter 名称，无法执行 set_adapters 权重补偿。")
+
+                pipeline.set_adapters([active_adapter], adapter_weights=[adapter_weight])  # type: ignore[call-arg]
+                context.logger.info(
+                    "AnimateDiff LoRA 权重补偿已启用，active_adapter=%s，adapter_weight=%s",
+                    active_adapter,
+                    adapter_weight,
+                )
+            else:
+                context.logger.warning("AnimateDiff pipeline 不支持 set_adapters，已跳过 LoRA 权重补偿。")
+        except Exception as error:  # noqa: BLE001
+            context.logger.warning("AnimateDiff LoRA 权重补偿失败，已继续执行，错误=%s", error)
+
+        try:
+            if hasattr(pipeline, "enable_vae_slicing"):
+                pipeline.enable_vae_slicing()
+        except Exception as error:  # noqa: BLE001
+            context.logger.warning("AnimateDiff enable_vae_slicing 启用失败，已继续执行，错误=%s", error)
+        try:
+            if hasattr(pipeline, "enable_sequential_cpu_offload") and str(device).startswith("cuda"):
+                method = getattr(pipeline, "enable_sequential_cpu_offload")
+                method_sig = inspect.signature(method)
+                if "gpu_id" in method_sig.parameters:
+                    method(gpu_id=int(str(device).split(":")[1]))
+                else:
+                    method()
+        except Exception as error:  # noqa: BLE001
+            context.logger.warning("AnimateDiff enable_sequential_cpu_offload 启用失败，已继续执行，错误=%s", error)
 
         runtime = {
             "cache_key": cache_key,
@@ -473,15 +704,17 @@ def _ensure_runtime(context: RuntimeContext, device_override: str | None = None)
             "assets": assets,
             "motion_adapter_repo_id": repo_id,
             "motion_adapter_dir": motion_adapter_dir,
+            "controlnet_dir": controlnet_dir,
         }
         _RUNTIME_CACHE[cache_key] = runtime
         context.logger.info(
-            "AnimateDiff runtime 初始化完成，series=%s，binding=%s，base_model_key=%s，device=%s，motion_adapter=%s",
+            "AnimateDiff runtime 初始化完成，series=%s，binding=%s，base_model_key=%s，device=%s，motion_adapter=%s，controlnet_dir=%s",
             anim_cfg.model_series,
             anim_cfg.binding_name,
             assets["base_model_key"],
             device,
             repo_id,
+            controlnet_dir,
         )
         return runtime
 
@@ -550,6 +783,68 @@ def _extract_frames_from_pipeline_output(output_obj: Any) -> list[Image.Image]:
     return normalized
 
 
+def _load_cv2_module() -> Any:
+    """
+    功能说明：惰性加载 OpenCV 模块。
+    参数说明：无。
+    返回值：
+    - Any: cv2 模块对象。
+    异常说明：
+    - RuntimeError: OpenCV 不可用时抛出。
+    边界条件：提示信息包含建议依赖名，便于定位环境问题。
+    """
+    try:
+        import cv2  # type: ignore
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(
+            "AnimateDiff ControlNet 需要 OpenCV（cv2）支持。"
+            "请在项目环境安装 opencv-python-headless 后重试。"
+        ) from error
+    return cv2
+
+
+def _build_control_image_from_frame(
+    *,
+    frame_path: Path,
+    control_images_dir: Path,
+    shot_id: str,
+    canny_threshold_low: int = DEFAULT_CANNY_THRESHOLD_LOW,
+    canny_threshold_high: int = DEFAULT_CANNY_THRESHOLD_HIGH,
+) -> tuple[Image.Image, Path]:
+    """
+    功能说明：由关键帧构建 Canny ControlNet 条件图，并落盘预览。
+    参数说明：
+    - frame_path: 关键帧路径。
+    - control_images_dir: Control 预览图输出目录。
+    - shot_id: 镜头ID。
+    - canny_threshold_low/high: Canny 阈值。
+    返回值：
+    - tuple[Image.Image, Path]: (PIL 控制图, 预览图路径)。
+    异常说明：
+    - RuntimeError: 关键帧缺失或 Canny 处理失败时抛出。
+    边界条件：输出统一为 RGB，便于跨后端兼容。
+    """
+    if not frame_path.exists():
+        raise RuntimeError(f"AnimateDiff ControlNet 关键帧不存在：{frame_path}")
+    cv2 = _load_cv2_module()
+    try:
+        frame_image = Image.open(frame_path).convert("RGB")
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"AnimateDiff ControlNet 读取关键帧失败：{frame_path}，错误={error}") from error
+    frame_array = np.array(frame_image)
+    try:
+        gray_image = cv2.cvtColor(frame_array, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray_image, int(canny_threshold_low), int(canny_threshold_high))
+        edge_rgb = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"AnimateDiff ControlNet Canny 提取失败：shot_id={shot_id}，错误={error}") from error
+    control_image = Image.fromarray(edge_rgb)
+    control_images_dir.mkdir(parents=True, exist_ok=True)
+    control_image_path = control_images_dir / f"{shot_id}_canny.png"
+    control_image.save(control_image_path)
+    return control_image, control_image_path
+
+
 def generate_mv_clip(
     prompt: str,
     num_frames: int = 16,
@@ -561,6 +856,11 @@ def generate_mv_clip(
     guidance_scale: float,
     steps: int,
     seed: int | None,
+    frame_path: str,
+    control_images_dir: Path,
+    shot_id: str,
+    controlnet_conditioning_scale: float,
+    logger: Any | None = None,
 ) -> list[Image.Image]:
     """
     功能说明：调用 AnimateDiff 生成短视频帧序列。
@@ -573,19 +873,51 @@ def generate_mv_clip(
     - guidance_scale: CFG 引导系数。
     - steps: 推理步数。
     - seed: 可选随机种子。
+    - frame_path: 关键帧路径（来自模块 C）。
+    - control_images_dir: Control 预览图输出目录。
+    - shot_id: 镜头ID（用于预览图命名）。
+    - controlnet_conditioning_scale: ControlNet 约束强度。
+    - logger: 可选日志对象。
     返回值：
     - list[Image.Image]: 生成帧序列。
     异常说明：
     - RuntimeError: 推理失败或帧提取失败时抛出。
-    边界条件：num_frames 小于 1 时自动归一化为 1。
+    边界条件：num_frames 会被硬截断到 [1, 32]，并始终写出 shot 对应 Canny 预览图。
     """
     normalized_prompt = str(prompt).strip()
     if not normalized_prompt:
         raise RuntimeError("AnimateDiff 生成失败：prompt 不能为空。")
-    normalized_frames = max(1, int(num_frames))
+    requested_frames = max(1, int(num_frames))
+    normalized_frames = min(requested_frames, int(MAX_ANIMATEDIFF_INFERENCE_FRAMES))
     pipeline = runtime["pipeline"]
     torch_module = runtime["torch"]
     device = str(runtime["device"])
+    normalized_scale = float(controlnet_conditioning_scale)
+    if normalized_frames > int(MAX_ANIMATEDIFF_INFERENCE_FRAMES):
+        raise RuntimeError(
+            "AnimateDiff 生成失败：num_frames 超过硬限制，"
+            f"requested={requested_frames}, max={MAX_ANIMATEDIFF_INFERENCE_FRAMES}"
+        )
+    if logger is not None and requested_frames != normalized_frames:
+        logger.warning(
+            "AnimateDiff 单次推理帧数触发硬截断，shot_id=%s，requested=%s，capped=%s",
+            shot_id,
+            requested_frames,
+            normalized_frames,
+        )
+    control_image, control_image_path = _build_control_image_from_frame(
+        frame_path=Path(str(frame_path)),
+        control_images_dir=control_images_dir,
+        shot_id=shot_id,
+    )
+    conditioning_frames = [control_image for _ in range(normalized_frames)]
+    if logger is not None:
+        logger.info(
+            "AnimateDiff ControlNet 条件图已生成，shot_id=%s，control_image=%s，conditioning_scale=%s",
+            shot_id,
+            control_image_path,
+            normalized_scale,
+        )
     call_kwargs: dict[str, Any] = {
         "prompt": normalized_prompt,
         "negative_prompt": str(negative_prompt),
@@ -594,6 +926,8 @@ def generate_mv_clip(
         "height": int(height),
         "num_inference_steps": int(steps),
         "guidance_scale": float(guidance_scale),
+        "conditioning_frames": conditioning_frames,
+        "controlnet_conditioning_scale": normalized_scale,
     }
     if seed is not None:
         generator = torch_module.Generator(device=device)
@@ -620,6 +954,86 @@ def generate_mv_clip(
     while len(padded) < normalized_frames:
         padded.append(padded[-1].copy())
     return padded
+
+
+def _build_inference_frame_chunks(total_frames: int) -> list[int]:
+    """
+    功能说明：将总推理帧数拆分为不超过硬上限的分块计划。
+    参数说明：
+    - total_frames: 总目标推理帧数。
+    返回值：
+    - list[int]: 每次推理的分块帧数列表（每项范围 [1, 32]）。
+    异常说明：无。
+    边界条件：total_frames 小于 1 时按 1 处理。
+    """
+    remaining = max(1, int(total_frames))
+    chunks: list[int] = []
+    while remaining > 0:
+        chunk_size = min(int(MAX_ANIMATEDIFF_INFERENCE_FRAMES), remaining)
+        chunks.append(int(chunk_size))
+        remaining -= int(chunk_size)
+    return chunks
+
+
+def _generate_mv_clip_chunked(
+    *,
+    prompt: str,
+    total_frames: int,
+    runtime: dict[str, Any],
+    width: int,
+    height: int,
+    negative_prompt: str,
+    guidance_scale: float,
+    steps: int,
+    seed: int | None,
+    frame_path: str,
+    control_images_dir: Path,
+    shot_id: str,
+    controlnet_conditioning_scale: float,
+    logger: Any | None = None,
+) -> list[Image.Image]:
+    """
+    功能说明：按硬上限分块执行 AnimateDiff 推理并拼接帧序列。
+    参数说明：
+    - total_frames: 总目标推理帧数。
+    其余参数与 generate_mv_clip 一致。
+    返回值：
+    - list[Image.Image]: 拼接后的总帧序列（长度恰好为 total_frames）。
+    异常说明：
+    - RuntimeError: 任一分块推理失败时抛出。
+    边界条件：每个分块 num_frames 都保证不超过 32。
+    """
+    normalized_total_frames = max(1, int(total_frames))
+    chunk_plan = _build_inference_frame_chunks(normalized_total_frames)
+    if logger is not None:
+        logger.info(
+            "AnimateDiff 分块推理计划，shot_id=%s，total_frames=%s，chunk_plan=%s，max_chunk=%s",
+            shot_id,
+            normalized_total_frames,
+            chunk_plan,
+            MAX_ANIMATEDIFF_INFERENCE_FRAMES,
+        )
+    merged_frames: list[Image.Image] = []
+    for chunk_index, chunk_frames in enumerate(chunk_plan):
+        chunk_seed = None if seed is None else int(seed) + int(chunk_index)
+        chunk_output = generate_mv_clip(
+            prompt=prompt,
+            num_frames=int(chunk_frames),
+            runtime=runtime,
+            width=int(width),
+            height=int(height),
+            negative_prompt=str(negative_prompt),
+            guidance_scale=float(guidance_scale),
+            steps=int(steps),
+            seed=chunk_seed,
+            frame_path=frame_path,
+            control_images_dir=control_images_dir,
+            shot_id=shot_id,
+            controlnet_conditioning_scale=float(controlnet_conditioning_scale),
+            logger=logger,
+        )
+        merged_frames.extend(chunk_output[: int(chunk_frames)])
+    return merged_frames[:normalized_total_frames]
 
 
 def _build_frames_encode_command(
@@ -771,7 +1185,7 @@ def run_one_unit_animatediff_denoise_stage(
     - dict[str, Any]: 去噪阶段摘要（含 frames/帧密度信息/运行资产信息）。
     异常说明：
     - RuntimeError: runtime 初始化或推理失败时抛出。
-    边界条件：本函数不写文件，不执行 ffmpeg 编码。
+    边界条件：会写入 ControlNet 预览图，不执行 ffmpeg 编码。
     """
     runtime = _ensure_runtime(context=context, device_override=device_override)
     anim_cfg = context.config.module_d.animatediff
@@ -785,10 +1199,11 @@ def run_one_unit_animatediff_denoise_stage(
         unit=unit,
         output_fps=int(context.config.ffmpeg.fps),
     )
-    inference_frames = int(target_effective_frames)
+    inference_frames = min(int(target_effective_frames), int(MAX_ANIMATEDIFF_INFERENCE_FRAMES))
+    original_inference_frames = int(target_effective_frames)
     context.logger.info(
         "AnimateDiff 帧密度策略生效，shot_id=%s，label_source=%s，label_value=%s，target_effective_fps=%s，"
-        "target_effective_frames=%s，inference_frames=%s，exact_frames=%s",
+        "target_effective_frames=%s，inference_frames=%s，exact_frames=%s，max_inference_frames=%s",
         shot_id,
         label_source,
         label_value,
@@ -796,17 +1211,50 @@ def run_one_unit_animatediff_denoise_stage(
         target_effective_frames,
         inference_frames,
         exact_frames,
+        MAX_ANIMATEDIFF_INFERENCE_FRAMES,
     )
-    frames = generate_mv_clip(
+    if original_inference_frames != inference_frames:
+        log_warning = getattr(context.logger, "warning", None)
+        if callable(log_warning):
+            log_warning(
+                "AnimateDiff 目标推理帧数已硬截断，shot_id=%s，original_inference_frames=%s，capped_inference_frames=%s",
+                shot_id,
+                original_inference_frames,
+                inference_frames,
+            )
+        else:
+            context.logger.info(
+                "AnimateDiff 目标推理帧数已硬截断，shot_id=%s，original_inference_frames=%s，capped_inference_frames=%s",
+                shot_id,
+                original_inference_frames,
+                inference_frames,
+            )
+    effective_guidance_scale = float(LINEART_FORCED_GUIDANCE_SCALE)
+    effective_negative_prompt = _merge_lineart_negative_prompt(str(anim_cfg.negative_prompt))
+    context.logger.info(
+        "AnimateDiff 风格强化参数生效，shot_id=%s，guidance_scale=%s，negative_prompt=%s",
+        shot_id,
+        effective_guidance_scale,
+        effective_negative_prompt,
+    )
+    frame_path = str(unit.shot.get("frame_path", "")).strip()
+    if not frame_path:
+        raise RuntimeError(f"AnimateDiff 渲染失败：shot_id={shot_id} 缺失 frame_path，无法构建 ControlNet 条件图。")
+    frames = _generate_mv_clip_chunked(
         prompt=prompt,
-        num_frames=inference_frames,
+        total_frames=inference_frames,
         runtime=runtime,
         width=int(context.config.render.video_width),
         height=int(context.config.render.video_height),
-        negative_prompt=str(anim_cfg.negative_prompt),
-        guidance_scale=float(anim_cfg.guidance_scale),
+        negative_prompt=effective_negative_prompt,
+        guidance_scale=effective_guidance_scale,
         steps=int(anim_cfg.steps),
         seed=seed,
+        frame_path=frame_path,
+        control_images_dir=(context.artifacts_dir / "control_images"),
+        shot_id=shot_id,
+        controlnet_conditioning_scale=float(getattr(anim_cfg, "controlnet_conditioning_scale", 0.8)),
+        logger=context.logger,
     )
     frames = _resample_frames_uniform(frames=frames, target_frames=exact_frames)
     return {

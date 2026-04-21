@@ -87,16 +87,22 @@ def load_module_d_animatediff_dependencies() -> dict[str, Any]:
         torch_module, diffusers_module = _load_torch_and_diffusers_modules()
         try:
             animatediff_pipeline = getattr(diffusers_module, "AnimateDiffPipeline")
+            animatediff_controlnet_pipeline = getattr(diffusers_module, "AnimateDiffControlNetPipeline")
             animatediff_sdxl_pipeline = getattr(diffusers_module, "AnimateDiffSDXLPipeline")
             motion_adapter = getattr(diffusers_module, "MotionAdapter")
+            controlnet_model = getattr(diffusers_module, "ControlNetModel")
+            autoencoder_kl = getattr(diffusers_module, "AutoencoderKL")
         except AttributeError as error:
             raise ImportError(f"diffusers 缺少模块D所需符号：{error}") from error
 
         runtime_dependencies = {
             "torch": torch_module,
             "AnimateDiffPipeline": animatediff_pipeline,
+            "AnimateDiffControlNetPipeline": animatediff_controlnet_pipeline,
             "AnimateDiffSDXLPipeline": animatediff_sdxl_pipeline,
             "MotionAdapter": motion_adapter,
+            "ControlNetModel": controlnet_model,
+            "AutoencoderKL": autoencoder_kl,
         }
         _RUNTIME_DEPS_CACHE[cache_key] = runtime_dependencies
         return runtime_dependencies
