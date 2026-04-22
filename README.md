@@ -1,39 +1,80 @@
-# 音频结构驱动的多模态音画同步生成系统
+# AI-Director：基于结构化上下文与 LLM 编排的自动化卡点视频生产工作流
 
-本项目用于将输入音频自动转换为与音乐结构、节拍时间轴对齐的视频，遵循固定链路：`A -> B -> C -> D -> E`。
+本项目从输入音频出发，先做结构理解，再生成分镜、关键帧、视频片段与最终成片。它是一个带有状态持久化、交互式 CLI、跨模块波前调度、定向重试与任务监督页面的可恢复多模态生成流水线。
 
-- 模块 A：音乐理解（音频结构、节拍、歌词对齐与能量特征）
-- 模块 B：视觉脚本（分镜与提示词）
-- 模块 C：图像生成（关键帧）
-- 模块 D：视频合成（按绝对时间轴拼接并混音导出）
-- 模块 E：状态管理（SQLite，支持断点恢复）
+## 核心能力
 
-## 1. 核心设计原则
+- 模块 A V2 会结合 Demucs、FunASR、all-in-one 特征与 librosa 特征，产出 `big_segments`、`segments`、`beats`、`lyric_units`、`energy_features` 等结构化结果。
+- 模块 B 负责把音频结构转成可执行的视觉脚本，按 segment 粒度生成 `scene_desc`、`keyframe_prompt`、`video_prompt`，并支持结构化解析、重试与自定义 prompt 覆盖。
+- 模块 C 负责关键帧生成，并记录 LoRA / base model 绑定信息，便于追踪生成来源。
+- 模块 D 支持 `ffmpeg` 与 `animatediff` 两种后端、shot 级并行渲染、单元重试、终拼策略切换，以及 copy 失败后的回退重编码。
+- B/C/D 已经接入跨模块波前并行调度；在真实生成链路下，可以边出分镜、边出关键帧、边渲染视频片段，并根据 GPU 负载动态收缩/放宽并发窗口。
+- 全流程状态写入 SQLite，支持 `resume`、单模块调试、segment / shot 定向补跑、监督页面、产物上传与评测脚本。
 
-- 结构优先：先构建可靠时间轴，再做视觉生成。
-- 节拍驱动：关键切点受音频时间戳约束。
-- 模块松耦合：模块间通过标准化 JSON 交互。
-- 状态可恢复：全链路写入状态，支持中断续跑。
+## 主流程
 
-## 2. 项目结构
+![主流程](docs/images/architecture/p1.png)
+
+## 模块 A：结构理解链路
+
+![模块 A 结构理解链路](docs/images/architecture/p2.png)
+
+- 感知层会并行抽取 Demucs 音源分离结果、Allin1 曲式分析结果和 Fun-ASR 歌词识别结果。
+- 算法层会把这些基础信号继续整理成可交给下游的结构化时间轴，而不是只保留原始检测结果。
+- 最终输出是稳定 JSON 契约，供模块 B 做视觉脚本生成。
+
+## 模块 B：视觉策略转化链路
+
+![模块 B 视觉策略转化链路](docs/images/architecture/p3.png)
+
+- 模块 B 以模块 A 的 JSON 契约为输入，再叠加系统提示词与用户提示词，形成 LLM 的视觉决策上下文。
+- 一次生成会拆成三类结果：关键帧提示词、视频动态提示词、场景描述。
+- 这些结果分别服务于模块 C、模块 D，以及人工审校 / 质检面板。
+
+## 项目结构
 
 ```text
 .
-├── src/music_video_pipeline/      # 核心代码
-├── configs/                       # 配置文件（默认配置、样例配置）
-├── docs/                          # 设计说明与模块文档
-├── resources/                     # 示例音频、字体等资源
-├── tests/                         # 单测与冒烟测试
-└── runs/ 或配置中的 runs_dir       # 运行产物与状态库
+├── src/music_video_pipeline/
+│   ├── cli.py / interactive_cli.py / command_service.py
+│   ├── pipeline.py / state_store.py / monitoring/
+│   ├── generators/                     # 分镜与关键帧生成器工厂
+│   ├── modules/
+│   │   ├── module_a_v2/               # 音频理解、内容角色、可视化
+│   │   ├── module_b/                  # 分镜与 prompt 生成
+│   │   ├── module_c/                  # 关键帧生成
+│   │   ├── module_d/                  # 片段渲染与终拼
+│   │   └── cross_bcd/                 # B/C/D 跨模块波前调度
+│   └── upload/                        # 百度网盘上传链路
+├── configs/
+│   ├── music_wsl/                     # 本地 laptop(4060) 的 WSL 配置档
+│   ├── music_yby/                     # 云显卡服务器配置档
+│   ├── prompts/                       # 模块 B prompt 模板
+│   └── *.json                         # 模型绑定、模块默认配置
+├── docs/
+│   ├── cli/
+│   ├── module_a_v2/
+│   ├── module_b/
+│   ├── module_d/
+│   ├── 环境/
+│   ├── 会话列表/
+│   └── images/architecture/           # 推荐放架构图
+├── scripts/
+│   ├── model_assets/                  # 模型资源下载、绑定、同步
+│   ├── clip_eval/                     # 自动评测与人工抽测
+│   └── _module_a_v2_visualize.py
+├── resources/
+├── tests/                             # 测试
+└── README.md
 ```
 
-说明：当前默认配置 `configs/default.json` 将 `runs_dir` 指向 Windows 桌面目录（`/mnt/c/Users/QWERT/Desktop/runs`）。
-
-## 3. 环境要求
+## 环境要求
 
 - Python `3.11.x`
-- `uv`（依赖安装与执行）
-- `ffmpeg` / `ffprobe`（模块 D 合成需要）
+- `uv`
+- `ffmpeg` / `ffprobe`
+- 推荐 Linux / WSL2；当前依赖和现成配置档主要围绕 Linux x86_64 环境组织
+- 真实 AnimateDiff 链路建议显存 24G
 
 安装依赖：
 
@@ -47,143 +88,113 @@ uv sync
 uv sync --extra test
 ```
 
-## 4. 快速开始
+## 快速开始
 
-### 4.0 `uv run` 使用注意事项（重要）
+### 推荐入口：交互式 CLI
 
-`uv run` 默认会先做环境同步检查；当依赖里包含直链包（如本项目的 `natten`）且网络不稳定时，可能出现“下载元数据超时”后命令直接失败。
-
-推荐做法：
-
-- 在项目根目录执行命令时，优先使用 `--no-sync` 复用已安装环境：
+`mvpl` 现在默认就是交互式入口；对于人类使用，推荐直接走菜单流。
 
 ```bash
-uv run --no-sync mvpl run --task-id demo_20s --config configs/default.json
+uv run --no-sync mvpl
 ```
 
-- 如果当前不在项目根目录（例如在 `runs/` 下），需要显式指定项目路径；否则 `--no-sync` 可能不生效：
+如果你不在项目根目录，可以显式指定项目路径：
 
 ```bash
-uv run --project /home/sod2204/work/zonghe/t1 --no-sync music-video-pipeline run --task-id demo_20s --config configs/default.json
+uv run --project /path/to/music_video_pipeline --no-sync mvpl
 ```
 
-- 当 `uv run` 因同步失败中断时，可直接用虚拟环境可执行文件执行等价命令：
+交互模式里可以直接完成这些操作：
+
+- 首次运行时创建任务：填写 `task_id`、配置文件、输入音频，然后直接发起全链路执行。
+- 继续已有任务：从状态库里挑选最近任务，不必重新手敲 `task_id`、`config`、`audio_path`。
+- 单模块调试：只执行指定模块，适合排查 A/B/C/D 某一段逻辑。
+- 常规排障：查看模块 B、C、D 单元状态，以及跨模块 B/C/D 链路状态。
+- 高级重跑：在高级菜单里执行 `run-force`、`resume-force`、`run-module --force`，或对指定 `segment_id` / `shot_id` 做定向重试。
+- 交互式补充视觉指令：当命令会触发模块 B 时，可以临时覆盖用户提示词，不必改配置文件。
+- 人工观察：按需手动启动任务监督页面，查看任务实时状态与落盘产物。
+
+### 保留入口：非交互式命令
+
+仓库当前提供的可用配置档主要在 `configs/music_wsl/` 和 `configs/music_yby/`：
+- `configs/music_wsl/`: 本地 WSL 环境
+- `configs/music_yby/`: 在云显卡服务器上的环境
+
+下例统一显式传配置路径：
 
 ```bash
-.venv/bin/music-video-pipeline run --task-id demo_20s --config configs/default.json
+uv run --no-sync mvpl run --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl run --task-id demo_20s --audio-path resources/juebieshu.m4a --config configs/music_wsl/default.json
+uv run --no-sync mvpl resume --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl run-module --task-id demo_20s --module A --audio-path resources/juebieshu.m4a --config configs/music_wsl/default.json
+uv run --no-sync mvpl b-task-status --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl c-task-status --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl d-task-status --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl bcd-task-status --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl monitor --task-id demo_20s --config configs/music_wsl/default.json
 ```
 
-### 4.1 全链路执行
+定向重试命令保留不变；实际使用时请先通过状态命令确认目标 ID：
 
 ```bash
-uv run music-video-pipeline run --task-id demo_20s --config configs/default.json
+uv run --no-sync mvpl b-retry-segment --task-id demo_20s --segment-id <segment_id> --config configs/music_wsl/default.json
+uv run --no-sync mvpl c-retry-shot --task-id demo_20s --shot-id <shot_id> --config configs/music_wsl/default.json
+uv run --no-sync mvpl d-retry-shot --task-id demo_20s --shot-id <shot_id> --config configs/music_wsl/default.json
+uv run --no-sync mvpl bcd-retry-segment --task-id demo_20s --segment-id <segment_id> --config configs/music_wsl/default.json
 ```
 
-说明：
+## 常见产物
 
-- 默认输入音频来自配置项 `paths.default_audio_path`。
-- 也可手动指定音频：
+一次任务通常会在 `<runs_dir>/<task_id>/` 下生成这些内容：
 
-```bash
-uv run music-video-pipeline run --task-id demo_20s --audio-path resources/juebieshu20s.mp3 --config configs/default.json
-```
+- `artifacts/module_a_output.json`
+- `artifacts/module_b_output.json`
+- `artifacts/module_c_output.json`
+- `artifacts/module_d_output.json`
+- `final_output.mp4`
+- `<task_id>_module_a_v2_visualization.html`
+- `task_monitor.html`
 
-### 4.2 从断点恢复
+状态数据库默认位于 `<runs_dir>/pipeline_state.sqlite3`，其中会同时记录任务级、模块级、单元级状态。
 
-```bash
-uv run music-video-pipeline resume --task-id demo_20s --config configs/default.json
-```
+## 关键配置
 
-### 4.3 单模块调试
+重点关注这些字段：
 
-```bash
-uv run music-video-pipeline run-module --task-id demo_20s --module A --audio-path resources/juebieshu20s.mp3 --config configs/default.json
-```
-
-### 4.4 从指定模块强制重跑
-
-```bash
-uv run music-video-pipeline run --task-id demo_20s --config configs/default.json --force-module C
-```
-
-`--force-module` 会重置指定模块及其下游状态。
-
-## 5. 输出与状态文件
-
-一次任务常见产物：
-
-- 任务目录：`<runs_dir>/<task_id>/`
-- 中间产物：`<runs_dir>/<task_id>/artifacts/`
-- 最终视频：`<runs_dir>/<task_id>/final_output.mp4`
-- 状态数据库：`<runs_dir>/pipeline_state.sqlite3`
-
-状态枚举：`pending` / `running` / `done` / `failed`。
-
-恢复策略：重启后从第一个非 `done` 模块继续，不重跑已完成模块。
-
-## 6. 关键配置说明
-
-配置文件示例：`configs/default.json`
-
-必看字段：
-
-- `mode.script_generator`: `mock` 或 `llm`
-- `mode.frame_generator`: `mock` 或 `diffusion`
 - `paths.runs_dir`: 运行输出根目录
-- `paths.default_audio_path`: 默认音频
-- `module_a.funasr_language`: 必填（如 `auto` / `zh` / `en` / `ja`）
+- `paths.default_audio_path`: 默认输入音频
+- `module_b.llm.prompt_template_file`: 模块 B prompt 模板
+- `module_b.llm.user_custom_prompt`: 交互式临时覆盖 prompt
+- `module_d.render_backend`: `ffmpeg` 或 `animatediff`
+- `cross_module.global_render_limit` / `cross_module.adaptive_window.*`: 跨模块并发与自适应窗口
+- `bypy_upload.*`: 任务产物上传开关与远端路径
 
-当歌词链路不可用时，模块 A 会降级到纯声学结构链，并在日志中记录降级信息。
+## 测试与辅助命令
 
-## 7. 数据契约（最小字段）
-
-- 模块 A 输出：`ModuleAOutput`
-- 模块 B 输出：`ModuleBOutput`
-
-契约定义与校验入口见：`src/music_video_pipeline/types.py`。
-
-关键约束：
-
-- 时间字段统一秒（浮点）。
-- 关键时间戳只新增派生字段，不静默覆盖。
-- 下游不得反向篡改上游已确认时间轴。
-
-## 8. 测试
-
-运行全部测试：
+运行测试：
 
 ```bash
-uv run pytest
+uv run --no-sync pytest
 ```
 
-运行冒烟测试（需要本机可用 ffmpeg）：
+评测入口：
 
 ```bash
-uv run pytest -m smoke
+uv run --no-sync eval
 ```
 
-## 9. 常见问题
+模型资源管理入口：
 
-1. 报错 `找不到 ffmpeg 可执行文件`
-   - 处理：安装 FFmpeg，或在配置中将 `ffmpeg_bin`/`ffprobe_bin` 改为绝对路径。
+```bash
+uv run --no-sync model_assets
+```
 
-2. 报错 `音频文件不存在`
-   - 处理：检查 `--audio-path` 是否正确，或使用绝对路径。
-
-3. 报错上游模块未完成
-   - 处理：先跑上游模块，或直接使用 `run` 执行全链路。
-
-4. 报错缺少 `module_a.funasr_language`
-   - 处理：在配置文件 `module_a` 下补充该字段（例如 `"auto"`）。
-
-## 10. 相关文档
+## 相关文档
 
 - `docs/5分钟跑通指南.md`
-- `docs/状态恢复说明.md`
-- `docs/模块D参数手册.md`
+- `docs/cli/项目CLI命令大全.md`
+- `docs/cli/命令组合与作用速查.md`
+- `docs/module_a_v2/模块A_V2_总链.mmd`
+- `docs/module_b/模块B真实链接入说明.md`
+- `docs/module_d/模块D并行提速报告.md`
 - `AGENTS.md`
-
-## 11. 说明
-
-- 建议新增或修改文件时保持统一目录结构，避免跨目录散落。
-- 建议优先保障 A-B-C-D-E 主链路可用，再逐步增强效果。
