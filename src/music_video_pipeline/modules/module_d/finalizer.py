@@ -205,6 +205,7 @@ def _concat_segment_videos(
     segment_paths: list[Path],
     concat_file_path: Path,
     ffmpeg_bin: str,
+    ffprobe_bin: str,
     audio_path: Path,
     output_video_path: Path,
     audio_duration: float,
@@ -222,6 +223,7 @@ def _concat_segment_videos(
     gpu_bitrate: str | None = None,
     concat_video_mode: str = "copy",
     concat_copy_fallback_reencode: bool = True,
+    transition_plans: list[dict[str, Any]] | None = None,
     logger: logging.Logger | None = None,
 ) -> dict[str, Any]:
     """
@@ -249,6 +251,29 @@ def _concat_segment_videos(
     边界条件：显式使用 -t 音频时长，避免最终视频长于音频。
     """
     active_logger = logger or logging.getLogger("D")
+    normalized_transition_plans = transition_plans or []
+    if _has_nontrivial_transitions(normalized_transition_plans):
+        return _concat_segment_videos_with_transitions(
+            segment_paths=segment_paths,
+            ffmpeg_bin=ffmpeg_bin,
+            ffprobe_bin=ffprobe_bin,
+            audio_path=audio_path,
+            output_video_path=output_video_path,
+            audio_duration=audio_duration,
+            fps=fps,
+            video_codec=video_codec,
+            audio_codec=audio_codec,
+            video_preset=video_preset,
+            video_crf=video_crf,
+            video_accel_mode=video_accel_mode,
+            gpu_video_codec=gpu_video_codec,
+            gpu_preset=gpu_preset,
+            gpu_rc_mode=gpu_rc_mode,
+            gpu_cq=gpu_cq,
+            gpu_bitrate=gpu_bitrate,
+            transition_plans=normalized_transition_plans,
+            logger=active_logger,
+        )
     concat_file_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"file '{_escape_concat_path(str(path))}'" for path in segment_paths]
     concat_file_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -330,6 +355,175 @@ def _concat_segment_videos(
         return {"mode": "copy_with_reencode_fallback", "copy_fallback_triggered": True}
 
 
+def apply_camera_plan_to_segment(
+    *,
+    segment_path: Path,
+    output_path: Path,
+    ffmpeg_bin: str,
+    ffprobe_bin: str,
+    fps: int,
+    video_codec: str,
+    video_preset: str,
+    video_crf: int,
+    camera_plan: dict[str, Any],
+) -> bool:
+    """
+    功能说明：对单个片段应用 FFmpeg 运镜后处理。
+    参数说明：
+    - segment_path: 原始片段路径。
+    - output_path: 输出片段路径。
+    - ffmpeg_bin/ffprobe_bin: FFmpeg/FFprobe 可执行文件。
+    - fps: 目标帧率。
+    - video_codec/video_preset/video_crf: 编码参数。
+    - camera_plan: 模块B透传的运镜计划。
+    返回值：
+    - bool: true 表示执行了后处理，false 表示按 none 跳过。
+    异常说明：ffprobe/ffmpeg 失败时抛 RuntimeError。
+    边界条件：mode=none 时跳过处理。
+    """
+    normalized_mode = str(camera_plan.get("mode", "none")).strip().lower()
+    if normalized_mode == "none":
+        return False
+    width, height = _probe_video_resolution(media_path=segment_path, ffprobe_bin=ffprobe_bin)
+    duration = _probe_media_duration(media_path=segment_path, ffprobe_bin=ffprobe_bin)
+    filter_text = _build_camera_filter(
+            width=width,
+            height=height,
+            duration=duration,
+            camera_plan=camera_plan,
+        )
+    command = [
+        ffmpeg_bin,
+        "-nostdin",
+        "-y",
+        "-i",
+        str(segment_path),
+        "-vf",
+        filter_text,
+        "-r",
+        str(int(fps)),
+        "-c:v",
+        str(video_codec),
+        "-preset",
+        str(video_preset),
+        "-crf",
+        str(int(video_crf)),
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        str(output_path),
+    ]
+    _run_ffmpeg_command(command=command, command_name="模块D单段运镜后处理")
+    return True
+
+
+def _concat_segment_videos_with_transitions(
+    *,
+    segment_paths: list[Path],
+    ffmpeg_bin: str,
+    ffprobe_bin: str,
+    audio_path: Path,
+    output_video_path: Path,
+    audio_duration: float,
+    fps: int,
+    video_codec: str,
+    audio_codec: str,
+    video_preset: str,
+    video_crf: int,
+    video_accel_mode: str,
+    gpu_video_codec: str,
+    gpu_preset: str,
+    gpu_rc_mode: str,
+    gpu_cq: int | None,
+    gpu_bitrate: str | None,
+    transition_plans: list[dict[str, Any]],
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """
+    功能说明：使用 filter_complex + xfade 路径执行带转场的终拼。
+    参数说明：同上层 concat 函数。
+    返回值：
+    - dict[str, Any]: 拼接阶段执行信息。
+    异常说明：ffmpeg 失败时抛 RuntimeError。
+    边界条件：通过对每段尾部做 clone padding，保证转场存在时仍保持总视觉时长不被压短。
+    """
+    if not segment_paths:
+        raise RuntimeError("模块D终拼失败：segment_paths 为空。")
+    input_args: list[str] = []
+    durations = [_probe_media_duration(media_path=path, ffprobe_bin=ffprobe_bin) for path in segment_paths]
+    for segment_path in segment_paths:
+        input_args.extend(["-i", str(segment_path)])
+    input_args.extend(["-i", str(audio_path)])
+
+    transition_specs = [
+        _resolve_xfade_transition(
+            transition_plan=transition_plans[index] if index < len(transition_plans) else {},
+        )
+        for index in range(len(segment_paths) - 1)
+    ]
+    outgoing_pad_durations = [spec[1] for spec in transition_specs] + [0.0]
+
+    filter_parts: list[str] = []
+    for index in range(len(segment_paths)):
+        base_filter = f"[{index}:v]fps={int(fps)},format=yuv420p,setsar=1"
+        pad_duration = float(outgoing_pad_durations[index])
+        if pad_duration > 0.0:
+            base_filter += f",tpad=stop_mode=clone:stop_duration={pad_duration:.3f}"
+        filter_parts.append(f"{base_filter}[v{index}]")
+    current_label = "v0"
+    current_duration = float(durations[0]) + float(outgoing_pad_durations[0])
+    current_tail_pad = float(outgoing_pad_durations[0])
+    for index in range(1, len(segment_paths)):
+        transition_name, transition_duration = transition_specs[index - 1]
+        offset = max(0.0, current_duration - current_tail_pad)
+        next_label = f"x{index}"
+        filter_parts.append(
+            f"[{current_label}][v{index}]xfade=transition={transition_name}:duration={transition_duration:.3f}:offset={offset:.3f}[{next_label}]"
+        )
+        current_label = next_label
+        next_tail_pad = float(outgoing_pad_durations[index])
+        current_duration = current_duration + float(durations[index]) + next_tail_pad - current_tail_pad
+        current_tail_pad = next_tail_pad
+
+    profile = _resolve_video_encoder_profile(
+        ffmpeg_bin=ffmpeg_bin,
+        video_accel_mode=video_accel_mode,
+        cpu_video_codec=video_codec,
+        cpu_video_preset=video_preset,
+        cpu_video_crf=video_crf,
+        gpu_video_codec=gpu_video_codec,
+        gpu_preset=gpu_preset,
+        gpu_rc_mode=gpu_rc_mode,
+        gpu_cq=gpu_cq,
+        gpu_bitrate=gpu_bitrate,
+    )
+    command = [
+        ffmpeg_bin,
+        "-nostdin",
+        "-y",
+        *input_args,
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-map",
+        f"[{current_label}]",
+        "-map",
+        f"{len(segment_paths)}:a:0",
+        *list(profile["command_args"]),
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        str(int(fps)),
+        "-c:a",
+        audio_codec,
+        "-t",
+        f"{audio_duration:.3f}",
+        str(output_video_path),
+    ]
+    logger.info("模块D检测到非 none 转场，切换到 filter_complex + xfade 终拼路径（已启用尾帧 padding 保持总时长）。")
+    _run_ffmpeg_command(command=command, command_name="拼接小片段并混音（xfade）")
+    return {"mode": "xfade_reencode", "copy_fallback_triggered": False}
+
+
 def _probe_media_duration(media_path: Path, ffprobe_bin: str) -> float:
     """
     功能说明：使用 ffprobe 获取媒体时长（秒）。
@@ -373,6 +567,52 @@ def _probe_media_duration(media_path: Path, ffprobe_bin: str) -> float:
     return max(0.1, duration)
 
 
+def _probe_video_resolution(media_path: Path, ffprobe_bin: str) -> tuple[int, int]:
+    """
+    功能说明：使用 ffprobe 获取视频主流宽高。
+    参数说明：
+    - media_path: 视频路径。
+    - ffprobe_bin: ffprobe 可执行文件。
+    返回值：
+    - tuple[int, int]: 宽度与高度。
+    异常说明：ffprobe 失败或解析失败时抛 RuntimeError。
+    边界条件：最小回退为 2x2，避免无效尺寸。
+    """
+    command = [
+        ffprobe_bin,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0:s=x",
+        str(media_path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(f"找不到 ffprobe 可执行文件，请检查 ffprobe_bin={ffprobe_bin}") from error
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"ffprobe 分辨率探测失败，stderr={error.stderr}") from error
+    output_text = result.stdout.strip()
+    try:
+        width_text, height_text = output_text.split("x", maxsplit=1)
+        width = max(2, int(width_text))
+        height = max(2, int(height_text))
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"ffprobe 分辨率解析失败，输出内容={output_text!r}") from error
+    return width, height
+
+
 def _run_ffmpeg_command(command: list[str], command_name: str) -> None:
     """
     功能说明：统一执行 ffmpeg 命令并抛出带上下文的错误信息。
@@ -398,6 +638,154 @@ def _run_ffmpeg_command(command: list[str], command_name: str) -> None:
         raise RuntimeError(
             f"{command_name}失败：ffmpeg 返回非零状态。\n命令：{' '.join(command)}\nstderr: {error.stderr}"
         ) from error
+
+
+def _has_nontrivial_transitions(transition_plans: list[dict[str, Any]]) -> bool:
+    """
+    功能说明：判断转场列表中是否存在需要切换到 xfade 路径的条目。
+    参数说明：
+    - transition_plans: 转场计划数组。
+    返回值：
+    - bool: 是否存在非 none 转场。
+    异常说明：无。
+    边界条件：空数组返回 false。
+    """
+    for item in transition_plans:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("kind", "none")).strip().lower() != "none":
+            return True
+    return False
+
+
+def _resolve_xfade_transition(transition_plan: dict[str, Any]) -> tuple[str, float]:
+    """
+    功能说明：将 transition_plan 转换为 xfade 参数。
+    参数说明：
+    - transition_plan: 转场计划对象。
+    返回值：
+    - tuple[str, float]: xfade transition 名与持续秒数。
+    异常说明：无。
+    边界条件：none/hard_cut 在混合链路中会被近似为极短 fade。
+    """
+    kind = str(transition_plan.get("kind", "none")).strip().lower()
+    try:
+        duration_ms = int(transition_plan.get("duration_ms", 0))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    duration_seconds = max(0.001, float(duration_ms) / 1000.0)
+    mapping = {
+        "none": "fade",
+        "hard_cut": "fade",
+        "crossfade": "fade",
+        "fade_black": "fadeblack",
+        "fade_white": "fadewhite",
+        "wipe_left": "wipeleft",
+        "wipe_right": "wiperight",
+    }
+    if kind in {"none", "hard_cut"}:
+        duration_seconds = 0.001
+    return mapping.get(kind, "fade"), duration_seconds
+
+
+def _build_camera_filter(width: int, height: int, duration: float, camera_plan: dict[str, Any]) -> str:
+    """
+    功能说明：按 camera_plan 构建 FFmpeg 视频滤镜表达式。
+    参数说明：
+    - width/height: 原始视频尺寸。
+    - duration: 片段时长。
+    - camera_plan: 运镜计划对象。
+    返回值：
+    - str: 可直接传给 -vf 的滤镜表达式。
+    异常说明：无。
+    边界条件：未知模式回退为空运镜。
+    """
+    mode = str(camera_plan.get("mode", "none")).strip().lower()
+    easing = str(camera_plan.get("easing", "linear")).strip().lower()
+    strength = str(camera_plan.get("strength", "none")).strip().lower()
+    progress = _build_progress_expression(duration=max(0.1, float(duration)), easing=easing)
+    if mode == "zoom":
+        zoom_delta = 0.14 if strength == "small" else 0.24
+        preset_id = str(camera_plan.get("preset_id", "")).strip().lower()
+        if preset_id.startswith("zoom_out"):
+            start_scale = 1.0 + zoom_delta
+            end_scale = 1.0
+        else:
+            start_scale = 1.0
+            end_scale = 1.0 + zoom_delta
+        scale_expr = f"{start_scale:.4f}+({end_scale - start_scale:.4f})*({progress})"
+        return (
+            f"scale=w='ceil(iw*({scale_expr})/2)*2':"
+            f"h='ceil(ih*({scale_expr})/2)*2':"
+            f"eval=frame:flags=lanczos,"
+            f"crop={int(width)}:{int(height)}:'(iw-ow)/2':'(ih-oh)/2'"
+        )
+    if mode == "pan":
+        overscan = 1.18 if strength == "small" else 1.30
+        scaled_width = max(int(width), int(round(float(width) * overscan)))
+        scaled_height = max(int(height), int(round(float(height) * overscan)))
+        max_x = max(0, scaled_width - int(width))
+        max_y = max(0, scaled_height - int(height))
+        x_start, x_end, y_start, y_end = _resolve_pan_endpoints(
+            direction=str(camera_plan.get("direction", "center")).strip().lower(),
+            max_x=max_x,
+            max_y=max_y,
+        )
+        x_expr = f"{x_start:.3f}+({x_end - x_start:.3f})*({progress})"
+        y_expr = f"{y_start:.3f}+({y_end - y_start:.3f})*({progress})"
+        return (
+            f"scale={scaled_width}:{scaled_height}:flags=lanczos,"
+            f"crop={int(width)}:{int(height)}:'{x_expr}':'{y_expr}'"
+        )
+    return "null"
+
+
+def _resolve_pan_endpoints(direction: str, max_x: int, max_y: int) -> tuple[float, float, float, float]:
+    """
+    功能说明：根据方向枚举解析 pan 起止坐标。
+    参数说明：
+    - direction: center/left/right/up/down/diagonal。
+    - max_x/max_y: 可移动范围。
+    返回值：
+    - tuple[float, float, float, float]: x_start, x_end, y_start, y_end。
+    异常说明：无。
+    边界条件：未知方向回退到静止中心。
+    """
+    center_x = float(max_x) / 2.0
+    center_y = float(max_y) / 2.0
+    mapping = {
+        "center": (center_x, center_x, center_y, center_y),
+        "left": (float(max_x), 0.0, center_y, center_y),
+        "right": (0.0, float(max_x), center_y, center_y),
+        "up": (center_x, center_x, float(max_y), 0.0),
+        "down": (center_x, center_x, 0.0, float(max_y)),
+        "up_left": (float(max_x), 0.0, float(max_y), 0.0),
+        "up_right": (0.0, float(max_x), float(max_y), 0.0),
+        "down_left": (float(max_x), 0.0, 0.0, float(max_y)),
+        "down_right": (0.0, float(max_x), 0.0, float(max_y)),
+    }
+    return mapping.get(direction, mapping["center"])
+
+
+def _build_progress_expression(duration: float, easing: str) -> str:
+    """
+    功能说明：构建 FFmpeg 可执行的 0~1 进度表达式。
+    参数说明：
+    - duration: 片段时长。
+    - easing: 缓动名。
+    返回值：
+    - str: 表达式文本。
+    异常说明：无。
+    边界条件：非法 easing 回退 linear。
+    """
+    progress = f"max(0,min(1,t/{max(0.1, float(duration)):.6f}))"
+    if easing == "ease_in":
+        return f"pow({progress},2)"
+    if easing == "ease_out":
+        return f"(1-pow(1-{progress},2))"
+    if easing == "ease_in_out":
+        return f"if(lt({progress},0.5),2*pow({progress},2),1-pow(-2*{progress}+2,2)/2)"
+    return progress
 
 
 def _escape_concat_path(path_text: str) -> str:

@@ -142,7 +142,9 @@ def build_remote_options(resource_type: str, project_root: Path, client: BypyCli
                 index_counter += 1
             continue
 
-        # BaseModel 使用 /base_model/{series}/{single|diffusers}/{name} 结构。
+        # BaseModel 支持两种结构：
+        # 1. /base_model/{series}/{single|diffusers}/{name_dir}
+        # 2. /base_model/{series}/single/{checkpoint_file}
         format_dirs = [item for item in parse_remote_dirs(output) if item in VALID_BASE_MODEL_FORMATS]
         for model_format in sorted(format_dirs):
             format_remote_dir = f"{series_remote_dir}/{model_format}"
@@ -164,6 +166,33 @@ def build_remote_options(resource_type: str, project_root: Path, client: BypyCli
                         "display_name": f"{model_format}/{model_name}",
                         "remote_dir": f"{format_remote_dir}/{model_name}",
                         "downloaded": local_dir.exists(),
+                    }
+                )
+                index_counter += 1
+
+            # single 格式兼容“目录下直接放 checkpoint 文件”的远端布局。
+            if model_format != "single":
+                continue
+
+            file_items = sorted(
+                parse_remote_files(format_output),
+                key=lambda item: str(item.get("name", "")).lower(),
+            )
+            for file_item in file_items:
+                file_name = str(file_item.get("name", "")).strip()
+                if not file_name:
+                    continue
+                local_file = (local_root / series / model_format / file_name).resolve()
+                options.append(
+                    {
+                        "index": index_counter,
+                        "series": series,
+                        "format": model_format,
+                        "name": file_name,
+                        "display_name": f"{model_format}/{file_name}",
+                        "remote_file": f"{format_remote_dir}/{file_name}",
+                        "remote_kind": "file",
+                        "downloaded": local_file.exists(),
                     }
                 )
                 index_counter += 1

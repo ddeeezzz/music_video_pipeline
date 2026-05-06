@@ -24,8 +24,10 @@ def test_parse_module_b_llm_output_should_parse_json_with_noise_prefix() -> None
     raw_text = (
         "noise\n"
         "{\"scene_desc\":\"中文描述\","
-        "\"keyframe_prompt_zh\":\"中文关键帧提示词\","
-        "\"keyframe_prompt_en\":\"key prompt\","
+        "\"keyframe_prompt_start_zh\":\"中文关键帧起始提示词\","
+        "\"keyframe_prompt_start_en\":\"key prompt start\","
+        "\"keyframe_prompt_end_zh\":\"中文关键帧结束提示词\","
+        "\"keyframe_prompt_end_en\":\"key prompt end\","
         "\"video_prompt_zh\":\"中文视频提示词\","
         "\"video_prompt_en\":\"video prompt\"}\n"
         "trailing"
@@ -37,13 +39,12 @@ def test_parse_module_b_llm_output_should_parse_json_with_noise_prefix() -> None
         video_prompt_max_chars=500,
     )
     assert parsed["scene_desc"] == "中文描述"
-    assert parsed["keyframe_prompt_zh"] == "中文关键帧提示词"
-    assert parsed["keyframe_prompt_en"] == "key prompt"
+    assert parsed["keyframe_prompt_start_zh"] == "中文关键帧起始提示词"
+    assert parsed["keyframe_prompt_start_en"] == "key prompt start"
+    assert parsed["keyframe_prompt_end_zh"] == "中文关键帧结束提示词"
+    assert parsed["keyframe_prompt_end_en"] == "key prompt end"
     assert parsed["video_prompt_zh"] == "中文视频提示词"
     assert parsed["video_prompt_en"] == "video prompt"
-    # 兼容字段默认映射到英文版本。
-    assert parsed["keyframe_prompt"] == "key prompt"
-    assert parsed["video_prompt"] == "video prompt"
 
 
 def test_parse_module_b_llm_output_should_reject_extra_keys() -> None:
@@ -57,8 +58,10 @@ def test_parse_module_b_llm_output_should_reject_extra_keys() -> None:
     raw_text = (
         "{"
         "\"scene_desc\":\"中文描述\","
-        "\"keyframe_prompt_zh\":\"中文关键帧提示词\","
-        "\"keyframe_prompt_en\":\"key prompt\","
+        "\"keyframe_prompt_start_zh\":\"中文关键帧起始提示词\","
+        "\"keyframe_prompt_start_en\":\"key prompt start\","
+        "\"keyframe_prompt_end_zh\":\"中文关键帧结束提示词\","
+        "\"keyframe_prompt_end_en\":\"key prompt end\","
         "\"video_prompt_zh\":\"中文视频提示词\","
         "\"video_prompt_en\":\"video prompt\","
         "\"extra\":\"x\""
@@ -79,13 +82,15 @@ def test_parse_module_b_llm_output_should_reject_empty_field() -> None:
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：scene_desc 与 keyframe/video 的中英文字段均不可为空。
+    边界条件：scene_desc 与关键帧/视频提示词字段均不可为空。
     """
     raw_text = (
         "{"
         "\"scene_desc\":\" \","
-        "\"keyframe_prompt_zh\":\"中文关键帧提示词\","
-        "\"keyframe_prompt_en\":\"key prompt\","
+        "\"keyframe_prompt_start_zh\":\"中文关键帧起始提示词\","
+        "\"keyframe_prompt_start_en\":\"key prompt start\","
+        "\"keyframe_prompt_end_zh\":\"中文关键帧结束提示词\","
+        "\"keyframe_prompt_end_en\":\"key prompt end\","
         "\"video_prompt_zh\":\"中文视频提示词\","
         "\"video_prompt_en\":\"video prompt\""
         "}"
@@ -110,8 +115,10 @@ def test_parse_module_b_llm_output_should_reject_length_overflow() -> None:
     raw_text = (
         "{"
         "\"scene_desc\":\"中文描述\","
-        "\"keyframe_prompt_zh\":\"中文关键帧提示词\","
-        "\"keyframe_prompt_en\":\"key prompt\","
+        "\"keyframe_prompt_start_zh\":\"中文关键帧提示词\","
+        "\"keyframe_prompt_start_en\":\"key prompt\","
+        "\"keyframe_prompt_end_zh\":\"中文关键帧结束提示词\","
+        "\"keyframe_prompt_end_en\":\"key prompt end\","
         "\"video_prompt_zh\":\"中文视频提示词\","
         "\"video_prompt_en\":\"video prompt\""
         "}"

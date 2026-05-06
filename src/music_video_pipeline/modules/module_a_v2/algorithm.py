@@ -55,11 +55,18 @@ def run_algorithm_stage(
     duration_seconds: float,
     instrumental_labels: list[str],
     merge_gap_seconds: float,
-    lyric_head_offset_seconds: float,
-    lyric_boundary_near_anchor_seconds: float,
-    content_role_tiny_merge_bars: float,
     artifacts: ModuleAV2Artifacts,
     logger,
+    vocal_energy_enter_quantile: float = 0.70,
+    vocal_energy_exit_quantile: float = 0.45,
+    mid_segment_min_duration_seconds: float = 0.8,
+    short_vocal_non_lyric_merge_seconds: float = 1.2,
+    visual_lead_seconds: float = 0.06,
+    lyric_boundary_near_anchor_seconds: float = DEFAULT_LYRIC_BOUNDARY_NEAR_ANCHOR_SECONDS,
+    content_role_tiny_merge_bars: float = DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS,
+    long_lyric_resplit_max_bars: float = 3.0,
+    long_other_split_min_bars: float = 1.0,
+    major_split_step_bars: float = 2.5,
 ) -> AlgorithmBundle:
     """
     功能说明：执行模块A V2算法层并写入算法阶段中间产物。
@@ -68,9 +75,15 @@ def run_algorithm_stage(
     - duration_seconds: 音频总时长（秒）。
     - instrumental_labels: 器乐标签集合（用于歌词清洗）。
     - merge_gap_seconds: 分句阈值缺失时的兼容兜底（秒）。
-    - lyric_head_offset_seconds: 句首锚点后移量（秒）。
+    - vocal_energy_enter_quantile/vocal_energy_exit_quantile: 人声活动窗进入/退出阈值分位点。
+    - mid_segment_min_duration_seconds: 人声活动窗最小保留时长（秒）。
+    - short_vocal_non_lyric_merge_seconds: 人声活动窗短间隙闭合阈值（秒）。
+    - visual_lead_seconds: 小段左边界统一前移量（秒）。
     - lyric_boundary_near_anchor_seconds: 近锚点冲突判定阈值（秒）。
     - content_role_tiny_merge_bars: 内容角色tiny并段阈值（小节）。
+    - long_lyric_resplit_max_bars: 超长歌词句重切上限（小节）。
+    - long_other_split_min_bars: 非歌词长窗触发 downbeat 细分的阈值（小节）。
+    - major_split_step_bars: 非歌词长窗 downbeat 滑动桶步长（小节）。
     - artifacts: V2产物路径对象。
     - logger: 日志记录器。
     返回值：
@@ -131,6 +144,66 @@ def run_algorithm_stage(
         )
         safe_content_role_tiny_merge_bars = DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS
 
+    try:
+        safe_long_lyric_resplit_max_bars = float(long_lyric_resplit_max_bars)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "模块A V2-long_lyric_resplit_max_bars 配置非法，已回退默认值=3.0，原始值=%s",
+            long_lyric_resplit_max_bars,
+        )
+        safe_long_lyric_resplit_max_bars = 3.0
+    if safe_long_lyric_resplit_max_bars <= 0.0:
+        logger.warning(
+            "模块A V2-long_lyric_resplit_max_bars 必须大于0，已回退默认值=3.0，原始值=%s",
+            long_lyric_resplit_max_bars,
+        )
+        safe_long_lyric_resplit_max_bars = 3.0
+
+    try:
+        safe_long_other_split_min_bars = float(long_other_split_min_bars)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "模块A V2-long_other_split_min_bars 配置非法，已回退默认值=1.0，原始值=%s",
+            long_other_split_min_bars,
+        )
+        safe_long_other_split_min_bars = 1.0
+    if safe_long_other_split_min_bars <= 0.0:
+        logger.warning(
+            "模块A V2-long_other_split_min_bars 必须大于0，已回退默认值=1.0，原始值=%s",
+            long_other_split_min_bars,
+        )
+        safe_long_other_split_min_bars = 1.0
+
+    try:
+        safe_major_split_step_bars = float(major_split_step_bars)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "模块A V2-major_split_step_bars 配置非法，已回退默认值=2.5，原始值=%s",
+            major_split_step_bars,
+        )
+        safe_major_split_step_bars = 2.5
+    if safe_major_split_step_bars <= 0.0:
+        logger.warning(
+            "模块A V2-major_split_step_bars 必须大于0，已回退默认值=2.5，原始值=%s",
+            major_split_step_bars,
+        )
+        safe_major_split_step_bars = 2.5
+
+    try:
+        safe_visual_lead_seconds = float(visual_lead_seconds)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "模块A V2-visual_lead_seconds 配置非法，已回退默认值=0.06，原始值=%s",
+            visual_lead_seconds,
+        )
+        safe_visual_lead_seconds = 0.06
+    if safe_visual_lead_seconds < 0.0:
+        logger.warning(
+            "模块A V2-visual_lead_seconds 不能小于0，已回退默认值=0.06，原始值=%s",
+            visual_lead_seconds,
+        )
+        safe_visual_lead_seconds = 0.06
+
     # 当感知层分句统计缺失时，回退 merge_gap_seconds 作为兼容兜底。
     sentence_split_stats = dict(perception.sentence_split_stats)
     if not sentence_split_stats:
@@ -146,19 +219,27 @@ def run_algorithm_stage(
         vocal_rms_values=perception.vocal_rms_values,
         accompaniment_rms_times=perception.rms_times,
         accompaniment_rms_values=perception.rms_values,
+        vocal_energy_enter_quantile=vocal_energy_enter_quantile,
+        vocal_energy_exit_quantile=vocal_energy_exit_quantile,
+        vocal_mid_segment_min_duration_seconds=mid_segment_min_duration_seconds,
+        short_vocal_non_lyric_merge_seconds=short_vocal_non_lyric_merge_seconds,
         tiny_merge_bars=safe_content_role_tiny_merge_bars,
-        lyric_head_offset_seconds=lyric_head_offset_seconds,
+        visual_lead_seconds=safe_visual_lead_seconds,
         near_anchor_seconds=safe_near_anchor_seconds,
         duration_seconds=duration_seconds,
         onset_points=perception.onset_points,
         accompaniment_chroma_points=perception.accompaniment_chroma_points,
         vocal_f0_points=perception.vocal_f0_points,
         accompaniment_f0_points=perception.accompaniment_f0_points,
+        long_lyric_resplit_max_bars=safe_long_lyric_resplit_max_bars,
+        long_other_split_min_bars=safe_long_other_split_min_bars,
+        major_split_step_bars=safe_major_split_step_bars,
     )
 
     windows_raw = list(pipeline_result.get("windows_raw", []))
     windows_classified = list(pipeline_result.get("windows_classified", []))
     windows_merged = list(pipeline_result.get("windows_merged", []))
+    activity_windows = dict(pipeline_result.get("activity_windows", {}))
     small_timestamps = list(pipeline_result.get("small_timestamps", []))
     big_segments = list(pipeline_result.get("big_segments_a1", []))
     segments = list(pipeline_result.get("segments_final", []))
@@ -180,7 +261,12 @@ def run_algorithm_stage(
         if sentence_units
         else []
     )
-    energy_features = build_energy_features(segments, perception.rms_times, perception.rms_values, perception.beat_candidates)
+    energy_features = build_energy_features(
+        segments,
+        perception.rms_times,
+        perception.rms_values,
+        perception.beat_candidates,
+    )
     if not energy_features:
         raise RuntimeError("模块A V2算法层失败：能量特征为空")
 
@@ -266,6 +352,7 @@ def run_algorithm_stage(
             "lyric_units": lyric_units,
             "energy_features": energy_features,
             "windows_raw": windows_raw,
+            "activity_windows": activity_windows,
             "windows_classified": windows_classified,
             "windows_merged": windows_merged,
             "boundary_conflict_resolved": boundary_conflict_resolved,

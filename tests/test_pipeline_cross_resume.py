@@ -38,7 +38,7 @@ def test_resume_should_continue_cross_module_without_rerun_a(tmp_path: Path, mon
     audio_path.write_bytes(b"fake-audio")
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

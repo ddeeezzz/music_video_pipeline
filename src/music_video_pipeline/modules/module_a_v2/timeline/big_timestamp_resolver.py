@@ -203,13 +203,12 @@ def _extract_sentence_tail_time(sentence_item: dict[str, Any], duration_seconds:
     return _round_time(_clamp_time(_safe_float(sentence_item.get("end_time", 0.0), 0.0), duration_seconds))
 
 
-def _extract_sentence_head_time(sentence_item: dict[str, Any], duration_seconds: float, head_offset_seconds: float) -> float:
+def _extract_sentence_head_time(sentence_item: dict[str, Any], duration_seconds: float) -> float:
     """
-    功能说明：提取句首锚点（首token起点 + 固定后移）。
+    功能说明：提取句首锚点（首个有效 token 起点，不再做固定后移）。
     参数说明：
     - sentence_item: 句级歌词。
     - duration_seconds: 音频总时长。
-    - head_offset_seconds: 固定后移秒数。
     返回值：
     - float: 句首锚点。
     异常说明：无。
@@ -219,7 +218,7 @@ def _extract_sentence_head_time(sentence_item: dict[str, Any], duration_seconds:
     token_units = sentence_item.get("token_units", [])
     if isinstance(token_units, list) and token_units:
         base_start = _safe_float(token_units[0].get("start_time", base_start), base_start)
-    head_time = _clamp_time(base_start + max(0.0, float(head_offset_seconds)), duration_seconds)
+    head_time = _clamp_time(base_start, duration_seconds)
     sentence_end = _clamp_time(_safe_float(sentence_item.get("end_time", head_time), head_time), duration_seconds)
     if head_time > sentence_end - EPSILON_SECONDS:
         head_time = _clamp_time(_safe_float(sentence_item.get("start_time", 0.0), 0.0), duration_seconds)
@@ -485,7 +484,6 @@ def _apply_near_anchor_conflict_resolution(
     big_segments_a1: list[dict[str, Any]],
     sentence_units: list[dict[str, Any]],
     duration_seconds: float,
-    head_offset_seconds: float,
     near_anchor_seconds: float,
     vocal_rms_times: list[float],
     vocal_rms_values: list[float],
@@ -496,7 +494,6 @@ def _apply_near_anchor_conflict_resolution(
     - big_segments_a1: A1大段。
     - sentence_units: 句级歌词。
     - duration_seconds: 音频总时长。
-    - head_offset_seconds: 句首锚点偏移。
     - near_anchor_seconds: 近锚点阈值。
     - vocal_rms_times/vocal_rms_values: 人声RMS序列。
     返回值：
@@ -519,7 +516,7 @@ def _apply_near_anchor_conflict_resolution(
         sentence_heads.append(
             {
                 "sentence_index": sentence_index,
-                "head_time": _extract_sentence_head_time(sentence_item, duration_seconds=duration_seconds, head_offset_seconds=head_offset_seconds),
+                "head_time": _extract_sentence_head_time(sentence_item, duration_seconds=duration_seconds),
                 "has_effective_lyric_tokens": _has_effective_lyric_tokens(sentence_item),
             }
         )
@@ -704,6 +701,40 @@ def build_small_timestamps(
     return normalized
 
 
+def _apply_visual_lead_to_small_timestamps(
+    small_timestamps: list[float],
+    duration_seconds: float,
+    visual_lead_seconds: float,
+) -> list[float]:
+    """
+    功能说明：对内部小段边界统一做“视觉先于音频”的左移处理。
+    参数说明：
+    - small_timestamps: 原始小段边界列表。
+    - duration_seconds: 音频总时长。
+    - visual_lead_seconds: 统一前移量（秒）。
+    返回值：
+    - list[float]: 左移并保持单调后的边界列表。
+    异常说明：无。
+    边界条件：首边界固定0，末边界固定duration，内部边界严格单调。
+    """
+    safe_duration = max(0.0, float(duration_seconds))
+    safe_visual_lead_seconds = max(0.0, float(visual_lead_seconds))
+    normalized = sorted({_round_time(_clamp_time(_safe_float(item, 0.0), safe_duration)) for item in small_timestamps})
+    if len(normalized) <= 2 or safe_visual_lead_seconds <= EPSILON_SECONDS:
+        return normalized if normalized else [0.0, _round_time(safe_duration)]
+
+    internal_count = max(0, len(normalized) - 2)
+    shifted = [0.0]
+    for index, point in enumerate(normalized[1:-1], start=1):
+        candidate = max(0.0, float(point) - safe_visual_lead_seconds)
+        min_allowed = shifted[-1] + BOUNDARY_MIN_STEP_SECONDS
+        remaining_internal = max(0, internal_count - index)
+        max_allowed = safe_duration - BOUNDARY_MIN_STEP_SECONDS * (remaining_internal + 1)
+        shifted.append(_round_time(max(min_allowed, min(candidate, max_allowed))))
+    shifted.append(_round_time(safe_duration))
+    return shifted
+
+
 def build_final_segments(
     windows_merged: list[dict[str, Any]],
     big_segments_a1: list[dict[str, Any]],
@@ -835,7 +866,7 @@ def resolve_big_timestamps_and_segments(
     windows_merged: list[dict[str, Any]],
     sentence_units: list[dict[str, Any]],
     duration_seconds: float,
-    head_offset_seconds: float,
+    visual_lead_seconds: float,
     near_anchor_seconds: float,
     vocal_rms_times: list[float],
     vocal_rms_values: list[float],
@@ -847,7 +878,7 @@ def resolve_big_timestamps_and_segments(
     - windows_merged: 并段后窗口列表。
     - sentence_units: 句级歌词列表。
     - duration_seconds: 音频总时长。
-    - head_offset_seconds: 句首锚点偏移。
+    - visual_lead_seconds: 小段左边界统一前移量。
     - near_anchor_seconds: 近锚点阈值。
     - vocal_rms_times/vocal_rms_values: 人声RMS序列。
     返回值：
@@ -870,7 +901,6 @@ def resolve_big_timestamps_and_segments(
         big_segments_a1=a1_by_other,
         sentence_units=sentence_units,
         duration_seconds=duration_seconds,
-        head_offset_seconds=head_offset_seconds,
         near_anchor_seconds=near_anchor_seconds,
         vocal_rms_times=vocal_rms_times,
         vocal_rms_values=vocal_rms_values,
@@ -878,6 +908,11 @@ def resolve_big_timestamps_and_segments(
     small_timestamps = build_small_timestamps(
         windows_merged=windows_merged,
         duration_seconds=duration_seconds,
+    )
+    small_timestamps = _apply_visual_lead_to_small_timestamps(
+        small_timestamps=small_timestamps,
+        duration_seconds=duration_seconds,
+        visual_lead_seconds=visual_lead_seconds,
     )
     segments_final = build_final_segments(
         windows_merged=windows_merged,
@@ -904,6 +939,7 @@ def resolve_big_timestamps_and_segments(
         "lyric_overlap_traces": lyric_overlap_traces,
         "other_window_ratio_moves": other_ratio_events,
         "seg_cut_snap_moves": seg_cut_snap_events,
+        "visual_lead_seconds": _round_time(max(0.0, float(visual_lead_seconds))),
         "summary": {
             "lyric_overlap_boundary_count": len(lyric_overlap_traces),
             "other_window_ratio_count": len(other_ratio_events),

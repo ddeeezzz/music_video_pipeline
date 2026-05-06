@@ -1,26 +1,20 @@
 """
-文件用途：验证模块D最小单元并行执行、失败重试与断点恢复行为。
-核心流程：构造模块C帧输入，打桩ffmpeg执行器，检查单元状态与恢复行为。
-输入输出：输入临时任务目录，输出模块D执行结果断言。
-依赖说明：依赖 pytest 与项目内模块D编排实现。
-维护说明：当模块D单元级调度策略变更时需同步更新本测试。
+文件用途：验证模块 D 在纯 ComfyUI/ToonCrafter 路径下的重试、恢复与状态写回行为。
+核心流程：构造模块 C 双关键帧输入，打桩模块 D 渲染器与终拼器，断言单元状态与输出顺序。
+输入输出：输入临时任务目录，输出模块 D 编排与执行结果断言。
+依赖说明：依赖 pytest 与项目内模块 D 编排/执行实现。
+维护说明：本文件只覆盖当前真实后端，不保留旧视频后端测试语义。
 """
 
-# 标准库：用于日志对象构建
+# 标准库：用于日志对象构建。
 import logging
-# 标准库：用于并发验证
-import threading
-# 标准库：用于制造可观测并发窗口
-import time
-# 标准库：用于轻量上下文桩
-from types import SimpleNamespace
-# 标准库：用于路径处理
+# 标准库：用于路径处理。
 from pathlib import Path
 
-# 第三方库：用于异常断言
+# 第三方库：用于异常断言。
 import pytest
 
-# 项目内模块：配置数据类
+# 项目内模块：应用配置数据类。
 from music_video_pipeline.config import (
     AppConfig,
     BypyUploadConfig,
@@ -28,96 +22,62 @@ from music_video_pipeline.config import (
     LoggingConfig,
     MockConfig,
     ModeConfig,
+    ModuleAConfig,
     ModuleDConfig,
     PathsConfig,
 )
-# 项目内模块：运行上下文定义
+# 项目内模块：运行上下文定义。
 from music_video_pipeline.context import RuntimeContext
-# 项目内模块：JSON读写工具
+# 项目内模块：JSON 工具。
 from music_video_pipeline.io_utils import read_json, write_json
-# 项目内模块：模块D编排入口
+# 项目内模块：模块 D 编排入口。
 from music_video_pipeline.modules.module_d import orchestrator as module_d_orchestrator
-# 项目内模块：模块D执行器
+# 项目内模块：模块 D 执行器。
 from music_video_pipeline.modules.module_d import executor as module_d_executor
-# 项目内模块：模块D单元模型
+# 项目内模块：模块 D 单元模型。
 from music_video_pipeline.modules.module_d.unit_models import ModuleDUnit
-# 项目内模块：状态存储
+# 项目内模块：状态存储。
 from music_video_pipeline.state_store import StateStore
 
-
-class _ScriptedFfmpegRunner:
-    """
-    功能说明：测试用ffmpeg执行桩，可按片段名预设失败次数。
-    参数说明：
-    - fail_plan: 单元失败计划，键为 segment_XXX，值为剩余失败次数。
-    返回值：不适用。
-    异常说明：当命中失败计划时抛 RuntimeError。
-    边界条件：未配置失败计划的片段始终成功。
-    """
-
-    def __init__(self, fail_plan: dict[str, int] | None = None) -> None:
-        self.fail_plan = dict(fail_plan or {})
-        self.calls: list[str] = []
-
-    def run(self, command: list[str], command_name: str) -> None:
-        """
-        功能说明：模拟执行ffmpeg命令并按计划触发失败。
-        参数说明：
-        - command: ffmpeg命令数组。
-        - command_name: 命令用途说明（测试中不使用）。
-        返回值：无。
-        异常说明：命中失败计划时抛 RuntimeError。
-        边界条件：输出文件路径默认取命令最后一个参数。
-        """
-        _ = command_name
-        output_path = Path(command[-1])
-        segment_key = output_path.name.replace(".tmp.mp4", "").replace(".mp4", "")
-        self.calls.append(segment_key)
-
-        remaining_failures = int(self.fail_plan.get(segment_key, 0))
-        if remaining_failures > 0:
-            self.fail_plan[segment_key] = remaining_failures - 1
-            raise RuntimeError(f"mock failure for {segment_key}")
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"fake-segment")
 
 
 def test_run_module_d_should_retry_failed_unit_and_keep_output_order(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证单元失败后会按配置重试，最终输出顺序仍稳定。
+    功能说明：验证单元失败后会按配置重试，最终输出顺序仍保持稳定。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：本用例串行执行（segment_workers=1）以简化打桩。
+    边界条件：本用例通过打桩 ComfyUI 渲染器避免真实服务依赖。
     """
     context = _build_context(tmp_path=tmp_path, task_id="task_d_retry_order", segment_workers=1, unit_retry_times=1)
     _write_module_c_output(context=context)
 
-    scripted_ffmpeg = _ScriptedFfmpegRunner(fail_plan={"segment_002": 1})
-    monkeypatch.setattr(module_d_executor, "_run_ffmpeg_command", scripted_ffmpeg.run)
-    monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
-    monkeypatch.setattr(
-        module_d_executor,
-        "_resolve_video_encoder_profile",
-        lambda **kwargs: {
-            "use_gpu": False,
-            "name": "cpu",
-            "codec": "libx264",
-            "command_args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"],
-            "fallback_cpu_profile": None,
-        },
-    )
+    attempt_counts: dict[str, int] = {}
 
-    def _fake_concat(**kwargs) -> dict:
+    def _fake_render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
+        attempt_counts[unit.unit_id] = attempt_counts.get(unit.unit_id, 0) + 1
+        if unit.unit_id == "shot_002" and attempt_counts[unit.unit_id] == 1:
+            raise RuntimeError("mock comfyui failed once")
+        unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
+        unit.segment_path.write_bytes(f"segment:{unit.unit_id}".encode("utf-8"))
+        return {
+            "segment_path": str(unit.segment_path),
+            "backend": "comfyui-tooncrafter",
+            "frame_count_used": int(unit.exact_frames),
+        }
+
+    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _fake_render_one_unit_comfyui)
+    monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
+
+    def _fake_concat_segment_videos(**kwargs) -> dict[str, object]:
         output_video_path = kwargs["output_video_path"]
         output_video_path.parent.mkdir(parents=True, exist_ok=True)
         output_video_path.write_bytes(b"fake-video")
         return {"mode": "copy", "copy_fallback_triggered": False}
 
-    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat)
+    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat_segment_videos)
 
     output_path = module_d_orchestrator.run_module_d(context)
     module_d_output = read_json(context.artifacts_dir / "module_d_output.json")
@@ -125,9 +85,9 @@ def test_run_module_d_should_retry_failed_unit_and_keep_output_order(tmp_path: P
     assert output_path.exists()
     assert module_d_output["concat_mode"] == "copy"
     assert [item["shot_id"] for item in module_d_output["segment_items"]] == ["shot_001", "shot_002", "shot_003"]
-    assert scripted_ffmpeg.calls.count("segment_001") == 1
-    assert scripted_ffmpeg.calls.count("segment_002") == 2
-    assert scripted_ffmpeg.calls.count("segment_003") == 1
+    assert attempt_counts["shot_001"] == 1
+    assert attempt_counts["shot_002"] == 2
+    assert attempt_counts["shot_003"] == 1
 
     done_units = context.state_store.list_module_units_by_status(
         task_id=context.task_id,
@@ -137,40 +97,39 @@ def test_run_module_d_should_retry_failed_unit_and_keep_output_order(tmp_path: P
     assert [item["unit_id"] for item in done_units] == ["shot_001", "shot_002", "shot_003"]
 
 
+
 def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证严格失败后再次执行仅补跑failed单元，done单元不重跑。
+    功能说明：验证严格失败后再次执行仅补跑 failed 单元，done 单元直接复用。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：第一次执行设定 segment_002 持续失败，第二次改为成功。
+    边界条件：第一次执行让 shot_002 持续失败，第二次改为成功。
     """
     context = _build_context(tmp_path=tmp_path, task_id="task_d_resume_failed_only", segment_workers=1, unit_retry_times=1)
     _write_module_c_output(context=context)
-
-    fail_ffmpeg = _ScriptedFfmpegRunner(fail_plan={"segment_002": 100})
-    monkeypatch.setattr(module_d_executor, "_run_ffmpeg_command", fail_ffmpeg.run)
     monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
-    monkeypatch.setattr(
-        module_d_executor,
-        "_resolve_video_encoder_profile",
-        lambda **kwargs: {
-            "use_gpu": False,
-            "name": "cpu",
-            "codec": "libx264",
-            "command_args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"],
-            "fallback_cpu_profile": None,
-        },
-    )
     monkeypatch.setattr(
         module_d_orchestrator,
         "_concat_segment_videos",
         lambda **kwargs: {"mode": "copy", "copy_fallback_triggered": False},
     )
 
-    with pytest.raises(RuntimeError):
+    first_attempts: list[str] = []
+
+    def _always_fail_shot_002(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
+        first_attempts.append(unit.unit_id)
+        if unit.unit_id == "shot_002":
+            raise RuntimeError("mock comfyui keeps failing")
+        unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
+        unit.segment_path.write_bytes(f"segment:{unit.unit_id}".encode("utf-8"))
+        return {"segment_path": str(unit.segment_path)}
+
+    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _always_fail_shot_002)
+
+    with pytest.raises(RuntimeError, match="shot_002"):
         module_d_orchestrator.run_module_d(context)
 
     failed_units = context.state_store.list_module_units_by_status(
@@ -178,28 +137,35 @@ def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_p
         module_name="D",
         statuses=["failed"],
     )
-    assert [item["unit_id"] for item in failed_units] == ["shot_002"]
-
     done_units = context.state_store.list_module_units_by_status(
         task_id=context.task_id,
         module_name="D",
         statuses=["done"],
     )
+    assert [item["unit_id"] for item in failed_units] == ["shot_002"]
     assert [item["unit_id"] for item in done_units] == ["shot_001", "shot_003"]
 
-    resume_ffmpeg = _ScriptedFfmpegRunner()
-    monkeypatch.setattr(module_d_executor, "_run_ffmpeg_command", resume_ffmpeg.run)
+    resumed_attempts: list[str] = []
 
-    def _fake_concat_success(**kwargs) -> dict:
+    def _success_on_resume(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
+        resumed_attempts.append(unit.unit_id)
+        unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
+        unit.segment_path.write_bytes(f"resume:{unit.unit_id}".encode("utf-8"))
+        return {"segment_path": str(unit.segment_path)}
+
+    def _fake_concat_segment_videos(**kwargs) -> dict[str, object]:
         output_video_path = kwargs["output_video_path"]
         output_video_path.parent.mkdir(parents=True, exist_ok=True)
         output_video_path.write_bytes(b"fake-video")
         return {"mode": "copy", "copy_fallback_triggered": False}
 
-    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat_success)
-    module_d_orchestrator.run_module_d(context)
+    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _success_on_resume)
+    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat_segment_videos)
 
-    assert resume_ffmpeg.calls == ["segment_002"]
+    output_path = module_d_orchestrator.run_module_d(context)
+
+    assert output_path.exists()
+    assert resumed_attempts == ["shot_002"]
     done_units_after_resume = context.state_store.list_module_units_by_status(
         task_id=context.task_id,
         module_name="D",
@@ -208,335 +174,93 @@ def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_p
     assert [item["unit_id"] for item in done_units_after_resume] == ["shot_001", "shot_002", "shot_003"]
 
 
-def test_run_module_d_should_render_with_animatediff_backend_without_clip_upload(tmp_path: Path, monkeypatch) -> None:
+
+def test_execute_one_unit_with_retry_should_retry_comfyui_renderer_once(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证 animatediff 后端可完成单元渲染，且不会触发 clip 级上传消费。
+    功能说明：验证 execute_one_unit_with_retry 会在 ComfyUI 单元失败后按次数重试。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：通过打桩避免真实模型推理与真实 bypy 上传。
+    边界条件：只验证执行器层，不触发模块 D 总编排。
     """
-    context = _build_context(
-        tmp_path=tmp_path,
-        task_id="task_d_animatediff_success",
-        segment_workers=2,
-        unit_retry_times=1,
-        render_backend="animatediff",
-        upload_enabled=True,
-    )
-    _write_module_c_output(context=context)
-    _write_module_b_output(context=context)
-
-    prompts: list[str] = []
-    upload_call_count = {"count": 0}
-
-    def _fake_denoise_stage(*, context, unit, prompt, device_override=None):  # noqa: ANN001
-        _ = (context, device_override)
-        prompts.append(str(prompt))
-        return {
-            "shot_id": str(unit.unit_id),
-            "shot_index": int(unit.unit_index),
-            "frames": [b"fake-frame"],
-            "target_effective_fps": 8,
-            "target_effective_frames": int(unit.exact_frames),
-            "inference_frames": int(unit.exact_frames),
-            "exact_frames": int(unit.exact_frames),
-        }
-
-    def _fake_post_stage(*, context, unit, denoise_summary, encoder_command_args, profile_name="animatediff"):  # noqa: ANN001
-        _ = (context, denoise_summary, encoder_command_args, profile_name)
-        unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
-        unit.segment_path.write_bytes(b"fake-animatediff-segment")
-        return {"segment_path": str(unit.segment_path)}
-
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_denoise_stage", _fake_denoise_stage)
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_post_stage", _fake_post_stage)
-    monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
-
-    def _fake_concat(**kwargs) -> dict:
-        output_video_path = kwargs["output_video_path"]
-        output_video_path.parent.mkdir(parents=True, exist_ok=True)
-        output_video_path.write_bytes(b"fake-video")
-        return {"mode": "copy", "copy_fallback_triggered": False}
-
-    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat)
-
-    output_path = module_d_orchestrator.run_module_d(context)
-    module_d_output = read_json(context.artifacts_dir / "module_d_output.json")
-
-    assert output_path.exists()
-    assert module_d_output["concat_mode"] == "copy"
-    assert len(prompts) == 3
-    assert all(str(prompt).strip() for prompt in prompts)
-    assert upload_call_count["count"] == 0
-
-
-def test_run_module_d_should_fail_without_ffmpeg_fallback_when_animatediff_failed(tmp_path: Path, monkeypatch) -> None:
-    """
-    功能说明：验证 animatediff 渲染失败时严格失败且不回退 ffmpeg。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    - monkeypatch: pytest 提供的补丁工具。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：通过打桩模拟 AnimateDiff 全失败，确保 ffmpeg 不会被调用。
-    """
-    context = _build_context(
-        tmp_path=tmp_path,
-        task_id="task_d_animatediff_fallback",
-        segment_workers=1,
-        unit_retry_times=1,
-        render_backend="animatediff",
-        upload_enabled=False,
-    )
-    _write_module_c_output(context=context)
-    _write_module_b_output(context=context)
-
-    fallback_ffmpeg = _ScriptedFfmpegRunner()
-    monkeypatch.setattr(
-        module_d_executor,
-        "run_one_unit_animatediff_denoise_stage",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("mock animatediff failed")),
-    )
-    monkeypatch.setattr(module_d_executor, "_run_ffmpeg_command", fallback_ffmpeg.run)
-    monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
-    monkeypatch.setattr(
-        module_d_executor,
-        "_resolve_video_encoder_profile",
-        lambda **kwargs: {
-            "use_gpu": False,
-            "name": "cpu",
-            "codec": "libx264",
-            "command_args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30"],
-            "fallback_cpu_profile": None,
-        },
-    )
-
-    with pytest.raises(RuntimeError, match="模块D单元渲染失败"):
-        module_d_orchestrator.run_module_d(context)
-
-    failed_units = context.state_store.list_module_units_by_status(
+    context = _build_context(tmp_path=tmp_path, task_id="task_d_single_retry", segment_workers=1, unit_retry_times=1)
+    unit = _build_single_unit(tmp_path=tmp_path)
+    context.state_store.sync_module_units(
         task_id=context.task_id,
         module_name="D",
-        statuses=["failed"],
+        units=[
+            {
+                "unit_id": unit.unit_id,
+                "unit_index": unit.unit_index,
+                "start_time": unit.start_time,
+                "end_time": unit.end_time,
+                "duration": unit.duration,
+            }
+        ],
     )
-    assert [item["unit_id"] for item in failed_units] == ["shot_001", "shot_002", "shot_003"]
-    assert fallback_ffmpeg.calls == []
 
+    attempt_counter = {"count": 0}
 
-def test_run_module_d_should_start_next_denoise_before_previous_post_done(tmp_path: Path, monkeypatch) -> None:
-    """
-    功能说明：验证纯模块D入口下，下一单元去噪可在上一单元后处理结束前启动。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    - monkeypatch: pytest 提供的补丁工具。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：通过两阶段打桩构造“去噪短、后处理长”的可观测窗口。
-    """
-    context = _build_context(
-        tmp_path=tmp_path,
-        task_id="task_d_stage_overlap",
-        segment_workers=2,
-        unit_retry_times=0,
-        render_backend="animatediff",
-        upload_enabled=False,
-    )
-    _write_module_c_output(context=context)
-    _write_module_b_output(context=context)
-
-    monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
-
-    def _fake_concat(**kwargs) -> dict:
-        output_video_path = kwargs["output_video_path"]
-        output_video_path.parent.mkdir(parents=True, exist_ok=True)
-        output_video_path.write_bytes(b"fake-video")
-        return {"mode": "copy", "copy_fallback_triggered": False}
-
-    monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat)
-
-    timeline_lock = threading.Lock()
-    stage_timeline: dict[str, dict[str, float]] = {}
-
-    def _mark_time(unit_id: str, key: str, value: float) -> None:
-        with timeline_lock:
-            stage_timeline.setdefault(unit_id, {})
-            stage_timeline[unit_id][key] = float(value)
-
-    def _fake_denoise_stage(*, context, unit, prompt, device_override=None):  # noqa: ANN001
-        _ = (context, prompt, device_override)
-        _mark_time(unit.unit_id, "denoise_start", time.perf_counter())
-        time.sleep(0.04)
-        _mark_time(unit.unit_id, "denoise_end", time.perf_counter())
-        return {
-            "shot_id": str(unit.unit_id),
-            "shot_index": int(unit.unit_index),
-            "frames": [b"fake-frame"],
-            "target_effective_fps": 8,
-            "target_effective_frames": int(unit.exact_frames),
-            "inference_frames": int(unit.exact_frames),
-            "exact_frames": int(unit.exact_frames),
-        }
-
-    def _fake_post_stage(*, context, unit, denoise_summary, encoder_command_args, profile_name="animatediff"):  # noqa: ANN001
-        _ = (context, denoise_summary, encoder_command_args, profile_name)
-        _mark_time(unit.unit_id, "post_start", time.perf_counter())
-        time.sleep(0.12)
+    def _fail_once_then_succeed(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
+        attempt_counter["count"] += 1
+        if attempt_counter["count"] == 1:
+            raise RuntimeError("mock first failure")
         unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
         unit.segment_path.write_bytes(b"ok")
-        _mark_time(unit.unit_id, "post_end", time.perf_counter())
         return {"segment_path": str(unit.segment_path)}
 
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_denoise_stage", _fake_denoise_stage)
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_post_stage", _fake_post_stage)
+    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _fail_once_then_succeed)
 
-    output_path = module_d_orchestrator.run_module_d(context)
+    output_path = module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
 
-    assert output_path.exists()
-    ordered_unit_ids = sorted(stage_timeline.keys(), key=lambda item: float(stage_timeline[item]["denoise_start"]))
-    assert len(ordered_unit_ids) >= 2
-    first_unit_id = ordered_unit_ids[0]
-    second_unit_id = ordered_unit_ids[1]
-    assert float(stage_timeline[second_unit_id]["denoise_start"]) < float(stage_timeline[first_unit_id]["post_end"])
+    record = context.state_store.get_module_unit_record(task_id=context.task_id, module_name="D", unit_id=unit.unit_id)
+    assert output_path == unit.segment_path
+    assert attempt_counter["count"] == 2
+    assert record is not None and record["status"] == "done"
+    assert str(record["artifact_path"]) == str(unit.segment_path)
 
 
-def test_execute_one_unit_with_retry_should_only_serialize_animatediff_denoise_stage(tmp_path: Path, monkeypatch) -> None:
+
+def test_execute_one_unit_with_retry_should_raise_after_retry_exhausted(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证跨线程并发触发 D 单元时，AnimateDiff 仅去噪阶段串行，后处理可并发。
+    功能说明：验证 execute_one_unit_with_retry 在重试耗尽后会抛错并写入 failed 状态。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅验证执行器阶段互斥行为，不依赖真实模型与状态库。
+    边界条件：重试次数读取模块 D 当前配置。
     """
-    context = SimpleNamespace(
-        task_id="task_d_lock",
-        config=SimpleNamespace(
-            module_d=SimpleNamespace(
-                render_backend="animatediff",
-                unit_retry_times=0,
-            ),
-            ffmpeg=SimpleNamespace(
-                video_codec="libx264",
-                video_preset="veryfast",
-                video_crf=30,
-            ),
-        ),
-        state_store=SimpleNamespace(set_module_unit_status=lambda **kwargs: None),
-        logger=SimpleNamespace(
-            info=lambda *args, **kwargs: None,
-            warning=lambda *args, **kwargs: None,
-            error=lambda *args, **kwargs: None,
-        ),
+    context = _build_context(tmp_path=tmp_path, task_id="task_d_single_fail", segment_workers=1, unit_retry_times=1)
+    unit = _build_single_unit(tmp_path=tmp_path)
+    context.state_store.sync_module_units(
+        task_id=context.task_id,
+        module_name="D",
+        units=[
+            {
+                "unit_id": unit.unit_id,
+                "unit_index": unit.unit_index,
+                "start_time": unit.start_time,
+                "end_time": unit.end_time,
+                "duration": unit.duration,
+            }
+        ],
     )
-    segments_dir = tmp_path / "segments"
-    segments_dir.mkdir(parents=True, exist_ok=True)
 
-    units = [
-        ModuleDUnit(
-            unit_id="shot_001",
-            unit_index=0,
-            shot={"video_prompt_en": "p1", "video_prompt": "p1"},
-            start_time=0.0,
-            end_time=1.0,
-            duration=1.0,
-            exact_frames=24,
-            segment_path=segments_dir / "segment_001.mp4",
-            temp_segment_path=segments_dir / "segment_001.tmp.mp4",
-        ),
-        ModuleDUnit(
-            unit_id="shot_002",
-            unit_index=1,
-            shot={"video_prompt_en": "p2", "video_prompt": "p2"},
-            start_time=1.0,
-            end_time=2.0,
-            duration=1.0,
-            exact_frames=24,
-            segment_path=segments_dir / "segment_002.mp4",
-            temp_segment_path=segments_dir / "segment_002.tmp.mp4",
-        ),
-    ]
+    def _always_fail(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
+        raise RuntimeError(f"mock always fail:{unit.unit_id}")
 
-    state_lock = threading.Lock()
-    denoise_in_flight = 0
-    max_denoise_in_flight = 0
-    post_in_flight = 0
-    max_post_in_flight = 0
-    stage_timeline: dict[str, dict[str, float]] = {}
+    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _always_fail)
 
-    def _mark_time(unit_id: str, key: str, value: float) -> None:
-        with state_lock:
-            stage_timeline.setdefault(unit_id, {})
-            stage_timeline[unit_id][key] = float(value)
+    with pytest.raises(RuntimeError, match="mock always fail"):
+        module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
 
-    def _fake_denoise_stage(*, context, unit, prompt, device_override=None):  # noqa: ANN001
-        nonlocal denoise_in_flight, max_denoise_in_flight
-        _ = (context, prompt, device_override)
-        _mark_time(unit.unit_id, "denoise_start", time.perf_counter())
-        with state_lock:
-            denoise_in_flight += 1
-            if denoise_in_flight > max_denoise_in_flight:
-                max_denoise_in_flight = denoise_in_flight
-        time.sleep(0.05)
-        with state_lock:
-            denoise_in_flight -= 1
-        _mark_time(unit.unit_id, "denoise_end", time.perf_counter())
-        return {
-            "shot_id": str(unit.unit_id),
-            "shot_index": int(unit.unit_index),
-            "frames": [b"fake-frame"],
-            "target_effective_fps": 8,
-            "target_effective_frames": int(unit.exact_frames),
-            "inference_frames": int(unit.exact_frames),
-            "exact_frames": int(unit.exact_frames),
-        }
+    record = context.state_store.get_module_unit_record(task_id=context.task_id, module_name="D", unit_id=unit.unit_id)
+    assert record is not None and record["status"] == "failed"
+    assert "mock always fail" in str(record["error_message"])
 
-    def _fake_post_stage(*, context, unit, denoise_summary, encoder_command_args, profile_name="animatediff"):  # noqa: ANN001
-        nonlocal post_in_flight, max_post_in_flight
-        _ = (context, denoise_summary, encoder_command_args, profile_name)
-        _mark_time(unit.unit_id, "post_start", time.perf_counter())
-        with state_lock:
-            post_in_flight += 1
-            if post_in_flight > max_post_in_flight:
-                max_post_in_flight = post_in_flight
-        time.sleep(0.12)
-        unit.segment_path.write_bytes(b"ok")
-        with state_lock:
-            post_in_flight -= 1
-        _mark_time(unit.unit_id, "post_end", time.perf_counter())
-        return {"segment_path": str(unit.segment_path)}
-
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_denoise_stage", _fake_denoise_stage)
-    monkeypatch.setattr(module_d_executor, "run_one_unit_animatediff_post_stage", _fake_post_stage)
-
-    errors: list[Exception] = []
-
-    def _run(unit: ModuleDUnit) -> None:
-        try:
-            module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
-        except Exception as error:  # noqa: BLE001
-            errors.append(error)
-
-    thread_1 = threading.Thread(target=_run, args=(units[0],))
-    thread_2 = threading.Thread(target=_run, args=(units[1],))
-    thread_1.start()
-    thread_2.start()
-    thread_1.join(timeout=2.0)
-    thread_2.join(timeout=2.0)
-
-    assert not errors
-    assert max_denoise_in_flight == 1
-    assert max_post_in_flight >= 1
-    first_unit_id, second_unit_id = sorted(
-        [unit.unit_id for unit in units],
-        key=lambda item: float(stage_timeline[item]["denoise_start"]),
-    )
-    assert float(stage_timeline[second_unit_id]["denoise_start"]) < float(stage_timeline[first_unit_id]["post_end"])
-    assert units[0].segment_path.exists()
-    assert units[1].segment_path.exists()
 
 
 def _build_context(
@@ -544,16 +268,14 @@ def _build_context(
     task_id: str,
     segment_workers: int,
     unit_retry_times: int,
-    render_backend: str = "ffmpeg",
-    upload_enabled: bool = False,
 ) -> RuntimeContext:
     """
-    功能说明：构建模块D测试用运行上下文。
+    功能说明：构建模块 D 测试用运行上下文。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - task_id: 任务唯一标识。
-    - segment_workers: 模块D并行worker数。
-    - unit_retry_times: 模块D单元重试次数。
+    - segment_workers: 模块 D 并发 worker 数量。
+    - unit_retry_times: 模块 D 单元重试次数。
     返回值：
     - RuntimeContext: 测试用上下文对象。
     异常说明：无。
@@ -569,18 +291,8 @@ def _build_context(
     artifacts_dir = task_dir / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    module_d_config = ModuleDConfig(
-        segment_workers=segment_workers,
-        unit_retry_times=unit_retry_times,
-        render_backend=render_backend,
-        animatediff=ModuleDConfig.AnimateDiffConfig(
-            device="cpu",
-            fallback_to_ffmpeg=False,
-        ),
-    )
-
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(runs_dir), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -593,8 +305,13 @@ def _build_context(
         ),
         logging=LoggingConfig(level="INFO"),
         mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
-        module_d=module_d_config,
-        bypy_upload=BypyUploadConfig(enabled=upload_enabled),
+        module_d=ModuleDConfig(
+            segment_workers=segment_workers,
+            unit_retry_times=unit_retry_times,
+            render_backend="comfyui",
+        ),
+        bypy_upload=BypyUploadConfig(enabled=False),
+        module_a=ModuleAConfig(funasr_language="auto"),
     )
     state_store = StateStore(db_path=runs_dir / "pipeline_state.sqlite3")
     state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(tmp_path / "config.json"))
@@ -611,9 +328,10 @@ def _build_context(
     )
 
 
+
 def _write_module_c_output(context: RuntimeContext) -> None:
     """
-    功能说明：写入模块D测试所需的模块C输入文件。
+    功能说明：写入模块 D 测试所需的模块 C 双关键帧输出文件。
     参数说明：
     - context: 运行上下文对象。
     返回值：无。
@@ -623,15 +341,23 @@ def _write_module_c_output(context: RuntimeContext) -> None:
     frames_dir = context.artifacts_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    frame_items: list[dict] = []
+    frame_items: list[dict[str, object]] = []
     for index in range(3):
         shot_id = f"shot_{index + 1:03d}"
-        frame_path = frames_dir / f"frame_{index + 1:03d}.png"
-        frame_path.write_bytes(b"fake-frame")
+        frame_path_start = frames_dir / f"frame_{index + 1:03d}_start.png"
+        frame_path_end = frames_dir / f"frame_{index + 1:03d}_end.png"
+        frame_path_start.write_bytes(b"fake-frame-start")
+        frame_path_end.write_bytes(b"fake-frame-end")
         frame_items.append(
             {
                 "shot_id": shot_id,
-                "frame_path": str(frame_path),
+                "frame_path": str(frame_path_start),
+                "frame_path_start": str(frame_path_start),
+                "frame_path_end": str(frame_path_end),
+                "control_frame_paths": [str(frame_path_start), str(frame_path_end)],
+                "video_prompt_en": f"video prompt {shot_id}",
+                "video_prompt_zh": f"视频提示词 {shot_id}",
+                "scene_desc": f"scene {shot_id}",
                 "start_time": float(index),
                 "end_time": float(index + 1),
                 "duration": 1.0,
@@ -648,31 +374,39 @@ def _write_module_c_output(context: RuntimeContext) -> None:
     )
 
 
-def _write_module_b_output(context: RuntimeContext) -> None:
+
+def _build_single_unit(tmp_path: Path) -> ModuleDUnit:
     """
-    功能说明：写入模块D animatediff 测试所需的模块B分镜提示词文件。
+    功能说明：构造单元级执行器测试所需的最小模块 D 单元。
     参数说明：
-    - context: 运行上下文对象。
-    返回值：无。
-    异常说明：文件写入失败时抛 OSError。
-    边界条件：shot_id 顺序与 module_c_output 保持一致。
+    - tmp_path: pytest 提供的临时目录。
+    返回值：
+    - ModuleDUnit: 可直接交给执行器的测试单元。
+    异常说明：无。
+    边界条件：双关键帧文件会一并落到临时目录中。
     """
-    shots: list[dict] = []
-    for index in range(3):
-        shot_id = f"shot_{index + 1:03d}"
-        shots.append(
-            {
-                "shot_id": shot_id,
-                "start_time": float(index),
-                "end_time": float(index + 1),
-                "scene_desc": f"scene {shot_id}",
-                "keyframe_prompt_en": f"keyframe {shot_id}",
-                "video_prompt_en": f"video prompt {shot_id}",
-                "keyframe_prompt": f"keyframe {shot_id}",
-                "video_prompt": f"video prompt {shot_id}",
-                "camera_motion": "static",
-                "transition": "cut",
-                "constraints": {"safe": True},
-            }
-        )
-    write_json(context.artifacts_dir / "module_b_output.json", shots)
+    start_frame = tmp_path / "single_start.png"
+    end_frame = tmp_path / "single_end.png"
+    start_frame.write_bytes(b"single-start")
+    end_frame.write_bytes(b"single-end")
+    return ModuleDUnit(
+        unit_id="shot_001",
+        unit_index=0,
+        shot={
+            "shot_id": "shot_001",
+            "frame_path": str(start_frame),
+            "frame_path_start": str(start_frame),
+            "frame_path_end": str(end_frame),
+            "control_frame_paths": [str(start_frame), str(end_frame)],
+            "video_prompt_en": "video prompt from start to end",
+            "start_time": 0.0,
+            "end_time": 1.0,
+            "duration": 1.0,
+        },
+        start_time=0.0,
+        end_time=1.0,
+        duration=1.0,
+        exact_frames=24,
+        segment_path=tmp_path / "segment_001.mp4",
+        temp_segment_path=tmp_path / "segment_001.tmp.mp4",
+    )

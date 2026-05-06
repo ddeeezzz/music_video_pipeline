@@ -1,7 +1,6 @@
 {
   "mode": {
-    "script_generator": "llm",
-    "frame_generator": "diffusion"
+    "script_generator": "llm"
   },
   "paths": {
     "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
@@ -14,7 +13,7 @@
     "audio_codec": "aac",
     "fps": 24,
     "video_preset": "veryfast",
-    "video_crf": 30,
+    "video_crf": 24,
     "render_batch_size": 1
   },
   "logging": {

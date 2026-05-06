@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# 文件用途：提供 ComfyUI 的极简启动入口，支持“已在运行”探活提示。
+# 核心流程：先探测 127.0.0.1:8188 是否已有可用 ComfyUI；若已存在则直接提示，否则启动新实例。
+set -euo pipefail
+
+HOST="127.0.0.1"
+PORT="8188"
+
+if python - <<'PY'
+from urllib.request import urlopen
+import sys
+url = 'http://127.0.0.1:8188/system_stats'
+try:
+    with urlopen(url, timeout=1.5) as resp:
+        sys.exit(0 if resp.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY
+then
+  echo "ComfyUI 已在运行：http://${HOST}:${PORT}"
+  exit 0
+fi
+
+cd /root/data/t1/ComfyUI
+exec python main.py --listen "${HOST}" --port "${PORT}" "$@"

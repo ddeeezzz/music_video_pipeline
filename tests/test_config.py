@@ -31,7 +31,7 @@ def test_load_config_should_raise_when_funasr_language_missing(tmp_path: Path) -
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "mock", "frame_generator": "mock"},
+                "mode": {"script_generator": "mock"},
                 "paths": {"runs_dir": "runs", "default_audio_path": "resources/demo.mp3"},
                 "ffmpeg": {
                     "ffmpeg_bin": "ffmpeg",
@@ -161,10 +161,13 @@ def test_load_config_should_ignore_removed_lyric_segment_policy_key_with_warning
     assert app_config.module_a.vocal_skip_peak_rms_threshold == 0.010
     assert app_config.module_a.vocal_skip_active_ratio_threshold == 0.020
     assert app_config.module_a.implementation == "v1"
-    assert app_config.module_a.lyric_head_offset_seconds == 0.02
+    assert app_config.module_a.visual_lead_seconds == 0.06
     assert app_config.module_a.long_instrumental_gap_seconds == 5.0
     assert app_config.module_a.lyric_boundary_near_anchor_seconds == 1.5
     assert app_config.module_a.content_role_tiny_merge_bars == 0.9
+    assert app_config.module_a.long_lyric_resplit_max_bars == 3.0
+    assert app_config.module_a.long_other_split_min_bars == 1.0
+    assert app_config.module_a.major_split_step_bars == 2.5
 
 
 def test_load_config_should_accept_explicit_module_a_segmentation_tuning(tmp_path: Path) -> None:
@@ -192,10 +195,13 @@ def test_load_config_should_accept_explicit_module_a_segmentation_tuning(tmp_pat
                     "vocal_skip_peak_rms_threshold": 0.02,
                     "vocal_skip_active_ratio_threshold": 0.05,
                     "implementation": "v2",
-                    "lyric_head_offset_seconds": 0.05,
+                    "visual_lead_seconds": 0.05,
                     "long_instrumental_gap_seconds": 6.0,
                     "lyric_boundary_near_anchor_seconds": 2.0,
                     "content_role_tiny_merge_bars": 0.6,
+                    "long_lyric_resplit_max_bars": 2.0,
+                    "long_other_split_min_bars": 0.8,
+                    "major_split_step_bars": 2.25,
                 }
             },
             ensure_ascii=False,
@@ -214,20 +220,23 @@ def test_load_config_should_accept_explicit_module_a_segmentation_tuning(tmp_pat
     assert app_config.module_a.vocal_skip_peak_rms_threshold == 0.02
     assert app_config.module_a.vocal_skip_active_ratio_threshold == 0.05
     assert app_config.module_a.implementation == "v2"
-    assert app_config.module_a.lyric_head_offset_seconds == 0.05
+    assert app_config.module_a.visual_lead_seconds == 0.05
     assert app_config.module_a.long_instrumental_gap_seconds == 6.0
     assert app_config.module_a.lyric_boundary_near_anchor_seconds == 2.0
     assert app_config.module_a.content_role_tiny_merge_bars == 0.6
+    assert app_config.module_a.long_lyric_resplit_max_bars == 2.0
+    assert app_config.module_a.long_other_split_min_bars == 0.8
+    assert app_config.module_a.major_split_step_bars == 2.25
 
 
-def test_load_config_should_compat_old_content_role_tiny_merge_seconds_key(tmp_path: Path) -> None:
+def test_load_config_should_fail_when_old_content_role_tiny_merge_seconds_key_present(tmp_path: Path) -> None:
     """
-    功能说明：验证旧配置键 content_role_tiny_merge_seconds 仍可兼容映射到小节阈值。
+    功能说明：验证旧配置键 content_role_tiny_merge_seconds 在新配置结构下直接触发失败。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：当新旧键同时存在时，新键优先级应更高（该用例仅覆盖旧键单独存在）。
+    边界条件：本测试验证破坏性升级，不保留旧秒数阈值兼容行为。
     """
     config_path = tmp_path / "config_with_old_tiny_seconds_key.json"
     config_path.write_text(
@@ -243,8 +252,8 @@ def test_load_config_should_compat_old_content_role_tiny_merge_seconds_key(tmp_p
         ),
         encoding="utf-8",
     )
-    app_config = load_config(config_path=config_path)
-    assert app_config.module_a.content_role_tiny_merge_bars == 0.9
+    with pytest.raises(TypeError):
+        load_config(config_path=config_path)
 
 
 def test_load_config_should_fill_ffmpeg_gpu_accel_defaults(tmp_path: Path) -> None:
@@ -447,7 +456,7 @@ def test_load_config_should_raise_when_llm_mode_missing_prompt_template_file(tmp
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "llm", "frame_generator": "mock"},
+                "mode": {"script_generator": "llm"},
                 "module_a": {
                     "funasr_language": "auto",
                 },
@@ -480,7 +489,7 @@ def test_load_config_should_not_require_prompt_template_file_in_mock_mode(tmp_pa
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "mock", "frame_generator": "mock"},
+                "mode": {"script_generator": "mock"},
                 "module_a": {
                     "funasr_language": "auto",
                 },
@@ -567,8 +576,7 @@ def test_load_config_should_accept_explicit_cross_module_values(tmp_path: Path) 
                     },
                 },
                 "module_d": {
-                    "render_backend": "animatediff",
-                    "animatediff": {},
+                    "render_backend": "comfyui",
                 },
             },
             ensure_ascii=False,
@@ -592,16 +600,16 @@ def test_load_config_should_accept_explicit_cross_module_values(tmp_path: Path) 
     assert adaptive.d_limit_max == 1
 
 
-def test_load_config_should_reject_unknown_animatediff_field(tmp_path: Path) -> None:
+def test_load_config_should_reject_legacy_module_d_animatediff_block(tmp_path: Path) -> None:
     """
-    功能说明：验证 module_d.animatediff 出现未知字段时会直接报错。
+    功能说明：验证模块 D 旧版 animatediff 配置块已被彻底拒绝。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
-    异常说明：未知字段会触发 TypeError。
-    边界条件：用于防止旧配置静默通过导致语义漂移。
+    异常说明：旧字段会触发 TypeError。
+    边界条件：用于防止历史配置静默通过并误导当前 ToonCrafter 路径。
     """
-    config_path = tmp_path / "config_animatediff_unknown_field.json"
+    config_path = tmp_path / "config_module_d_legacy_animatediff.json"
     config_path.write_text(
         json.dumps(
             {
@@ -609,7 +617,6 @@ def test_load_config_should_reject_unknown_animatediff_field(tmp_path: Path) -> 
                     "funasr_language": "auto",
                 },
                 "module_d": {
-                    "render_backend": "animatediff",
                     "animatediff": {
                         "max_parallel_units": 2,
                     },
@@ -621,7 +628,7 @@ def test_load_config_should_reject_unknown_animatediff_field(tmp_path: Path) -> 
         encoding="utf-8",
     )
 
-    with pytest.raises(TypeError, match="max_parallel_units"):
+    with pytest.raises(TypeError, match="animatediff|max_parallel_units"):
         load_config(config_path=config_path)
 
 
@@ -1012,12 +1019,12 @@ def test_load_config_should_raise_when_bypy_upload_has_legacy_queue_fields(tmp_p
 
 def test_load_config_should_fill_module_d_render_backend_defaults(tmp_path: Path) -> None:
     """
-    功能说明：验证 module_d 新增后端配置在缺省场景可自动补齐默认值。
+    功能说明：验证 module_d 在缺省场景会自动补齐为 ComfyUI ToonCrafter 配置。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：默认后端必须保持 ffmpeg，以避免影响旧链路。
+    边界条件：默认后端应固定为 comfyui，不再保留旧视频后端。
     """
     config_path = tmp_path / "config_module_d_backend_defaults.json"
     config_path.write_text(
@@ -1033,25 +1040,27 @@ def test_load_config_should_fill_module_d_render_backend_defaults(tmp_path: Path
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
-    assert app_config.module_d.render_backend == "ffmpeg"
-    assert app_config.module_d.animatediff.binding_name == "xiantiao_style"
-    assert app_config.module_d.animatediff.model_series == "15"
-    assert app_config.module_d.animatediff.lora_scale == 0.8
-    assert app_config.module_d.animatediff.guidance_scale == 10.0
-    assert app_config.module_d.animatediff.controlnet_local_dir == "models/controlnet/15/controlnet-canny-sd15"
-    assert app_config.module_d.animatediff.controlnet_conditioning_scale == 0.8
+    assert app_config.module_d.render_backend == "comfyui"
+    assert app_config.module_d.comfyui.contract_file == "configs/comfyui/module_d.contract.json"
+    assert app_config.module_d.comfyui.checkpoint_name == "tooncrafter_512_interp-pruned-fp16.safetensors"
+    assert app_config.module_d.comfyui.sketch_encoder_name == "sketch_encoder-fp16.safetensors"
+    assert app_config.module_d.comfyui.generation_width == 512
+    assert app_config.module_d.comfyui.generation_height == 320
+    assert app_config.module_d.comfyui.generation_frames == 16
+    assert app_config.module_d.comfyui.generation_fps == 8
+    assert app_config.module_d.comfyui.use_video_prompt_as_positive is True
 
 
-def test_load_config_should_accept_module_d_animatediff_cuda_device(tmp_path: Path) -> None:
+def test_load_config_should_accept_explicit_module_d_comfyui_values(tmp_path: Path) -> None:
     """
-    功能说明：验证 module_d.animatediff 支持显式 cuda:N 设备配置。
+    功能说明：验证 module_d.comfyui 支持显式覆盖 ToonCrafter 工作流参数。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅验证配置加载层，不依赖本机真实 GPU 数量。
+    边界条件：仅验证配置加载层，不依赖真实 ComfyUI 服务。
     """
-    config_path = tmp_path / "config_module_d_animatediff_cuda_device.json"
+    config_path = tmp_path / "config_module_d_comfyui_explicit.json"
     config_path.write_text(
         json.dumps(
             {
@@ -1059,12 +1068,15 @@ def test_load_config_should_accept_module_d_animatediff_cuda_device(tmp_path: Pa
                     "funasr_language": "auto",
                 },
                 "module_d": {
-                    "render_backend": "animatediff",
-                    "animatediff": {
-                        "device": "cuda:1",
-                        "model_series": "15",
-                        "seed_mode": "shot_index",
-                        "torch_dtype": "float16",
+                    "render_backend": "comfyui",
+                    "comfyui": {
+                        "checkpoint_name": "custom-tooncrafter.safetensors",
+                        "generation_width": 640,
+                        "generation_height": 384,
+                        "generation_frames": 20,
+                        "generation_fps": 10,
+                        "steps": 40,
+                        "cfg": 4.5,
                     },
                 },
             },
@@ -1074,8 +1086,14 @@ def test_load_config_should_accept_module_d_animatediff_cuda_device(tmp_path: Pa
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
-    assert app_config.module_d.render_backend == "animatediff"
-    assert app_config.module_d.animatediff.device == "cuda:1"
+    assert app_config.module_d.render_backend == "comfyui"
+    assert app_config.module_d.comfyui.checkpoint_name == "custom-tooncrafter.safetensors"
+    assert app_config.module_d.comfyui.generation_width == 640
+    assert app_config.module_d.comfyui.generation_height == 384
+    assert app_config.module_d.comfyui.generation_frames == 20
+    assert app_config.module_d.comfyui.generation_fps == 10
+    assert app_config.module_d.comfyui.steps == 40
+    assert app_config.module_d.comfyui.cfg == 4.5
 
 
 def test_load_config_should_fail_when_module_d_render_backend_invalid(tmp_path: Path) -> None:
@@ -1085,7 +1103,7 @@ def test_load_config_should_fail_when_module_d_render_backend_invalid(tmp_path: 
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅允许 ffmpeg/animatediff 两种后端。
+    边界条件：当前仅允许 comfyui 单一路径。
     """
     config_path = tmp_path / "config_module_d_backend_invalid.json"
     config_path.write_text(
@@ -1107,9 +1125,9 @@ def test_load_config_should_fail_when_module_d_render_backend_invalid(tmp_path: 
         load_config(config_path=config_path)
 
 
-def test_music_yby_configs_should_default_to_module_d_animatediff() -> None:
+def test_music_yby_configs_should_default_to_module_d_comfyui() -> None:
     """
-    功能说明：验证 music_yby 配置目录默认显式覆盖为 module_d.render_backend=animatediff。
+    功能说明：验证 music_yby 配置目录默认显式覆盖为 module_d.render_backend=comfyui。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
@@ -1121,5 +1139,32 @@ def test_music_yby_configs_should_default_to_module_d_animatediff() -> None:
     assert config_files, "music_yby 配置目录为空，无法执行覆盖断言。"
     for config_path in config_files:
         app_config = load_config(config_path=config_path)
-        assert app_config.module_d.render_backend == "animatediff", f"配置未覆盖 animatediff: {config_path}"
-        assert app_config.module_d.animatediff.device == "auto", f"配置未统一为 auto 设备策略: {config_path}"
+        assert app_config.module_d.render_backend == "comfyui", f"配置未覆盖 comfyui: {config_path}"
+        assert (
+            app_config.module_d.comfyui.contract_file == "configs/comfyui/module_d.contract.json"
+        ), f"配置未统一使用模块D ComfyUI 契约: {config_path}"
+
+
+def test_load_config_should_reject_removed_frame_generator_mode(tmp_path: Path) -> None:
+    """
+    功能说明：验证 mode.frame_generator 已删除后，旧配置会直接报错。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：用于硬切模块 C 当前唯一后端配置入口。
+    """
+    config_path = tmp_path / "config_invalid_frame_generator_mode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mode": {"script_generator": "mock", "frame_generator": "mock"},
+                "module_a": {"funasr_language": "auto"},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="mode.frame_generator 已删除"):
+        load_config(config_path=config_path)

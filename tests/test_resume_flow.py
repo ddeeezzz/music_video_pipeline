@@ -98,7 +98,7 @@ def test_resume_should_only_rerun_failed_module_c_units(tmp_path: Path, monkeypa
     fail_generator = _ScriptedFrameGenerator(fail_plan={"shot_002": 100})
     resume_generator = _ScriptedFrameGenerator()
     generator_holder = {"current": fail_generator}
-    monkeypatch.setattr(module_c_orchestrator, "build_frame_generator", lambda mode, logger: generator_holder["current"])
+    monkeypatch.setattr(module_c_orchestrator, "build_keyframe_generator", lambda mode, logger, app_config=None: generator_holder["current"])
 
     runner.module_runners = {
         "A": _build_module_a_placeholder_runner(),
@@ -151,7 +151,7 @@ def test_resume_should_fail_fast_for_legacy_module_b_output_contract(tmp_path: P
         "D": _build_success_runner(module_name="D", executed_modules=executed_modules),
     }
 
-    expected_error = "keyframe_prompt/video_prompt"
+    expected_error = "双关键帧字段与单视频轨字段"
     with pytest.raises(RuntimeError, match=expected_error):
         runner.run(task_id="resume_task_legacy_b", audio_path=audio_path, config_path=tmp_path / "config.json")
 
@@ -261,7 +261,7 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     边界条件：runs_dir 指向临时目录，避免污染仓库。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -320,13 +320,18 @@ class _ScriptedFrameGenerator(FrameGenerator):
             self.fail_plan[shot_id] -= 1
             raise RuntimeError(f"mock failure: {shot_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
-        frame_path = output_dir / f"frame_{shot_index + 1:03d}.png"
-        frame_path.write_bytes(b"fake-frame")
+        frame_path_start = output_dir / f"frame_{shot_index + 1:03d}.png"
+        frame_path_end = output_dir / f"frame_{shot_index + 1:03d}_end.png"
+        frame_path_start.write_bytes(b"fake-frame-start")
+        frame_path_end.write_bytes(b"fake-frame-end")
         start_time = float(shot["start_time"])
         end_time = float(shot["end_time"])
         return {
             "shot_id": shot_id,
-            "frame_path": str(frame_path),
+            "frame_path": str(frame_path_start),
+            "frame_path_start": str(frame_path_start),
+            "frame_path_end": str(frame_path_end),
+            "control_frame_paths": [str(frame_path_start), str(frame_path_end)],
             "start_time": start_time,
             "end_time": end_time,
             "duration": round(max(0.5, end_time - start_time), 3),
@@ -372,6 +377,17 @@ def _build_module_b_placeholder_runner():
     边界条件：分镜顺序固定，便于断言单元恢复行为。
     """
 
+    def _build_prompt_fields(prompt_en: str) -> dict[str, str]:
+        normalized_prompt = str(prompt_en).strip()
+        return {
+            "keyframe_prompt_start_zh": f"关键帧起始：{normalized_prompt}",
+            "keyframe_prompt_start_en": normalized_prompt,
+            "keyframe_prompt_end_zh": f"关键帧结束：{normalized_prompt}",
+            "keyframe_prompt_end_en": normalized_prompt,
+            "video_prompt_zh": f"视频提示词：{normalized_prompt}",
+            "video_prompt_en": normalized_prompt,
+        }
+
     def _runner(context) -> Path:
         artifact_path = context.artifacts_dir / "module_b_output.json"
         write_json(
@@ -382,7 +398,7 @@ def _build_module_b_placeholder_runner():
                     "start_time": 0.0,
                     "end_time": 1.0,
                     "scene_desc": "scene-1",
-                    "keyframe_prompt": "prompt-1", "video_prompt": "prompt-1",
+                    **_build_prompt_fields(prompt_en="prompt-1"),
                     "camera_motion": "slow_pan",
                     "transition": "crossfade",
                 },
@@ -391,7 +407,7 @@ def _build_module_b_placeholder_runner():
                     "start_time": 1.0,
                     "end_time": 2.0,
                     "scene_desc": "scene-2",
-                    "keyframe_prompt": "prompt-2", "video_prompt": "prompt-2",
+                    **_build_prompt_fields(prompt_en="prompt-2"),
                     "camera_motion": "zoom_in",
                     "transition": "crossfade",
                 },
@@ -400,7 +416,7 @@ def _build_module_b_placeholder_runner():
                     "start_time": 2.0,
                     "end_time": 3.0,
                     "scene_desc": "scene-3",
-                    "keyframe_prompt": "prompt-3", "video_prompt": "prompt-3",
+                    **_build_prompt_fields(prompt_en="prompt-3"),
                     "camera_motion": "none",
                     "transition": "hard_cut",
                 },

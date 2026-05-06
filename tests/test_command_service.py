@@ -141,7 +141,7 @@ def test_command_service_should_call_monitor_handler(tmp_path: Path) -> None:
 
 def _build_test_config(runs_dir: str, default_audio: str) -> AppConfig:
     return AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=runs_dir, default_audio_path=default_audio),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

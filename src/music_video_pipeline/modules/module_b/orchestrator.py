@@ -19,6 +19,8 @@ from music_video_pipeline.io_utils import read_json, write_json
 from music_video_pipeline.modules.module_b.executor import execute_units_with_retry
 # 项目内模块：模块B输出对象构建器
 from music_video_pipeline.modules.module_b.output_builder import build_module_b_output
+# 项目内模块：模块B v2 新编排入口
+from music_video_pipeline.modules.module_b_v2 import run_module_b_v2
 # 项目内模块：模块B单元模型工具
 from music_video_pipeline.modules.module_b.unit_models import build_module_b_units, build_unit_map, build_unit_sync_payload
 # 项目内模块：契约校验
@@ -40,6 +42,9 @@ def run_module_b(context: RuntimeContext) -> Path:
     module_a_path = context.artifacts_dir / "module_a_output.json"
     module_a_output = read_json(module_a_path)
     validate_module_a_output(module_a_output)
+
+    if str(context.config.mode.script_generator).strip().lower() == "multi_role_llm_v2":
+        return run_module_b_v2(context)
 
     units = build_module_b_units(module_a_output=module_a_output)
     context.state_store.sync_module_units(

@@ -8,6 +8,8 @@
 
 # 标准库：用于时间戳生成
 from datetime import datetime, timedelta, timezone
+# 标准库：用于读取模块C单元扩展JSON
+import json
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于 SQLite 持久化
@@ -17,6 +19,9 @@ from typing import Any
 
 # 项目内模块：提供模块顺序与状态常量
 from music_video_pipeline.constants import MODULE_ORDER, TASK_STATES
+
+# 常量：当前状态库中以 task_id 作为主关联键的表名列表
+TASK_ID_RELATED_TABLES = ("tasks", "module_runs", "module_unit_runs")
 
 
 def _local_now_text() -> str:
@@ -176,6 +181,26 @@ class StateStore:
             row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             return dict(row) if row else None
 
+    def task_exists(self, task_id: str) -> bool:
+        """
+        功能说明：判断指定任务是否已存在。
+        参数说明：
+        - task_id: 任务唯一标识。
+        返回值：
+        - bool: 存在返回 True，否则返回 False。
+        异常说明：查询失败时抛出 sqlite3.Error。
+        边界条件：空 task_id 视为不存在。
+        """
+        normalized_task_id = str(task_id).strip()
+        if not normalized_task_id:
+            return False
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM tasks WHERE task_id = ? LIMIT 1",
+                (normalized_task_id,),
+            ).fetchone()
+            return row is not None
+
     def list_tasks(self) -> list[dict[str, Any]]:
         """
         功能说明：按更新时间倒序读取任务列表（用于交互式任务选择）。
@@ -233,6 +258,145 @@ class StateStore:
                 continue
             summary_map[task_id][module_name] = status_text
         return summary_map
+
+    def rename_task(self, old_task_id: str, new_task_id: str) -> None:
+        """
+        功能说明：事务性重命名任务ID，并同步更新所有任务关联表中的 task_id 与任务目录内路径。
+        参数说明：
+        - old_task_id: 原任务唯一标识。
+        - new_task_id: 新任务唯一标识。
+        返回值：无。
+        异常说明：
+        - RuntimeError: 原任务不存在或目标任务已存在时抛出。
+        - ValueError: 任务ID为空或新旧相同时抛出。
+        - sqlite3.Error: 数据库写入失败时抛出。
+        边界条件：仅替换当前状态库 runs 根目录下旧任务目录前缀命中的路径字段。
+        """
+        normalized_old_task_id = str(old_task_id).strip()
+        normalized_new_task_id = str(new_task_id).strip()
+        if not normalized_old_task_id or not normalized_new_task_id:
+            raise ValueError("任务改名失败：old_task_id 与 new_task_id 均不能为空。")
+        if normalized_old_task_id == normalized_new_task_id:
+            raise ValueError("任务改名失败：新旧 task_id 不能相同。")
+
+        old_task_dir = (self.db_path.parent / normalized_old_task_id).resolve()
+        new_task_dir = (self.db_path.parent / normalized_new_task_id).resolve()
+        old_task_dir_text = str(old_task_dir)
+        new_task_dir_text = str(new_task_dir)
+
+        with self._connect() as connection:
+            old_task_row = connection.execute(
+                "SELECT 1 FROM tasks WHERE task_id = ? LIMIT 1",
+                (normalized_old_task_id,),
+            ).fetchone()
+            if old_task_row is None:
+                raise RuntimeError(f"任务改名失败：原任务不存在，task_id={normalized_old_task_id}")
+
+            new_task_row = connection.execute(
+                "SELECT 1 FROM tasks WHERE task_id = ? LIMIT 1",
+                (normalized_new_task_id,),
+            ).fetchone()
+            if new_task_row is not None:
+                raise RuntimeError(f"任务改名失败：目标任务已存在，task_id={normalized_new_task_id}")
+
+            now_text = _local_now_text()
+            connection.execute("BEGIN")
+            try:
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET task_id = ?,
+                        updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (normalized_new_task_id, now_text, normalized_old_task_id),
+                )
+                connection.execute(
+                    "UPDATE module_runs SET task_id = ? WHERE task_id = ?",
+                    (normalized_new_task_id, normalized_old_task_id),
+                )
+                connection.execute(
+                    "UPDATE module_unit_runs SET task_id = ? WHERE task_id = ?",
+                    (normalized_new_task_id, normalized_old_task_id),
+                )
+
+                self._replace_task_dir_prefix_in_table(
+                    connection=connection,
+                    table_name="tasks",
+                    key_task_id=normalized_new_task_id,
+                    old_prefix=old_task_dir_text,
+                    new_prefix=new_task_dir_text,
+                    column_names=("audio_path", "config_path", "output_video_path"),
+                )
+                self._replace_task_dir_prefix_in_table(
+                    connection=connection,
+                    table_name="module_runs",
+                    key_task_id=normalized_new_task_id,
+                    old_prefix=old_task_dir_text,
+                    new_prefix=new_task_dir_text,
+                    column_names=("artifact_path",),
+                )
+                self._replace_task_dir_prefix_in_table(
+                    connection=connection,
+                    table_name="module_unit_runs",
+                    key_task_id=normalized_new_task_id,
+                    old_prefix=old_task_dir_text,
+                    new_prefix=new_task_dir_text,
+                    column_names=("artifact_path",),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+
+    def _replace_task_dir_prefix_in_table(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        key_task_id: str,
+        old_prefix: str,
+        new_prefix: str,
+        column_names: tuple[str, ...],
+    ) -> None:
+        """
+        功能说明：替换指定表中命中旧任务目录前缀的路径字段。
+        参数说明：
+        - connection: 当前数据库连接。
+        - table_name: 目标表名。
+        - key_task_id: 已更新后的任务ID。
+        - old_prefix: 旧任务目录绝对路径前缀。
+        - new_prefix: 新任务目录绝对路径前缀。
+        - column_names: 需要检查替换的列名集合。
+        返回值：无。
+        异常说明：SQL 执行失败时抛出 sqlite3.Error。
+        边界条件：空字符串或不命中旧前缀的路径保持不变。
+        """
+        if table_name not in TASK_ID_RELATED_TABLES:
+            raise ValueError(f"非法表名: {table_name}")
+        if not column_names:
+            return
+
+        rowid_rows = connection.execute(
+            f"SELECT rowid, {', '.join(column_names)} FROM {table_name} WHERE task_id = ?",
+            (key_task_id,),
+        ).fetchall()
+        for row in rowid_rows:
+            assignments: list[str] = []
+            parameters: list[Any] = []
+            for column_name in column_names:
+                original_value = str(row[column_name] or "").strip()
+                if not original_value or not original_value.startswith(old_prefix):
+                    continue
+                replaced_value = new_prefix + original_value[len(old_prefix) :]
+                assignments.append(f"{column_name} = ?")
+                parameters.append(replaced_value)
+            if not assignments:
+                continue
+            parameters.append(int(row["rowid"]))
+            connection.execute(
+                f"UPDATE {table_name} SET {', '.join(assignments)} WHERE rowid = ?",
+                tuple(parameters),
+            )
 
     def get_audio_path(self, task_id: str) -> str | None:
         """
@@ -883,6 +1047,104 @@ class StateStore:
             "shot_id": shot_id,
         }
 
+    def reset_bcd_downstream_units(self, task_id: str, segment_id: str, from_module: str) -> dict[str, Any]:
+        """
+        功能说明：按 segment_id 仅重置一条 B/C/D 链路的下游单元为 pending。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - segment_id: 模块 B 单元标识。
+        - from_module: 上游模块名，仅允许 B 或 C。
+        返回值：
+        - dict[str, Any]: 重置结果摘要（unit_index/segment_id/shot_id/target_modules）。
+        异常说明：
+        - RuntimeError: 目标 segment 不存在时抛出。
+        - ValueError: from_module 非法时抛出。
+        - sqlite3.Error: 更新失败时抛出。
+        边界条件：仅影响目标链路的下游模块，不改动当前模块及其他链路。
+        """
+        normalized_segment_id = str(segment_id).strip()
+        if not normalized_segment_id:
+            raise RuntimeError("segment_id 不能为空。")
+        normalized_from = str(from_module).strip().upper()
+        if normalized_from not in {"B", "C"}:
+            raise ValueError(f"非法 from_module: {from_module}")
+
+        b_unit = self.get_module_unit_record(task_id=task_id, module_name="B", unit_id=normalized_segment_id)
+        if not b_unit:
+            raise RuntimeError(
+                f"下游链路重置失败：segment_id 不存在或尚未建立 B 单元状态，task_id={task_id}，segment_id={normalized_segment_id}"
+            )
+
+        unit_index = int(b_unit["unit_index"])
+        c_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="C", unit_index=unit_index)
+        d_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="D", unit_index=unit_index)
+        shot_id = str(c_unit["unit_id"]) if c_unit else (str(d_unit["unit_id"]) if d_unit else f"shot_{unit_index + 1:03d}")
+        target_modules = ["C", "D"] if normalized_from == "B" else ["D"]
+
+        now_text = _local_now_text()
+        with self._connect() as connection:
+            if normalized_from == "B":
+                connection.execute(
+                    """
+                    UPDATE module_unit_runs
+                    SET status = 'pending',
+                        artifact_path = '',
+                        error_message = '',
+                        started_at = '',
+                        finished_at = '',
+                        updated_at = ?
+                    WHERE task_id = ? AND module_name = 'C' AND unit_index = ?
+                    """,
+                    (now_text, task_id, unit_index),
+                )
+            connection.execute(
+                """
+                UPDATE module_unit_runs
+                SET status = 'pending',
+                    artifact_path = '',
+                    error_message = '',
+                    started_at = '',
+                    finished_at = '',
+                    updated_at = ?
+                WHERE task_id = ? AND module_name = 'D' AND unit_index = ?
+                """,
+                (now_text, task_id, unit_index),
+            )
+            for module_name in target_modules:
+                connection.execute(
+                    """
+                    UPDATE module_runs
+                    SET status = 'pending',
+                        artifact_path = '',
+                        error_message = '',
+                        started_at = '',
+                        finished_at = '',
+                        updated_at = ?
+                    WHERE task_id = ? AND module_name = ?
+                    """,
+                    (now_text, task_id, module_name),
+                )
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'pending',
+                    error_message = '',
+                    output_video_path = '',
+                    updated_at = ?
+                WHERE task_id = ?
+                """,
+                (now_text, task_id),
+            )
+            connection.commit()
+
+        return {
+            "task_id": task_id,
+            "unit_index": unit_index,
+            "segment_id": normalized_segment_id,
+            "shot_id": shot_id,
+            "target_modules": target_modules,
+        }
+
     def mark_bcd_downstream_blocked(self, task_id: str, unit_index: int, from_module: str, reason: str) -> None:
         """
         功能说明：将指定链路的下游单元标记为 failed（upstream_blocked）。
@@ -962,7 +1224,9 @@ class StateStore:
         返回值：
         - list[dict[str, Any]]: 按 unit_index 升序排列的 frame_items。
         异常说明：查询失败时抛出 sqlite3.Error。
-        边界条件：仅返回状态为 done 且有 artifact_path 的单元。
+        边界条件：
+        - 仅返回状态为 done 且有 artifact_path 的单元。
+        - 强制要求每个 done 单元存在 module_c_units sidecar 且满足双关键帧契约。
         """
         with self._connect() as connection:
             rows = connection.execute(
@@ -974,16 +1238,119 @@ class StateStore:
                 """,
                 (task_id,),
             ).fetchall()
-            return [
-                {
-                    "shot_id": str(row["unit_id"]),
-                    "frame_path": str(row["artifact_path"]),
-                    "start_time": float(row["start_time"]),
-                    "end_time": float(row["end_time"]),
-                    "duration": float(row["duration"]),
+            frame_items: list[dict[str, Any]] = []
+            for row in rows:
+                shot_id = str(row["unit_id"]).strip()
+                artifact_path = str(row["artifact_path"]).strip()
+                start_time = float(row["start_time"])
+                end_time = float(row["end_time"])
+                duration = float(row["duration"])
+
+                payload_item = self._load_module_c_unit_payload_item(
+                    artifact_path=artifact_path,
+                    unit_id=shot_id,
+                )
+                if payload_item is None:
+                    raise RuntimeError(
+                        "模块C产物读取失败：缺失双关键帧 sidecar，"
+                        f"task_id={task_id}，shot_id={shot_id}，artifact_path={artifact_path}。"
+                    )
+
+                frame_path_start = str(payload_item.get("frame_path_start", "")).strip()
+                frame_path_end = str(payload_item.get("frame_path_end", "")).strip()
+                if (not frame_path_start) or (not frame_path_end):
+                    raise RuntimeError(
+                        "模块C产物读取失败：缺失双关键帧字段，"
+                        f"task_id={task_id}，shot_id={shot_id}。"
+                    )
+                control_frame_paths_payload = payload_item.get("control_frame_paths")
+                if isinstance(control_frame_paths_payload, list):
+                    normalized_control_frame_paths = [
+                        str(item).strip() for item in control_frame_paths_payload if str(item).strip()
+                    ]
+                else:
+                    normalized_control_frame_paths = []
+                if len(normalized_control_frame_paths) < 2:
+                    raise RuntimeError(
+                        "模块C产物读取失败：control_frame_paths 双锚点数量不足，"
+                        f"task_id={task_id}，shot_id={shot_id}，count={len(normalized_control_frame_paths)}。"
+                    )
+                if (
+                    str(normalized_control_frame_paths[0]) != frame_path_start
+                    or str(normalized_control_frame_paths[-1]) != frame_path_end
+                ):
+                    raise RuntimeError(
+                        "模块C产物读取失败：双关键帧字段不一致，"
+                        f"task_id={task_id}，shot_id={shot_id}，"
+                        f"frame_path_start={frame_path_start}，frame_path_end={frame_path_end}，"
+                        f"control_frame_paths={normalized_control_frame_paths}。"
+                    )
+                frame_path = str(payload_item.get("frame_path", "")).strip() or frame_path_start
+
+                try:
+                    merged_start_time = float(payload_item.get("start_time", start_time))
+                except (TypeError, ValueError):
+                    merged_start_time = start_time
+                try:
+                    merged_end_time = float(payload_item.get("end_time", end_time))
+                except (TypeError, ValueError):
+                    merged_end_time = end_time
+                try:
+                    merged_duration = float(payload_item.get("duration", duration))
+                except (TypeError, ValueError):
+                    merged_duration = duration
+
+                merged_item = {
+                    **payload_item,
+                    "shot_id": shot_id,
+                    "frame_path": frame_path,
+                    "frame_path_start": frame_path_start,
+                    "frame_path_end": frame_path_end,
+                    "control_frame_paths": [
+                        str(normalized_control_frame_paths[0]),
+                        str(normalized_control_frame_paths[-1]),
+                    ],
+                    "start_time": merged_start_time,
+                    "end_time": merged_end_time,
+                    "duration": merged_duration,
                 }
-                for row in rows
-            ]
+                frame_items.append(merged_item)
+            return frame_items
+
+    def _load_module_c_unit_payload_item(self, artifact_path: str, unit_id: str) -> dict[str, Any] | None:
+        """
+        功能说明：根据模块C产物路径定位并读取单元 sidecar payload。
+        参数说明：
+        - artifact_path: module_unit_runs 中记录的产物路径（通常为起始帧）。
+        - unit_id: 模块C单元ID（shot_id）。
+        返回值：
+        - dict[str, Any] | None: 读取成功返回 payload 字典，失败返回 None。
+        异常说明：无，内部吞并解析异常并回退为 None。
+        边界条件：仅当路径层级存在 artifacts 目录时可解析 sidecar 位置。
+        """
+        normalized_artifact_path = str(artifact_path).strip()
+        normalized_unit_id = str(unit_id).strip()
+        if not normalized_artifact_path or not normalized_unit_id:
+            return None
+        artifact_file_path = Path(normalized_artifact_path)
+        artifact_path_parts = artifact_file_path.parts
+        if "artifacts" not in artifact_path_parts:
+            return None
+        artifacts_index = max(
+            index for index, part_text in enumerate(artifact_path_parts) if part_text == "artifacts"
+        )
+        artifacts_dir = Path(*artifact_path_parts[: artifacts_index + 1])
+        payload_path = artifacts_dir / "module_c_units" / f"{normalized_unit_id}.json"
+        if not payload_path.exists():
+            return None
+        try:
+            with payload_path.open("r", encoding="utf-8") as file_obj:
+                payload_data = json.load(file_obj)
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(payload_data, dict):
+            return None
+        return payload_data
 
     def list_module_b_done_shot_items(self, task_id: str) -> list[dict[str, Any]]:
         """

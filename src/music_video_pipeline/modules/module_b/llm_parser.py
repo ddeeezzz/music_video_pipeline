@@ -28,7 +28,7 @@ def parse_module_b_llm_output(
     - keyframe_prompt_max_chars: keyframe_prompt 最大字符数。
     - video_prompt_max_chars: video_prompt 最大字符数。
     返回值：
-    - dict[str, str]: 标准化后的 scene_desc 与 keyframe/video 中英文提示词。
+    - dict[str, str]: 标准化后的 scene_desc 与双关键帧+单视频轨中英文提示词。
     异常说明：
     - ModuleBLlmParseError: 解析失败或字段非法时抛出。
     边界条件：允许JSON对象前存在噪声文本，但只提取首个对象。
@@ -36,8 +36,10 @@ def parse_module_b_llm_output(
     json_obj = _extract_first_json_object(llm_output_text=llm_output_text)
     expected_keys = {
         "scene_desc",
-        "keyframe_prompt_zh",
-        "keyframe_prompt_en",
+        "keyframe_prompt_start_zh",
+        "keyframe_prompt_start_en",
+        "keyframe_prompt_end_zh",
+        "keyframe_prompt_end_en",
         "video_prompt_zh",
         "video_prompt_en",
     }
@@ -49,43 +51,59 @@ def parse_module_b_llm_output(
         )
 
     scene_desc = _normalize_non_empty_text(field_name="scene_desc", value=json_obj["scene_desc"])
-    keyframe_prompt_zh = _normalize_non_empty_text(field_name="keyframe_prompt_zh", value=json_obj["keyframe_prompt_zh"])
-    keyframe_prompt_en = _normalize_non_empty_text(field_name="keyframe_prompt_en", value=json_obj["keyframe_prompt_en"])
-    video_prompt_zh = _normalize_non_empty_text(field_name="video_prompt_zh", value=json_obj["video_prompt_zh"])
-    video_prompt_en = _normalize_non_empty_text(field_name="video_prompt_en", value=json_obj["video_prompt_en"])
+    keyframe_prompt_start_zh = _normalize_non_empty_text(
+        field_name="keyframe_prompt_start_zh",
+        value=json_obj["keyframe_prompt_start_zh"],
+    )
+    keyframe_prompt_start_en = _normalize_non_empty_text(
+        field_name="keyframe_prompt_start_en",
+        value=json_obj["keyframe_prompt_start_en"],
+    )
+    keyframe_prompt_end_zh = _normalize_non_empty_text(
+        field_name="keyframe_prompt_end_zh",
+        value=json_obj["keyframe_prompt_end_zh"],
+    )
+    keyframe_prompt_end_en = _normalize_non_empty_text(
+        field_name="keyframe_prompt_end_en",
+        value=json_obj["keyframe_prompt_end_en"],
+    )
+    video_prompt_zh = _normalize_non_empty_text(
+        field_name="video_prompt_zh",
+        value=json_obj["video_prompt_zh"],
+    )
+    video_prompt_en = _normalize_non_empty_text(
+        field_name="video_prompt_en",
+        value=json_obj["video_prompt_en"],
+    )
 
-    if len(scene_desc) > int(scene_desc_max_chars):
+    scene_desc_limit = int(scene_desc_max_chars)
+    # 配置约定：当上限<=0 时禁用对应长度校验。
+    if scene_desc_limit > 0 and len(scene_desc) > scene_desc_limit:
         raise ModuleBLlmParseError(
-            f"模块B LLM 输出过长：scene_desc 长度={len(scene_desc)}，上限={int(scene_desc_max_chars)}"
+            f"模块B LLM 输出过长：scene_desc 长度={len(scene_desc)}，上限={scene_desc_limit}"
         )
-    if len(keyframe_prompt_zh) > int(keyframe_prompt_max_chars):
-        raise ModuleBLlmParseError(
-            "模块B LLM 输出过长："
-            f"keyframe_prompt_zh 长度={len(keyframe_prompt_zh)}，上限={int(keyframe_prompt_max_chars)}"
-        )
-    if len(keyframe_prompt_en) > int(keyframe_prompt_max_chars):
-        raise ModuleBLlmParseError(
-            "模块B LLM 输出过长："
-            f"keyframe_prompt_en 长度={len(keyframe_prompt_en)}，上限={int(keyframe_prompt_max_chars)}"
-        )
-    if len(video_prompt_zh) > int(video_prompt_max_chars):
-        raise ModuleBLlmParseError(
-            f"模块B LLM 输出过长：video_prompt_zh 长度={len(video_prompt_zh)}，上限={int(video_prompt_max_chars)}"
-        )
-    if len(video_prompt_en) > int(video_prompt_max_chars):
-        raise ModuleBLlmParseError(
-            f"模块B LLM 输出过长：video_prompt_en 长度={len(video_prompt_en)}，上限={int(video_prompt_max_chars)}"
-        )
+    prompt_items = [
+        ("keyframe_prompt_start_zh", keyframe_prompt_start_zh, int(keyframe_prompt_max_chars)),
+        ("keyframe_prompt_start_en", keyframe_prompt_start_en, int(keyframe_prompt_max_chars)),
+        ("keyframe_prompt_end_zh", keyframe_prompt_end_zh, int(keyframe_prompt_max_chars)),
+        ("keyframe_prompt_end_en", keyframe_prompt_end_en, int(keyframe_prompt_max_chars)),
+        ("video_prompt_zh", video_prompt_zh, int(video_prompt_max_chars)),
+        ("video_prompt_en", video_prompt_en, int(video_prompt_max_chars)),
+    ]
+    for prompt_name, prompt_text, prompt_limit in prompt_items:
+        if prompt_limit > 0 and len(prompt_text) > prompt_limit:
+            raise ModuleBLlmParseError(
+                f"模块B LLM 输出过长：{prompt_name} 长度={len(prompt_text)}，上限={prompt_limit}"
+            )
 
     return {
         "scene_desc": scene_desc,
-        "keyframe_prompt_zh": keyframe_prompt_zh,
-        "keyframe_prompt_en": keyframe_prompt_en,
+        "keyframe_prompt_start_zh": keyframe_prompt_start_zh,
+        "keyframe_prompt_start_en": keyframe_prompt_start_en,
+        "keyframe_prompt_end_zh": keyframe_prompt_end_zh,
+        "keyframe_prompt_end_en": keyframe_prompt_end_en,
         "video_prompt_zh": video_prompt_zh,
         "video_prompt_en": video_prompt_en,
-        # 兼容字段：保持下游当前契约不变，默认使用英文版本。
-        "keyframe_prompt": keyframe_prompt_en,
-        "video_prompt": video_prompt_en,
     }
 
 

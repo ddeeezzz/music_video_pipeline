@@ -13,7 +13,7 @@ from .window_builder import (
     resplit_long_lyric_windows,
 )
 # 项目内模块：窗口四分类
-from .role_classifier import classify_window_roles
+from .role_classifier import build_dual_track_activity_windows, classify_window_roles
 # 项目内模块：窗口并段与小节估计
 from .role_merger import estimate_bar_length_seconds, merge_windows_by_rules
 # 项目内模块：A1与最终S段求解
@@ -23,6 +23,7 @@ __all__ = [
     "build_windows_from_sentences",
     "inject_boundary_points_into_windows",
     "resplit_long_lyric_windows",
+    "build_dual_track_activity_windows",
     "classify_window_roles",
     "estimate_bar_length_seconds",
     "merge_windows_by_rules",

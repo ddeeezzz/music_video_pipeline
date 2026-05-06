@@ -107,14 +107,14 @@ def _normalize_module_d_render_backend(render_backend: str) -> str:
     参数说明：
     - render_backend: 原始后端配置值。
     返回值：
-    - str: 合法后端（ffmpeg/animatediff）。
+    - str: 合法后端（comfyui）。
     异常说明：无。
-    边界条件：非法值统一回退为 ffmpeg。
+    边界条件：非法值统一回退为 comfyui。
     """
     normalized = str(render_backend).strip().lower()
-    if normalized in {"ffmpeg", "animatediff"}:
+    if normalized == "comfyui":
         return normalized
-    return "ffmpeg"
+    return "comfyui"
 
 
 def _build_adaptive_window_runtime(
@@ -149,10 +149,15 @@ def _build_adaptive_window_runtime(
     if int(detected_gpu_count) > 0:
         c_gpu_index = c_gpu_index if c_gpu_index < int(detected_gpu_count) else 0
         d_gpu_index = d_gpu_index if d_gpu_index < int(detected_gpu_count) else 0
+    try:
+        configured_c_workers = int(context.config.module_c.render_workers)
+    except (TypeError, ValueError):
+        configured_c_workers = 1
+    normalized_single_gpu_c_limit = max(1, min(3, configured_c_workers))
     if single_gpu_mode:
         c_gpu_index = 0
         d_gpu_index = 0
-        c_limit_min, c_limit_max = 1, 1
+        c_limit_min, c_limit_max = normalized_single_gpu_c_limit, normalized_single_gpu_c_limit
         d_limit_min, d_limit_max = 1, 1
 
     fallback_c_limit = min(c_limit_max, max(c_limit_min, global_render_limit))
@@ -171,11 +176,11 @@ def _build_adaptive_window_runtime(
             "c_limit_max": c_limit_max,
             "d_limit_min": d_limit_min,
             "d_limit_max": d_limit_max,
-            "fallback_c_limit": 1 if single_gpu_mode else global_render_limit,
+            "fallback_c_limit": normalized_single_gpu_c_limit if single_gpu_mode else global_render_limit,
             "fallback_d_limit": 1 if single_gpu_mode else global_render_limit,
-            "c_dynamic_limit": 1 if single_gpu_mode else global_render_limit,
+            "c_dynamic_limit": normalized_single_gpu_c_limit if single_gpu_mode else global_render_limit,
             "d_dynamic_limit": 1 if single_gpu_mode else global_render_limit,
-            "max_render_workers": 2 if single_gpu_mode else global_render_limit,
+            "max_render_workers": normalized_single_gpu_c_limit + 1 if single_gpu_mode else global_render_limit,
             "last_probe_rows": [],
             "last_probe_error": "disabled",
             "single_gpu_mode": single_gpu_mode,
@@ -186,7 +191,7 @@ def _build_adaptive_window_runtime(
 
     c_dynamic_limit = fallback_c_limit
     d_dynamic_limit = fallback_d_limit
-    max_render_workers = 2 if single_gpu_mode else max(1, c_limit_max + d_limit_max)
+    max_render_workers = normalized_single_gpu_c_limit + 1 if single_gpu_mode else max(1, c_limit_max + d_limit_max)
     return {
         "enabled": True,
         "probe_interval_seconds": _normalize_probe_interval_seconds(adaptive_cfg.probe_interval_ms),

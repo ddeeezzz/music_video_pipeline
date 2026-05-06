@@ -29,9 +29,10 @@ class CommandRequest:
     module: str | None = None
     force_module: str | None = None
     force: bool = False
+    role_name: str | None = None
     shot_id: str | None = None
     segment_id: str | None = None
-    user_custom_prompt_override: str | None = None
+    storyboard_template_file_override: str | None = None
 
 
 class MvplCommandService:
@@ -105,6 +106,26 @@ class MvplCommandService:
             return self.runner.retry_module_b_segment(
                 task_id=task_id,
                 segment_id=segment_id,
+                config_path=request.config_path,
+            )
+
+        if command == "b-retry-role":
+            task_id = self._require_text(request.task_id, field_name="task_id")
+            role_name = self._require_text(request.role_name, field_name="role_name")
+            return self.runner.retry_module_b_role(
+                task_id=task_id,
+                role_name=role_name,
+                config_path=request.config_path,
+            )
+
+        if command == "b-retry-role-shot":
+            task_id = self._require_text(request.task_id, field_name="task_id")
+            role_name = self._require_text(request.role_name, field_name="role_name")
+            shot_id = self._require_text(request.shot_id, field_name="shot_id")
+            return self.runner.retry_module_b_role_shot(
+                task_id=task_id,
+                role_name=role_name,
+                shot_id=shot_id,
                 config_path=request.config_path,
             )
 

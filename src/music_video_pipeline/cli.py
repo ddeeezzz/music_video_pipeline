@@ -90,7 +90,7 @@ def main() -> None:
             args=args,
             config_path=config_path,
         )
-        config = _apply_user_custom_prompt_override(config=config, request=request)
+        config = _apply_storyboard_template_override(config=config, request=request)
         summary = _execute_request(
             request=request,
             runner=runner,
@@ -180,6 +180,30 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
     b_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     b_retry_parser.add_argument("--segment-id", required=True, help="模块B单元标识（等价segment_id）")
     b_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+
+    b_role_retry_parser = subparsers.add_parser("b-retry-role", help="按 role 起点重试模块B v2（不自动重建C/D）")
+    b_role_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
+    b_role_retry_parser.add_argument(
+        "--role-name",
+        required=True,
+        choices=["role1", "role2", "role3", "role4"],
+        help="模块B v2 角色名",
+    )
+    b_role_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+
+    b_role_shot_retry_parser = subparsers.add_parser(
+        "b-retry-role-shot",
+        help="按 role 内 shot 重试模块B v2（不自动重建C/D）",
+    )
+    b_role_shot_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
+    b_role_shot_retry_parser.add_argument(
+        "--role-name",
+        required=True,
+        choices=["role3", "role4"],
+        help="模块B v2 角色名（仅支持 shot 级角色）",
+    )
+    b_role_shot_retry_parser.add_argument("--shot-id", required=True, help="目标 shot_id")
+    b_role_shot_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
 
     d_status_parser = subparsers.add_parser("d-task-status", help="查看模块D单元状态摘要")
     d_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
@@ -276,6 +300,23 @@ def _build_command_request(
             command="b-retry-segment",
             task_id=args.task_id,
             segment_id=args.segment_id,
+            config_path=config_path,
+        )
+
+    if args.command == "b-retry-role":
+        return CommandRequest(
+            command="b-retry-role",
+            task_id=args.task_id,
+            role_name=args.role_name,
+            config_path=config_path,
+        )
+
+    if args.command == "b-retry-role-shot":
+        return CommandRequest(
+            command="b-retry-role-shot",
+            task_id=args.task_id,
+            role_name=args.role_name,
+            shot_id=args.shot_id,
             config_path=config_path,
         )
 
@@ -382,7 +423,7 @@ def _execute_request_with_loaded_runtime(*, workspace_root: Path, request: Comma
     边界条件：每次执行按请求配置独立初始化 logger/runner。
     """
     config = load_config(config_path=request.config_path)
-    config = _apply_user_custom_prompt_override(config=config, request=request)
+    config = _apply_storyboard_template_override(config=config, request=request)
     logger = setup_logging(level=config.logging.level)
     runner = _build_pipeline_runner(
         workspace_root=workspace_root,
@@ -398,21 +439,21 @@ def _execute_request_with_loaded_runtime(*, workspace_root: Path, request: Comma
     )
 
 
-def _apply_user_custom_prompt_override(*, config: AppConfig, request: CommandRequest) -> AppConfig:
+def _apply_storyboard_template_override(*, config: AppConfig, request: CommandRequest) -> AppConfig:
     """
-    功能说明：将命令请求中的 user_custom_prompt 覆盖值注入到运行时配置。
+    功能说明：将命令请求中的 storyboard_template_file 覆盖值注入到运行时配置。
     参数说明：
     - config: 已加载配置对象。
     - request: 命令请求对象。
     返回值：
-    - AppConfig: 注入后的配置对象（若无覆盖值则返回原对象）。
+    - AppConfig: 注入后的配置对象；若无覆盖值则返回原对象。
     异常说明：无。
-    边界条件：覆盖值为 None 时不改写配置；空字符串属于有效覆盖值。
+    边界条件：覆盖值为空或空白时视为无效覆盖。
     """
-    if request.user_custom_prompt_override is None:
+    override_path = str(request.storyboard_template_file_override or "").strip()
+    if not override_path:
         return config
-    patched_llm = replace(config.module_b.llm, user_custom_prompt=request.user_custom_prompt_override)
-    patched_module_b = replace(config.module_b, llm=patched_llm)
+    patched_module_b = replace(config.module_b, storyboard_template_file=override_path)
     return replace(config, module_b=patched_module_b)
 
 

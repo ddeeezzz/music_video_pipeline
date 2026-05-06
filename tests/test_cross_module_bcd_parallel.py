@@ -61,7 +61,7 @@ def test_cross_scheduler_should_run_wavefront_order_and_finish_all_units(tmp_pat
     events: list[tuple[str, int]] = []
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
 
     def _fake_run_b(context, unit, generator, module_a_output, unit_outputs_dir):
@@ -141,7 +141,7 @@ def test_cross_scheduler_should_stop_only_failed_chain(tmp_path: Path, monkeypat
     context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(tmp_path=tmp_path, task_id="chain_fail")
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
 
     def _fake_run_b(context, unit, generator, module_a_output, unit_outputs_dir):
@@ -232,8 +232,9 @@ def test_cross_scheduler_should_respect_global_render_limit(tmp_path: Path, monk
     )
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
+    monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (2, "test"))
 
     render_lock = threading.Lock()
     active_render = 0
@@ -329,8 +330,9 @@ def test_cross_scheduler_should_allow_d_dispatch_in_bc_when_secondary_gpu_availa
     )
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
+    monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (2, "test"))
 
     d_started_before_all_c_done = {"value": False}
 
@@ -390,9 +392,9 @@ def test_cross_scheduler_should_allow_d_dispatch_in_bc_when_secondary_gpu_availa
     assert result["adaptive_window_snapshot"]["d_dispatch_enabled"] is True
 
 
-def test_cross_scheduler_should_dispatch_second_animatediff_d_before_first_done(tmp_path: Path, monkeypatch) -> None:
+def test_cross_scheduler_should_dispatch_second_comfyui_d_before_first_done(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证 animatediff 调度在首个 D 未 done 前即可派发第二个 D。
+    功能说明：验证 ComfyUI 调度在首个 D 未 done 前即可派发第二个 D。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
@@ -416,13 +418,13 @@ def test_cross_scheduler_should_dispatch_second_animatediff_d_before_first_done(
         chain_count=4,
         global_render_limit=2,
         adaptive_enabled=True,
-        render_backend="animatediff",
+        render_backend="comfyui",
         adaptive_window=adaptive_cfg,
     )
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
     monkeypatch.setattr(
         scheduler_adaptive,
         "_run_gpu_probe_script",
@@ -465,7 +467,8 @@ def test_cross_scheduler_should_dispatch_second_animatediff_d_before_first_done(
         start_time = time.perf_counter()
         with d_times_lock:
             d_start_times[blueprint.unit_id] = float(start_time)
-        time.sleep(0.12)
+        # 拉长单元执行时长，降低调度轮询抖动导致的假阴性。
+        time.sleep(0.25)
         context.state_store.set_module_unit_status(
             task_id=context.task_id,
             module_name="D",
@@ -500,15 +503,15 @@ def test_cross_scheduler_should_dispatch_second_animatediff_d_before_first_done(
     assert float(d_start_times[second_unit_id]) < float(d_end_times[first_unit_id])
 
 
-def test_cross_scheduler_should_assign_animatediff_d_jobs_to_two_devices_in_d_phase(tmp_path: Path, monkeypatch) -> None:
+def test_cross_scheduler_should_keep_dual_device_pool_snapshot_in_d_phase(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证 D 阶段 animatediff 任务可在双设备池分配，且同卡并发不超过1。
+    功能说明：验证 D 阶段会保留双设备池快照，但统一 ComfyUI 队列不会再向单元显式传 device_override。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：通过打桩设备分配与in-flight计数模拟，不依赖真实GPU。
+    边界条件：当前断言基于统一 ComfyUI 常驻服务，不要求单元层感知具体设备。
     """
     adaptive_cfg = CrossModuleAdaptiveWindowConfig(
         enabled=True,
@@ -524,18 +527,13 @@ def test_cross_scheduler_should_assign_animatediff_d_jobs_to_two_devices_in_d_ph
         tmp_path=tmp_path,
         task_id="chain_d_dual_device",
         adaptive_enabled=True,
-        render_backend="animatediff",
+        render_backend="comfyui",
         adaptive_window=adaptive_cfg,
     )
 
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
-    monkeypatch.setattr(
-        scheduler_tasks,
-        "prewarm_animatediff_runtime",
-        lambda context, device_override=None: {"device": str(device_override), "cache_key": "mock-cache"},
-    )
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
     monkeypatch.setattr(
         scheduler_adaptive,
         "_run_gpu_probe_script",
@@ -613,10 +611,8 @@ def test_cross_scheduler_should_assign_animatediff_d_jobs_to_two_devices_in_d_ph
     )
 
     assert result["failed_chain_indexes"] == []
-    assert "cuda:0" in device_events
-    assert "cuda:1" in device_events
-    assert max_inflight_by_device.get("cuda:0", 0) <= 2
-    assert max_inflight_by_device.get("cuda:1", 0) <= 2
+    assert set(device_events) == {"None"}
+    assert max_inflight_by_device.get("None", 0) <= 2
     snapshot = result["adaptive_window_snapshot"]
     assert snapshot["current_phase"] == "d"
     assert snapshot["d_dispatch_enabled"] is True
@@ -625,7 +621,7 @@ def test_cross_scheduler_should_assign_animatediff_d_jobs_to_two_devices_in_d_ph
 
 def test_cross_scheduler_should_use_single_gpu_mode_with_c_and_d_one_inflight_each(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证单卡模式下 C/D 可并行但各模块内部并发固定为 1。
+    功能说明：验证单卡模式下会关闭 BC 阶段 D 派发，C 窗口收敛到 3、D 窗口收敛到 1。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     - monkeypatch: pytest 补丁工具。
@@ -639,12 +635,12 @@ def test_cross_scheduler_should_use_single_gpu_mode_with_c_and_d_one_inflight_ea
         chain_count=6,
         global_render_limit=3,
         adaptive_enabled=True,
-        render_backend="animatediff",
+        render_backend="comfyui",
     )
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (1, "test"))
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
 
     state_lock = threading.Lock()
     active_c = 0
@@ -670,8 +666,8 @@ def test_cross_scheduler_should_use_single_gpu_mode_with_c_and_d_one_inflight_ea
         with state_lock:
             active_c += 1
             max_active_c = max(max_active_c, active_c)
-            if active_d > 0:
-                saw_c_and_d_overlap = True
+        if active_d > 0:
+            saw_c_and_d_overlap = True
         try:
             time.sleep(0.03)
             context.state_store.set_module_unit_status(
@@ -725,14 +721,14 @@ def test_cross_scheduler_should_use_single_gpu_mode_with_c_and_d_one_inflight_ea
     )
 
     assert result["failed_chain_indexes"] == []
-    assert max_active_c <= 1
+    assert max_active_c <= 3
     assert max_active_d <= 1
-    assert saw_c_and_d_overlap is True
-    assert seen_d_devices == {"cuda:0"}
+    assert saw_c_and_d_overlap is False
+    assert seen_d_devices == {"None"}
     snapshot = result["adaptive_window_snapshot"]
     assert snapshot["single_gpu_mode"] is True
     assert snapshot["oom_fallback_locked_c_then_d"] is False
-    assert snapshot["c_dynamic_limit"] == 1
+    assert snapshot["c_dynamic_limit"] == 3
     assert snapshot["d_dynamic_limit"] == 1
     assert snapshot["d_device_pool"] == ["cuda:0"]
 
@@ -753,12 +749,12 @@ def test_cross_scheduler_single_gpu_should_lock_c_then_d_after_oom(tmp_path: Pat
         chain_count=6,
         global_render_limit=3,
         adaptive_enabled=True,
-        render_backend="animatediff",
+        render_backend="comfyui",
     )
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (1, "test"))
     monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
+    monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
+    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
 
     first_oom_raised = {"value": False}
     c_done_before_non_oom_d: list[int] = []
@@ -922,9 +918,9 @@ def test_cross_scheduler_adaptive_should_fallback_to_static_when_probe_failed(tm
     assert snapshot["d_dynamic_limit"] == snapshot["fallback_d_limit"]
 
 
-def test_cross_scheduler_adaptive_should_follow_adaptive_range_when_backend_is_animatediff(tmp_path: Path, monkeypatch) -> None:
+def test_cross_scheduler_adaptive_should_follow_adaptive_range_when_backend_is_comfyui(tmp_path: Path, monkeypatch) -> None:
     """
-    功能说明：验证 animatediff 后端下，D 窗口由 adaptive_window 范围直接控制。
+    功能说明：验证 comfyui 后端下，D 窗口由 adaptive_window 范围直接控制。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
@@ -933,9 +929,9 @@ def test_cross_scheduler_adaptive_should_follow_adaptive_range_when_backend_is_a
     """
     context, _, _, _ = _build_cross_fixture(
         tmp_path=tmp_path,
-        task_id="chain_adaptive_animatediff",
+        task_id="chain_adaptive_comfyui",
         adaptive_enabled=True,
-        render_backend="animatediff",
+        render_backend="comfyui",
         adaptive_window=CrossModuleAdaptiveWindowConfig(
             enabled=True,
             d_limit_min=1,
@@ -947,329 +943,10 @@ def test_cross_scheduler_adaptive_should_follow_adaptive_range_when_backend_is_a
     runtime = scheduler_adaptive._build_adaptive_window_runtime(
         context=context,
         global_render_limit=3,
-        render_backend="animatediff",
+        render_backend="comfyui",
     )
     assert runtime["d_limit_max"] == 2
     assert runtime["d_dynamic_limit"] == 2
-
-
-def test_cross_scheduler_should_prewarm_d_phase_devices_once_and_skip_bc_warmed(tmp_path: Path, monkeypatch) -> None:
-    """
-    功能说明：验证 BC->D 切换时会异步预热 D 设备池，且 BC 已热设备会被跳过。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    - monkeypatch: pytest 提供的补丁工具。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：通过打桩预热函数与设备分配，不依赖真实 GPU/runtime。
-    """
-    context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(
-        tmp_path=tmp_path,
-        task_id="chain_prewarm_skip_bc_warmed",
-        chain_count=12,
-        global_render_limit=2,
-        adaptive_enabled=True,
-        render_backend="animatediff",
-        adaptive_window=CrossModuleAdaptiveWindowConfig(
-            enabled=True,
-            probe_interval_ms=200,
-            c_gpu_index=0,
-            d_gpu_index=1,
-            c_limit_min=1,
-            c_limit_max=6,
-            d_limit_min=1,
-            d_limit_max=2,
-        ),
-    )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
-    monkeypatch.setattr(
-        scheduler_adaptive,
-        "_run_gpu_probe_script",
-        lambda context, timeout_seconds: (
-            [
-                {"index": 0, "total_mb": 15000, "used_mb": 1200, "used_ratio": 0.08},
-                {"index": 1, "total_mb": 15000, "used_mb": 1400, "used_ratio": 0.09},
-            ],
-            "",
-        ),
-    )
-
-    prewarm_calls: list[str] = []
-    bc_phase_d_devices: list[str] = []
-
-    def _fake_prewarm(context, device_override=None):  # noqa: ANN001
-        _ = context
-        prewarm_calls.append(str(device_override))
-        return {"device": str(device_override), "cache_key": f"cache-{device_override}"}
-
-    def _fake_run_b(context, unit, generator, module_a_output, unit_outputs_dir):
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="B",
-            unit_id=unit.unit_id,
-            status="done",
-            artifact_path=str(unit_outputs_dir / f"{unit.unit_id}.json"),
-        )
-        return "ok"
-
-    def _fake_run_c(context, chain_unit, c_row, generator, frames_dir):
-        time.sleep(0.05)
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="C",
-            unit_id=chain_unit.shot_id,
-            status="done",
-            artifact_path=str(frames_dir / f"{chain_unit.shot_id}.png"),
-        )
-        return {"frame_path": str(frames_dir / f"{chain_unit.shot_id}.png")}
-
-    def _fake_run_d(context, blueprint, c_row, profile, device_override=None):
-        _ = (c_row, profile)
-        c_summary = context.state_store.get_module_unit_status_summary(task_id=context.task_id, module_name="C")
-        if int(c_summary["status_counts"].get("done", 0)) < len(chain_units):
-            bc_phase_d_devices.append(str(device_override))
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="D",
-            unit_id=blueprint.unit_id,
-            status="done",
-            artifact_path=str(blueprint.segment_path),
-        )
-        return str(blueprint.segment_path)
-
-    monkeypatch.setattr(scheduler_tasks, "prewarm_animatediff_runtime", _fake_prewarm)
-    monkeypatch.setattr(scheduler_tasks, "_run_b_chain_unit", _fake_run_b)
-    monkeypatch.setattr(scheduler_tasks, "_run_c_chain_unit", _fake_run_c)
-    monkeypatch.setattr(scheduler_tasks, "_run_d_chain_unit", _fake_run_d)
-
-    result = scheduler.execute_cross_bcd_wavefront(
-        context=context,
-        chain_units=chain_units,
-        b_units_by_segment_id=b_units_map,
-        d_blueprints_by_index=d_blueprints_map,
-        module_a_output={},
-        unit_outputs_dir=context.artifacts_dir / "module_b_units",
-        frames_dir=context.artifacts_dir / "frames",
-        target_segment_id=None,
-    )
-
-    assert result["failed_chain_indexes"] == []
-    assert "cuda:1" in bc_phase_d_devices
-    assert prewarm_calls.count("cuda:0") == 1
-    assert "cuda:1" not in prewarm_calls
-
-
-def test_cross_scheduler_should_skip_prewarm_when_c_not_done_is_not_greater_than_10(tmp_path: Path, monkeypatch) -> None:
-    """
-    功能说明：验证 animatediff 下当 C 未完成数量 <=10 时，不提交 D runtime 异步预热。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    - monkeypatch: pytest 提供的补丁工具。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：即使不预热，D 调度仍应完整执行并全部完成。
-    """
-    context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(
-        tmp_path=tmp_path,
-        task_id="chain_prewarm_skip_threshold",
-        chain_count=10,
-        global_render_limit=2,
-        adaptive_enabled=True,
-        render_backend="animatediff",
-        adaptive_window=CrossModuleAdaptiveWindowConfig(
-            enabled=True,
-            probe_interval_ms=200,
-            c_gpu_index=0,
-            d_gpu_index=1,
-            c_limit_min=1,
-            c_limit_max=6,
-            d_limit_min=1,
-            d_limit_max=2,
-        ),
-    )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
-    monkeypatch.setattr(
-        scheduler_adaptive,
-        "_run_gpu_probe_script",
-        lambda context, timeout_seconds: (
-            [
-                {"index": 0, "total_mb": 15000, "used_mb": 1200, "used_ratio": 0.08},
-                {"index": 1, "total_mb": 15000, "used_mb": 1400, "used_ratio": 0.09},
-            ],
-            "",
-        ),
-    )
-
-    prewarm_submit_calls = {"count": 0}
-
-    def _fake_submit_prewarm(*args, **kwargs):  # noqa: ANN001
-        _ = (args, kwargs)
-        prewarm_submit_calls["count"] += 1
-
-    def _fake_run_b(context, unit, generator, module_a_output, unit_outputs_dir):
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="B",
-            unit_id=unit.unit_id,
-            status="done",
-            artifact_path=str(unit_outputs_dir / f"{unit.unit_id}.json"),
-        )
-        return "ok"
-
-    def _fake_run_c(context, chain_unit, c_row, generator, frames_dir):
-        time.sleep(0.01)
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="C",
-            unit_id=chain_unit.shot_id,
-            status="done",
-            artifact_path=str(frames_dir / f"{chain_unit.shot_id}.png"),
-        )
-        return {"frame_path": str(frames_dir / f"{chain_unit.shot_id}.png")}
-
-    def _fake_run_d(context, blueprint, c_row, profile, device_override=None):
-        _ = (c_row, profile, device_override)
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="D",
-            unit_id=blueprint.unit_id,
-            status="done",
-            artifact_path=str(blueprint.segment_path),
-        )
-        return str(blueprint.segment_path)
-
-    monkeypatch.setattr(scheduler_tasks, "_submit_d_runtime_prewarm_tasks", _fake_submit_prewarm)
-    monkeypatch.setattr(scheduler_tasks, "_run_b_chain_unit", _fake_run_b)
-    monkeypatch.setattr(scheduler_tasks, "_run_c_chain_unit", _fake_run_c)
-    monkeypatch.setattr(scheduler_tasks, "_run_d_chain_unit", _fake_run_d)
-
-    result = scheduler.execute_cross_bcd_wavefront(
-        context=context,
-        chain_units=chain_units,
-        b_units_by_segment_id=b_units_map,
-        d_blueprints_by_index=d_blueprints_map,
-        module_a_output={},
-        unit_outputs_dir=context.artifacts_dir / "module_b_units",
-        frames_dir=context.artifacts_dir / "frames",
-        target_segment_id=None,
-    )
-
-    assert result["failed_chain_indexes"] == []
-    assert prewarm_submit_calls["count"] == 0
-    summary_d = context.state_store.get_module_unit_status_summary(task_id=context.task_id, module_name="D")
-    assert int(summary_d["status_counts"].get("done", 0)) == len(chain_units)
-
-
-def test_cross_scheduler_should_ignore_prewarm_failure_and_continue_d_dispatch(tmp_path: Path, monkeypatch, caplog) -> None:
-    """
-    功能说明：验证 runtime 预热失败仅记录 warning，不会阻断 D 单元调度。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    - monkeypatch: pytest 提供的补丁工具。
-    - caplog: pytest 日志捕获工具。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：预热失败后 D 仍应全部完成且链路不记为 failed。
-    """
-    context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(
-        tmp_path=tmp_path,
-        task_id="chain_prewarm_fail_non_blocking",
-        chain_count=12,
-        global_render_limit=2,
-        adaptive_enabled=True,
-        render_backend="animatediff",
-        adaptive_window=CrossModuleAdaptiveWindowConfig(
-            enabled=True,
-            probe_interval_ms=200,
-            c_gpu_index=0,
-            d_gpu_index=1,
-            c_limit_min=1,
-            c_limit_max=6,
-            d_limit_min=1,
-            d_limit_max=2,
-        ),
-    )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "build_frame_generator", lambda mode, logger, module_b_config=None: object())
-    monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "animatediff"})
-    monkeypatch.setattr(
-        scheduler_adaptive,
-        "_run_gpu_probe_script",
-        lambda context, timeout_seconds: (
-            [
-                {"index": 0, "total_mb": 15000, "used_mb": 1200, "used_ratio": 0.08},
-                {"index": 1, "total_mb": 15000, "used_mb": 1400, "used_ratio": 0.09},
-            ],
-            "",
-        ),
-    )
-
-    def _fake_prewarm(context, device_override=None):  # noqa: ANN001
-        _ = context
-        if str(device_override) == "cuda:0":
-            raise RuntimeError("mock prewarm failed")
-        return {"device": str(device_override), "cache_key": f"cache-{device_override}"}
-
-    def _fake_run_b(context, unit, generator, module_a_output, unit_outputs_dir):
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="B",
-            unit_id=unit.unit_id,
-            status="done",
-            artifact_path=str(unit_outputs_dir / f"{unit.unit_id}.json"),
-        )
-        return "ok"
-
-    def _fake_run_c(context, chain_unit, c_row, generator, frames_dir):
-        time.sleep(0.05)
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="C",
-            unit_id=chain_unit.shot_id,
-            status="done",
-            artifact_path=str(frames_dir / f"{chain_unit.shot_id}.png"),
-        )
-        return {"frame_path": str(frames_dir / f"{chain_unit.shot_id}.png")}
-
-    def _fake_run_d(context, blueprint, c_row, profile, device_override=None):
-        _ = (c_row, profile, device_override)
-        context.state_store.set_module_unit_status(
-            task_id=context.task_id,
-            module_name="D",
-            unit_id=blueprint.unit_id,
-            status="done",
-            artifact_path=str(blueprint.segment_path),
-        )
-        return str(blueprint.segment_path)
-
-    monkeypatch.setattr(scheduler_tasks, "prewarm_animatediff_runtime", _fake_prewarm)
-    monkeypatch.setattr(scheduler_tasks, "_run_b_chain_unit", _fake_run_b)
-    monkeypatch.setattr(scheduler_tasks, "_run_c_chain_unit", _fake_run_c)
-    monkeypatch.setattr(scheduler_tasks, "_run_d_chain_unit", _fake_run_d)
-
-    with caplog.at_level(logging.WARNING):
-        result = scheduler.execute_cross_bcd_wavefront(
-            context=context,
-            chain_units=chain_units,
-            b_units_by_segment_id=b_units_map,
-            d_blueprints_by_index=d_blueprints_map,
-            module_a_output={},
-            unit_outputs_dir=context.artifacts_dir / "module_b_units",
-            frames_dir=context.artifacts_dir / "frames",
-            target_segment_id=None,
-        )
-
-    assert result["failed_chain_indexes"] == []
-    summary_d = context.state_store.get_module_unit_status_summary(task_id=context.task_id, module_name="D")
-    assert int(summary_d["status_counts"].get("done", 0)) == len(chain_units)
-    assert "模块D runtime 异步预热失败" in caplog.text
 
 
 def _build_cross_fixture(
@@ -1278,7 +955,7 @@ def _build_cross_fixture(
     chain_count: int = 3,
     global_render_limit: int = 3,
     adaptive_enabled: bool = False,
-    render_backend: str = "ffmpeg",
+    render_backend: str = "comfyui",
     adaptive_window: CrossModuleAdaptiveWindowConfig | None = None,
 ) -> tuple[RuntimeContext, list[CrossChainUnit], dict[str, ModuleBUnit], dict[int, ModuleDUnitBlueprint]]:
     """
@@ -1301,7 +978,7 @@ def _build_cross_fixture(
     audio_path.write_bytes(b"fake-audio")
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

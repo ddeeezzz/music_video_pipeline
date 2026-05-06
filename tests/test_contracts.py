@@ -144,27 +144,27 @@ def test_module_a_and_b_outputs_should_match_contracts(monkeypatch, tmp_path: Pa
             assert shot["audio_role"] == "vocal"
 
 
-def test_validate_module_b_output_should_be_forward_compatible_for_legacy_items() -> None:
+def test_validate_module_b_output_should_require_dual_track_prompt_fields() -> None:
     """
-    功能说明：验证模块B契约校验兼容旧版无歌词字段分镜。
+    功能说明：验证模块B契约校验要求双关键帧+单视频轨中英提示词字段。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅保留最低必填字段。
+    边界条件：仅缺少任一必需字段也应报错。
     """
-    legacy_output = [
+    invalid_output = [
         {
             "shot_id": "shot_001",
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
             "camera_motion": "slow_pan",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
         }
     ]
-    validate_module_b_output(legacy_output)
+    with pytest.raises(KeyError):
+        validate_module_b_output(invalid_output)
 
 
 def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
@@ -181,9 +181,14 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
-            "camera_motion": "slow_pan",
-            "transition": "crossfade",
+            "keyframe_prompt_start_zh": "关键帧起始中文",
+            "keyframe_prompt_start_en": "keyframe start en",
+            "keyframe_prompt_end_zh": "关键帧结束中文",
+            "keyframe_prompt_end_en": "keyframe end en",
+            "video_prompt_zh": "视频提示词中文",
+            "video_prompt_en": "video prompt en",
+            "camera_plan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "transition_plan": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": "第一句 第二句",
             "lyric_units": [
@@ -205,9 +210,14 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
-            "camera_motion": "slow_pan",
-            "transition": "crossfade",
+            "keyframe_prompt_start_zh": "关键帧起始中文",
+            "keyframe_prompt_start_en": "keyframe start en",
+            "keyframe_prompt_end_zh": "关键帧结束中文",
+            "keyframe_prompt_end_en": "keyframe end en",
+            "video_prompt_zh": "视频提示词中文",
+            "video_prompt_en": "video prompt en",
+            "camera_plan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "transition_plan": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": 123,
         }
@@ -221,9 +231,14 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
-            "camera_motion": "slow_pan",
-            "transition": "crossfade",
+            "keyframe_prompt_start_zh": "关键帧起始中文",
+            "keyframe_prompt_start_en": "keyframe start en",
+            "keyframe_prompt_end_zh": "关键帧结束中文",
+            "keyframe_prompt_end_en": "keyframe end en",
+            "video_prompt_zh": "视频提示词中文",
+            "video_prompt_en": "video prompt en",
+            "camera_plan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "transition_plan": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "audio_role": "unknown",
         }
@@ -237,9 +252,14 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
-            "camera_motion": "slow_pan",
-            "transition": "crossfade",
+            "keyframe_prompt_start_zh": "关键帧起始中文",
+            "keyframe_prompt_start_en": "keyframe start en",
+            "keyframe_prompt_end_zh": "关键帧结束中文",
+            "keyframe_prompt_end_en": "keyframe end en",
+            "video_prompt_zh": "视频提示词中文",
+            "video_prompt_en": "video prompt en",
+            "camera_plan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "transition_plan": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "segment_role": "unknown",
         }
@@ -253,9 +273,14 @@ def test_validate_module_b_output_should_validate_lyrics_fields() -> None:
             "start_time": 0.0,
             "end_time": 1.2,
             "scene_desc": "默认场景",
-            "keyframe_prompt": "default prompt", "video_prompt": "default prompt",
-            "camera_motion": "slow_pan",
-            "transition": "crossfade",
+            "keyframe_prompt_start_zh": "关键帧起始中文",
+            "keyframe_prompt_start_en": "keyframe start en",
+            "keyframe_prompt_end_zh": "关键帧结束中文",
+            "keyframe_prompt_end_en": "keyframe end en",
+            "video_prompt_zh": "视频提示词中文",
+            "video_prompt_en": "video prompt en",
+            "camera_plan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "transition_plan": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "big_segment_id": 123,
         }
@@ -327,7 +352,7 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     边界条件：ffmpeg 配置在本测试中不会被实际调用。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="input.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

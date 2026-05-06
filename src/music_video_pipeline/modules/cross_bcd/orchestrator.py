@@ -26,7 +26,6 @@ from music_video_pipeline.modules.module_b.output_builder import build_module_b_
 # 项目内模块：模块 C 输出构建器
 from music_video_pipeline.modules.module_c.output_builder import build_module_c_output
 # 项目内模块：模块C扩散元信息解析
-from music_video_pipeline.generators.frame_generator import resolve_module_c_diffusion_trace_metadata
 # 项目内模块：模块 D 终拼工具
 from music_video_pipeline.modules.module_d.finalizer import _concat_segment_videos, _probe_media_duration
 # 项目内模块：模块 D 输出构建器
@@ -146,7 +145,11 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
         target_segment_id=target_segment_id,
     )
 
-    module_b_output_path = _refresh_module_b_output(context=context, module_a_output=module_a_output)
+    module_b_output_path = _refresh_module_b_output(
+        context=context,
+        module_a_output=module_a_output,
+        target_segment_id=target_segment_id,
+    )
     module_c_output_path = _refresh_module_c_output(context=context, frames_dir=frames_dir)
     module_d_output_path, output_video_path = _refresh_module_d_output(
         context=context,
@@ -210,21 +213,37 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
     }
 
 
-def _refresh_module_b_output(context: RuntimeContext, module_a_output: dict[str, Any]) -> Path:
+def _refresh_module_b_output(
+    context: RuntimeContext,
+    module_a_output: dict[str, Any],
+    target_segment_id: str | None = None,
+) -> Path:
     """
     功能说明：根据模块 B 已完成单元刷新 module_b_output.json。
     参数说明：
     - context: 运行上下文对象。
     - module_a_output: 模块 A 输出字典。
+    - target_segment_id: 可选，当前仅定向重试的 segment_id。
     返回值：
     - Path: module_b_output.json 路径。
     异常说明：构建失败时抛 RuntimeError。
-    边界条件：允许输出部分链路分镜（用于失败后恢复排障）。
+    边界条件：定向重试时允许跳过其他历史旧版单元，但目标 segment 必须严格校验通过。
     """
     done_unit_records = context.state_store.list_module_b_done_shot_items(task_id=context.task_id)
     if done_unit_records:
-        module_b_output = build_module_b_output(
+        valid_unit_records = _filter_valid_module_b_done_unit_records(
+            context=context,
             done_unit_records=done_unit_records,
+            module_a_output=module_a_output,
+            target_segment_id=target_segment_id,
+        )
+        if not valid_unit_records:
+            module_b_output = []
+            output_path = context.artifacts_dir / "module_b_output.json"
+            write_json(output_path, module_b_output)
+            return output_path
+        module_b_output = build_module_b_output(
+            done_unit_records=valid_unit_records,
             module_a_output=module_a_output,
             instrumental_labels=context.config.module_a.instrumental_labels,
         )
@@ -233,7 +252,7 @@ def _refresh_module_b_output(context: RuntimeContext, module_a_output: dict[str,
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(
                 "跨模块链路模块B产物校验失败：检测到旧版或不兼容分镜字段。"
-                "请从模块B重跑并生成 keyframe_prompt/video_prompt。"
+                "请从模块B重跑并生成双关键帧字段与单视频轨字段（video_prompt_zh/video_prompt_en）。"
                 f"原始错误：{error}"
             ) from error
     else:
@@ -241,6 +260,54 @@ def _refresh_module_b_output(context: RuntimeContext, module_a_output: dict[str,
     output_path = context.artifacts_dir / "module_b_output.json"
     write_json(output_path, module_b_output)
     return output_path
+
+
+def _filter_valid_module_b_done_unit_records(
+    context: RuntimeContext,
+    done_unit_records: list[dict[str, Any]],
+    module_a_output: dict[str, Any],
+    target_segment_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：过滤模块 B 已完成单元，仅保留满足当前契约的记录。
+    参数说明：
+    - context: 运行上下文对象。
+    - done_unit_records: 模块 B 已完成单元记录数组。
+    - module_a_output: 模块 A 输出字典。
+    - target_segment_id: 可选，本轮定向重试目标 segment_id。
+    返回值：
+    - list[dict[str, Any]]: 通过契约校验的单元记录数组。
+    异常说明：
+    - RuntimeError: 全量运行遇到旧版单元，或目标 segment 自身仍不兼容时抛出。
+    边界条件：定向重试时仅跳过“非目标”的旧版历史单元。
+    """
+    valid_records: list[dict[str, Any]] = []
+    for record in done_unit_records:
+        try:
+            candidate_output = build_module_b_output(
+                done_unit_records=[record],
+                module_a_output=module_a_output,
+                instrumental_labels=context.config.module_a.instrumental_labels,
+            )
+            validate_module_b_output(candidate_output)
+            valid_records.append(record)
+        except Exception as error:  # noqa: BLE001
+            unit_id = str(record.get("unit_id", "")).strip()
+            if target_segment_id and unit_id != str(target_segment_id).strip():
+                context.logger.warning(
+                    "跨模块链路刷新 module_b_output 时跳过历史旧版模块B单元，"
+                    "task_id=%s，unit_id=%s，错误=%s",
+                    context.task_id,
+                    unit_id,
+                    error,
+                )
+                continue
+            raise RuntimeError(
+                "跨模块链路模块B产物校验失败：检测到旧版或不兼容分镜字段。"
+                "请从模块B重跑并生成双关键帧字段与单视频轨字段（video_prompt_zh/video_prompt_en）。"
+                f"原始错误：{error}"
+            ) from error
+    return valid_records
 
 
 def _refresh_module_c_output(context: RuntimeContext, frames_dir: Path) -> Path:
@@ -255,17 +322,6 @@ def _refresh_module_c_output(context: RuntimeContext, frames_dir: Path) -> Path:
     边界条件：允许输出部分链路 frame_items（用于失败后恢复排障）。
     """
     frame_items = context.state_store.list_module_c_done_frame_items(task_id=context.task_id)
-    if str(context.config.mode.frame_generator).strip().lower() == "diffusion":
-        trace_metadata = resolve_module_c_diffusion_trace_metadata()
-        frame_items = [
-            {
-                **item,
-                "binding_name": str(trace_metadata["binding_name"]),
-                "base_model_key": str(trace_metadata["base_model_key"]),
-                "lora_file": str(trace_metadata["lora_file"]),
-            }
-            for item in frame_items
-        ]
     module_c_output = build_module_c_output(
         task_id=context.task_id,
         frames_dir=frames_dir,
@@ -291,6 +347,19 @@ def _refresh_module_d_output(context: RuntimeContext, audio_duration: float, sel
     d_summary = context.state_store.get_module_unit_status_summary(task_id=context.task_id, module_name="D")
     done_unit_records = context.state_store.list_module_d_done_segment_items(task_id=context.task_id)
     output_video_path = context.task_dir / "final_output.mp4"
+    shot_payload_map: dict[str, dict[str, Any]] = {}
+    module_c_output_path = context.artifacts_dir / "module_c_output.json"
+    if module_c_output_path.exists():
+        module_c_output = read_json(module_c_output_path)
+        frame_items = module_c_output.get("frame_items", []) if isinstance(module_c_output, dict) else []
+        if isinstance(frame_items, list):
+            for item in frame_items:
+                if not isinstance(item, dict):
+                    continue
+                shot_id = str(item.get("shot_id", "")).strip()
+                if not shot_id:
+                    continue
+                shot_payload_map[shot_id] = dict(item)
 
     concat_result: dict[str, Any]
     if d_summary["total_units"] > 0 and d_summary["status_counts"].get("done", 0) == d_summary["total_units"]:
@@ -298,10 +367,15 @@ def _refresh_module_d_output(context: RuntimeContext, audio_duration: float, sel
             Path(str(item.get("artifact_path", "")))
             for item in sorted(done_unit_records, key=lambda row: int(row.get("unit_index", 0)))
         ]
+        ordered_transition_plans = [
+            dict(shot_payload_map.get(str(item.get("unit_id", "")), {}).get("transition_plan", {}))
+            for item in sorted(done_unit_records, key=lambda row: int(row.get("unit_index", 0)))
+        ]
         concat_result = _concat_segment_videos(
             segment_paths=ordered_segment_paths,
             concat_file_path=context.artifacts_dir / "segments_concat.txt",
             ffmpeg_bin=context.config.ffmpeg.ffmpeg_bin,
+            ffprobe_bin=context.config.ffmpeg.ffprobe_bin,
             audio_path=context.audio_path,
             output_video_path=output_video_path,
             audio_duration=audio_duration,
@@ -318,6 +392,7 @@ def _refresh_module_d_output(context: RuntimeContext, audio_duration: float, sel
             gpu_bitrate=context.config.ffmpeg.gpu_bitrate,
             concat_video_mode=context.config.ffmpeg.concat_video_mode,
             concat_copy_fallback_reencode=context.config.ffmpeg.concat_copy_fallback_reencode,
+            transition_plans=ordered_transition_plans,
             logger=context.logger,
         )
     else:
@@ -326,20 +401,6 @@ def _refresh_module_d_output(context: RuntimeContext, audio_duration: float, sel
             "copy_fallback_triggered": False,
             "selected_indexes": sorted(selected_indexes),
         }
-
-    shot_payload_map: dict[str, dict[str, Any]] = {}
-    module_c_output_path = context.artifacts_dir / "module_c_output.json"
-    if module_c_output_path.exists():
-        module_c_output = read_json(module_c_output_path)
-        frame_items = module_c_output.get("frame_items", []) if isinstance(module_c_output, dict) else []
-        if isinstance(frame_items, list):
-            for item in frame_items:
-                if not isinstance(item, dict):
-                    continue
-                shot_id = str(item.get("shot_id", "")).strip()
-                if not shot_id:
-                    continue
-                shot_payload_map[shot_id] = dict(item)
 
     module_d_output = build_module_d_output(
         task_id=context.task_id,

@@ -114,7 +114,7 @@ def _build_test_config(tmp_path: Path, upload_enabled: bool) -> AppConfig:
     边界条件：runs_dir 指向临时目录，避免污染仓库。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

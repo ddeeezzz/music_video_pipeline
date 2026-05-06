@@ -1,7 +1,7 @@
 """
 文件用途：提供模块B真实LLM单段分镜双语提示词生成能力。
 核心流程：加载外置模板 -> 构建提示词 -> 调用SiliconFlow -> 解析并校验输出JSON。
-输入输出：输入分镜上下文，输出 scene_desc 与 keyframe/video 中英文提示词。
+输入输出：输入分镜上下文，输出 scene_desc 与双关键帧+单视频轨中英文提示词。
 依赖说明：依赖 llm_prompt/llm_client/llm_parser 子模块。
 维护说明：本文件不负责模块B完整shot拼装，只负责LLM提示词字段。
 """
@@ -45,10 +45,10 @@ def generate_module_b_prompts(
     - llm_input_payload: 单段分镜输入上下文字典。
     - project_root: 项目根目录，用于解析密钥与模板相对路径。
     返回值：
-    - dict[str, str]: scene_desc 与 keyframe/video 的中英文提示词。
+    - dict[str, str]: scene_desc 与双关键帧+单视频轨的中英文提示词。
     异常说明：
     - ModuleBLlmGenerationError: 模板、请求或解析重试耗尽时抛出。
-    边界条件：JSON解析重试次数由 llm_config.json_retry_times 控制。
+    边界条件：输出解析重试次数由 llm_config.get_output_retry_times() 控制。
     """
     try:
         prompt_template = load_module_b_prompt_template(
@@ -58,7 +58,7 @@ def generate_module_b_prompts(
     except ModuleBLlmPromptTemplateError as error:
         raise ModuleBLlmGenerationError(f"模块B LLM提示词模板加载失败：{error}") from error
 
-    parse_retry_times = max(0, int(llm_config.json_retry_times))
+    parse_retry_times = int(llm_config.get_output_retry_times())
     last_error: Exception | None = None
     retry_hint = ""
 
@@ -86,7 +86,7 @@ def generate_module_b_prompts(
             last_error = error
             if attempt_index >= parse_retry_times:
                 break
-            retry_hint = f"上次输出不符合要求：{error}。请严格只输出五字段JSON对象。"
+            retry_hint = f"上次输出不符合要求：{error}。请严格只输出七字段JSON对象。"
             logger.warning(
                 "模块B LLM双语提示词生成失败，准备重试，attempt=%s/%s，错误=%s",
                 attempt_index + 1,
