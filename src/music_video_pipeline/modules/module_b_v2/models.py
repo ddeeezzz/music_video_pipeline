@@ -9,6 +9,9 @@
 # 标准库：用于类型声明。
 from typing import NotRequired, TypedDict
 
+# 项目内模块：提示词 token 类型。
+from music_video_pipeline.modules.module_b_v2.token_contracts import PromptToken
+
 
 # 常量：默认编排模板文件路径（相对项目根目录）。
 DEFAULT_STORYBOARD_TEMPLATE_FILE = "configs/storyboard_templates/storyboard_template.v1.md"
@@ -24,9 +27,7 @@ VISUAL_ASSET_KIND_CHARACTER = "character"
 SAFE_CLOSEUP_COMPOSITION_IDS = {
     "comp_sym_center",
     "comp_left_third_profile",
-    "comp_right_third_profile",
     "comp_frame_within_frame",
-    "comp_low_angle_presence",
 }
 
 # 常量：运镜 mode 合法值集合。
@@ -101,15 +102,6 @@ class CameraPlanPreset(TypedDict):
     easing: str
 
 
-class CameraMappingRule(TypedDict):
-    """定义运镜映射规则。"""
-
-    energy_level: str
-    trend: str
-    default_preset_id: str
-    candidate_preset_ids: list[str]
-
-
 class TransitionPreset(TypedDict):
     """定义转场 preset 条目。"""
 
@@ -117,15 +109,6 @@ class TransitionPreset(TypedDict):
     kind: str
     duration_ms: int
     easing: str
-
-
-class TransitionMappingRule(TypedDict):
-    """定义转场映射规则。"""
-
-    current_energy_level: str
-    next_energy_level: str
-    default_preset_id: str
-    candidate_preset_ids: list[str]
 
 
 class StoryboardTemplate(TypedDict):
@@ -139,9 +122,7 @@ class StoryboardTemplate(TypedDict):
     character_catalog: list[StoryboardCatalogItem]
     composition_catalog: list[CompositionCatalogItem]
     camera_plan_presets: list[CameraPlanPreset]
-    camera_mapping: list[CameraMappingRule]
     transition_presets: list[TransitionPreset]
-    transition_mapping: list[TransitionMappingRule]
 
 
 class VisualRefPrompt(TypedDict):
@@ -152,6 +133,12 @@ class VisualRefPrompt(TypedDict):
     pos_en: str
     neg_zh: str
     neg_en: str
+    pos_tokens_zh: NotRequired[list[PromptToken]]
+    pos_tokens_en: NotRequired[list[PromptToken]]
+    neg_tokens_zh_increment: NotRequired[list[PromptToken]]
+    neg_tokens_en_increment: NotRequired[list[PromptToken]]
+    neg_tokens_zh: NotRequired[list[PromptToken]]
+    neg_tokens_en: NotRequired[list[PromptToken]]
 
 
 class VisualAssetRefItem(TypedDict):
@@ -218,10 +205,6 @@ class SegmentAudioFeaturesV2(TypedDict):
     position_in_big_segment: str
     segment_rank_in_big_segment: int
     segment_count_in_big_segment: int
-    camera_plan_candidates: list[CameraPlan]
-    transition_plan_candidates: list[TransitionPlan]
-    default_camera_plan: CameraPlan
-    default_transition_plan: TransitionPlan
     beat_positions: NotRequired[list[float]]
     onset_positions: NotRequired[list[dict[str, float]]]
     onset_density: NotRequired[float]
@@ -237,8 +220,13 @@ class Role3SegmentDirectingItem(TypedDict):
     selected_character_ids: list[str]
     selected_prop_ids: list[str]
     composition_id: str
+    camera_plan_preset_id: str
+    transition_plan_preset_id: str
     camera_plan: CameraPlan
     transition_plan: TransitionPlan
+    motion_delta_label: NotRequired[str]
+    motion_speed_label: NotRequired[str]
+    composition_stability: NotRequired[str]
 
 
 class Role3SegmentDirectingOutput(TypedDict):
@@ -262,6 +250,20 @@ class Role4PromptBlock(TypedDict):
     keyframe_negative_prompt_end_en: str
     video_prompt_zh: str
     video_prompt_en: str
+    keyframe_prompt_start_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_prompt_start_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_zh_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_en_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_prompt_end_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_prompt_end_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_zh_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_en_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_en: NotRequired[list[PromptToken]]
+    video_prompt_tokens_zh: NotRequired[list[PromptToken]]
+    video_prompt_tokens_en: NotRequired[list[PromptToken]]
 
 
 class Role4PromptOutput(TypedDict):
@@ -297,6 +299,20 @@ class FinalModuleBShotV2(TypedDict):
     keyframe_negative_prompt_end_en: str
     video_prompt_zh: str
     video_prompt_en: str
+    keyframe_prompt_start_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_prompt_start_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_zh_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_en_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_start_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_prompt_end_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_prompt_end_tokens_en: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_zh_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_en_increment: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_zh: NotRequired[list[PromptToken]]
+    keyframe_negative_prompt_end_tokens_en: NotRequired[list[PromptToken]]
+    video_prompt_tokens_zh: NotRequired[list[PromptToken]]
+    video_prompt_tokens_en: NotRequired[list[PromptToken]]
     camera_plan: CameraPlan
     transition_plan: TransitionPlan
     constraints: dict[str, bool]

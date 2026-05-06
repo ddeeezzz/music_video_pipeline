@@ -388,6 +388,59 @@ def _build_module_b_placeholder_runner():
             "video_prompt_en": normalized_prompt,
         }
 
+    def _build_plan_fields(camera_preset_id: str, transition_preset_id: str) -> dict[str, dict]:
+        """
+        功能说明：构造模块B新契约中的运镜与转场计划字段。
+        参数说明：
+        - camera_preset_id: 运镜预设ID。
+        - transition_preset_id: 转场预设ID。
+        返回值：
+        - dict[str, dict]: 包含 camera_plan 与 transition_plan 的字典。
+        异常说明：无。
+        边界条件：仅覆盖占位执行器使用的预设。
+        """
+        camera_mapping = {
+            "slow_pan": {
+                "preset_id": "pan_right_s",
+                "mode": "pan",
+                "direction": "right",
+                "strength": "small",
+                "easing": "linear",
+            },
+            "zoom_in": {
+                "preset_id": "zoom_in_s",
+                "mode": "zoom",
+                "direction": "center",
+                "strength": "small",
+                "easing": "ease_in_out",
+            },
+            "none": {
+                "preset_id": "none",
+                "mode": "none",
+                "direction": "center",
+                "strength": "none",
+                "easing": "linear",
+            },
+        }
+        transition_mapping = {
+            "crossfade": {
+                "preset_id": "crossfade_160",
+                "kind": "crossfade",
+                "duration_ms": 160,
+                "easing": "ease_in_out",
+            },
+            "hard_cut": {
+                "preset_id": "hard_cut_0",
+                "kind": "hard_cut",
+                "duration_ms": 0,
+                "easing": "linear",
+            },
+        }
+        return {
+            "camera_plan": dict(camera_mapping[camera_preset_id]),
+            "transition_plan": dict(transition_mapping[transition_preset_id]),
+        }
+
     def _runner(context) -> Path:
         artifact_path = context.artifacts_dir / "module_b_output.json"
         write_json(
@@ -399,8 +452,7 @@ def _build_module_b_placeholder_runner():
                     "end_time": 1.0,
                     "scene_desc": "scene-1",
                     **_build_prompt_fields(prompt_en="prompt-1"),
-                    "camera_motion": "slow_pan",
-                    "transition": "crossfade",
+                    **_build_plan_fields(camera_preset_id="slow_pan", transition_preset_id="crossfade"),
                 },
                 {
                     "shot_id": "shot_002",
@@ -408,8 +460,7 @@ def _build_module_b_placeholder_runner():
                     "end_time": 2.0,
                     "scene_desc": "scene-2",
                     **_build_prompt_fields(prompt_en="prompt-2"),
-                    "camera_motion": "zoom_in",
-                    "transition": "crossfade",
+                    **_build_plan_fields(camera_preset_id="zoom_in", transition_preset_id="crossfade"),
                 },
                 {
                     "shot_id": "shot_003",
@@ -417,8 +468,7 @@ def _build_module_b_placeholder_runner():
                     "end_time": 3.0,
                     "scene_desc": "scene-3",
                     **_build_prompt_fields(prompt_en="prompt-3"),
-                    "camera_motion": "none",
-                    "transition": "hard_cut",
+                    **_build_plan_fields(camera_preset_id="none", transition_preset_id="hard_cut"),
                 },
             ],
         )

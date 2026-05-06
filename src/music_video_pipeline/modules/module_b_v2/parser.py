@@ -9,6 +9,61 @@
 import re
 from typing import Any
 
+# 项目内模块：配置默认值（固定负面模板）。
+from music_video_pipeline.config import ModuleBConfig
+# 项目内模块：提示词 token 标准化工具。
+from music_video_pipeline.modules.module_b_v2.prompt_tokens import (
+    build_negative_tokens_with_fixed_template,
+    build_positive_prompt_tokens,
+    build_video_prompt_tokens,
+    compile_tokens_to_prompt_text,
+)
+
+
+def _merge_and_dedup_negative_prompt_en(text: str) -> str:
+    def _split(value: str) -> list[str]:
+        return [item.strip() for item in str(value or "").split(",") if item and item.strip()]
+
+    merged_items: list[str] = []
+    seen_keys: set[str] = set()
+    template = str(ModuleBConfig().fixed_negative_prompt_en)
+    for item in _split(template):
+        key = item.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged_items.append(item)
+    for item in _split(text):
+        key = item.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged_items.append(item)
+    return ", ".join(merged_items)
+
+
+def _merge_and_dedup_negative_prompt_zh(text: str) -> str:
+    def _split(value: str) -> list[str]:
+        raw = str(value or "").replace("，", ",")
+        return [item.strip() for item in raw.split(",") if item and item.strip()]
+
+    merged_items: list[str] = []
+    seen_keys: set[str] = set()
+    template = str(ModuleBConfig().fixed_negative_prompt_zh)
+    for item in _split(template):
+        key = item.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged_items.append(item)
+    for item in _split(text):
+        key = item.lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged_items.append(item)
+    return "，".join(merged_items)
+
 # 项目内模块：统一 Markdown 解析器。
 from music_video_pipeline.modules.module_b_v2.markdown_io import parse_markdown_document
 # 项目内模块：导入 v2 常量。
@@ -131,14 +186,11 @@ def parse_role3_segment_directing_markdown(text: str) -> dict[str, Any]:
         raise ModuleBV2ParseError("role3 输出必须且只能包含 1 个 shot 段落。")
     section = document.sections[0]
     shot_id = normalize_non_empty_text("role3.shot_id", section.heading)
-    subsection_map = {
-        normalize_non_empty_text(f"role3[{shot_id}].subsection", item.heading): item for item in section.subsections
-    }
     field_map = dict(section.fields)
     return {
         "shot_id": shot_id,
         "scene_desc_zh": _require_field(field_map, "scene_desc_zh", f"role3[{shot_id}]"),
-        "selected_scene_id": _require_field(field_map, "selected_scene_id", f"role3[{shot_id}]"),
+        "selected_scene_id": field_map.get("selected_scene_id", "").strip(),
         "selected_character_ids": _parse_id_csv(
             field_map.get("selected_character_ids", ""),
             field_name=f"role3[{shot_id}].selected_character_ids",
@@ -148,16 +200,8 @@ def parse_role3_segment_directing_markdown(text: str) -> dict[str, Any]:
             field_name=f"role3[{shot_id}].selected_prop_ids",
         ),
         "composition_id": _require_field(field_map, "composition_id", f"role3[{shot_id}]"),
-        "camera_plan": _parse_plan_section(
-            subsection_map.get("camera_plan"),
-            field_name=f"role3[{shot_id}].camera_plan",
-            required_fields=["preset_id", "mode", "direction", "strength", "easing"],
-        ),
-        "transition_plan": _parse_plan_section(
-            subsection_map.get("transition_plan"),
-            field_name=f"role3[{shot_id}].transition_plan",
-            required_fields=["preset_id", "kind", "duration_ms", "easing"],
-        ),
+        "camera_plan_preset_id": _require_field(field_map, "camera_plan_preset_id", f"role3[{shot_id}]"),
+        "transition_plan_preset_id": _require_field(field_map, "transition_plan_preset_id", f"role3[{shot_id}]"),
     }
 
 
@@ -230,27 +274,6 @@ def _parse_id_csv(value: str, *, field_name: str) -> list[str]:
     return result
 
 
-def _parse_plan_section(node: Any, *, field_name: str, required_fields: list[str]) -> dict[str, Any]:
-    """
-    功能说明：解析运镜/转场子段落中的键值字段。
-    参数说明：
-    - node: `### camera_plan` 或 `### transition_plan` 对应的节点对象。
-    - field_name: 业务字段名。
-    - required_fields: 必填字段名列表。
-    返回值：
-    - dict[str, Any]: 解析后的字典。
-    异常说明：
-    - ModuleBV2ParseError: 段落缺失或字段不全时抛出。
-    边界条件：所有值先按字符串读取，后续由校验器负责类型归一化。
-    """
-    if node is None:
-        raise ModuleBV2ParseError(f"{field_name} 段落缺失。")
-    field_map = getattr(node, "fields", {})
-    if not isinstance(field_map, dict) or not field_map:
-        raise ModuleBV2ParseError(f"{field_name} 段落缺失字段。")
-    return {field: _require_field(field_map, field, field_name) for field in required_fields}
-
-
 def _require_field(field_map: dict[str, str], key: str, field_name: str) -> str:
     """
     功能说明：从键值映射中读取必填字段。
@@ -287,9 +310,7 @@ def validate_storyboard_template(data: dict[str, Any]) -> dict[str, Any]:
         "character_catalog",
         "composition_catalog",
         "camera_plan_presets",
-        "camera_mapping",
         "transition_presets",
-        "transition_mapping",
     }
     missing_keys = required_keys.difference(data.keys())
     if missing_keys:
@@ -305,13 +326,7 @@ def validate_storyboard_template(data: dict[str, Any]) -> dict[str, Any]:
         for item in data.get("camera_plan_presets", [])
         if isinstance(item, dict)
     }
-    transition_preset_ids = {
-        validate_transition_plan(item).get("preset_id", "")
-        for item in data.get("transition_presets", [])
-        if isinstance(item, dict)
-    }
-    _validate_camera_mapping_rules(data=data.get("camera_mapping", []), camera_preset_ids=camera_preset_ids)
-    _validate_transition_mapping_rules(data=data.get("transition_mapping", []), transition_preset_ids=transition_preset_ids)
+    del camera_preset_ids
     return data
 
 
@@ -552,7 +567,7 @@ def validate_role3_segment_directing_output(
                     f"role3.shots[{index}].scene_desc_zh",
                     item.get("scene_desc_zh", ""),
                 ),
-                "selected_scene_id": _validate_single_id(
+                "selected_scene_id": _validate_optional_single_id(
                     item.get("selected_scene_id", ""),
                     field_name=f"role3.shots[{index}].selected_scene_id",
                     valid_ids=set(scene_ids),
@@ -572,8 +587,19 @@ def validate_role3_segment_directing_output(
                     field_name=f"role3.shots[{index}].composition_id",
                     valid_ids=set(composition_ids),
                 ),
+                "camera_plan_preset_id": _validate_preset_id(
+                    item.get("camera_plan_preset_id", ""),
+                    field_name=f"role3.shots[{index}].camera_plan_preset_id",
+                ),
+                "transition_plan_preset_id": _validate_preset_id(
+                    item.get("transition_plan_preset_id", ""),
+                    field_name=f"role3.shots[{index}].transition_plan_preset_id",
+                ),
                 "camera_plan": validate_camera_plan(item.get("camera_plan", {})),
                 "transition_plan": validate_transition_plan(item.get("transition_plan", {})),
+                "motion_delta_label": str(item.get("motion_delta_label", "")).strip(),
+                "motion_speed_label": str(item.get("motion_speed_label", "")).strip(),
+                "composition_stability": str(item.get("composition_stability", "")).strip(),
             }
         )
     if seen_ids != known_shot_ids:
@@ -628,6 +654,111 @@ def validate_role4_prompt_output(data: dict[str, Any], *, shot_ids: list[str]) -
                 f"role4.shots[{index}].{field_name}",
                 item.get(field_name, ""),
             )
+        style_text = " ".join(
+            [
+                str(item.get("style_color_mode", "")).strip(),
+                str(item.get("style_render_style", "")).strip(),
+            ]
+        ).strip()
+        normalized_item["keyframe_prompt_start_tokens_zh"] = build_positive_prompt_tokens(
+            normalized_item.get("keyframe_prompt_start_zh", ""),
+            language="zh",
+            style_text=style_text,
+        )
+        normalized_item["keyframe_prompt_start_tokens_en"] = build_positive_prompt_tokens(
+            normalized_item.get("keyframe_prompt_start_en", ""),
+            language="en",
+            style_text=style_text,
+        )
+        normalized_item["keyframe_prompt_end_tokens_zh"] = build_positive_prompt_tokens(
+            normalized_item.get("keyframe_prompt_end_zh", ""),
+            language="zh",
+            style_text=style_text,
+        )
+        normalized_item["keyframe_prompt_end_tokens_en"] = build_positive_prompt_tokens(
+            normalized_item.get("keyframe_prompt_end_en", ""),
+            language="en",
+            style_text=style_text,
+        )
+        start_neg_increment_zh, start_neg_zh = build_negative_tokens_with_fixed_template(
+            normalized_item.get("keyframe_negative_prompt_start_zh", ""),
+            language="zh",
+            fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
+        )
+        start_neg_increment_en, start_neg_en = build_negative_tokens_with_fixed_template(
+            normalized_item.get("keyframe_negative_prompt_start_en", ""),
+            language="en",
+            fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
+        )
+        end_neg_increment_zh, end_neg_zh = build_negative_tokens_with_fixed_template(
+            normalized_item.get("keyframe_negative_prompt_end_zh", ""),
+            language="zh",
+            fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
+        )
+        end_neg_increment_en, end_neg_en = build_negative_tokens_with_fixed_template(
+            normalized_item.get("keyframe_negative_prompt_end_en", ""),
+            language="en",
+            fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
+        )
+        normalized_item["keyframe_negative_prompt_start_tokens_zh_increment"] = start_neg_increment_zh
+        normalized_item["keyframe_negative_prompt_start_tokens_en_increment"] = start_neg_increment_en
+        normalized_item["keyframe_negative_prompt_start_tokens_zh"] = start_neg_zh
+        normalized_item["keyframe_negative_prompt_start_tokens_en"] = start_neg_en
+        normalized_item["keyframe_negative_prompt_end_tokens_zh_increment"] = end_neg_increment_zh
+        normalized_item["keyframe_negative_prompt_end_tokens_en_increment"] = end_neg_increment_en
+        normalized_item["keyframe_negative_prompt_end_tokens_zh"] = end_neg_zh
+        normalized_item["keyframe_negative_prompt_end_tokens_en"] = end_neg_en
+        normalized_item["video_prompt_tokens_zh"] = build_video_prompt_tokens(
+            normalized_item.get("video_prompt_zh", ""),
+            language="zh",
+            style_text=style_text,
+        )
+        normalized_item["video_prompt_tokens_en"] = build_video_prompt_tokens(
+            normalized_item.get("video_prompt_en", ""),
+            language="en",
+            style_text=style_text,
+        )
+        normalized_item["keyframe_prompt_start_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_prompt_start_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["keyframe_prompt_start_en"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_prompt_start_tokens_en"],
+            language="en",
+        )
+        normalized_item["keyframe_prompt_end_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_prompt_end_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["keyframe_prompt_end_en"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_prompt_end_tokens_en"],
+            language="en",
+        )
+        normalized_item["keyframe_negative_prompt_start_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_negative_prompt_start_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["keyframe_negative_prompt_start_en"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_negative_prompt_start_tokens_en"],
+            language="en",
+        )
+        normalized_item["keyframe_negative_prompt_end_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_negative_prompt_end_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["keyframe_negative_prompt_end_en"] = compile_tokens_to_prompt_text(
+            normalized_item["keyframe_negative_prompt_end_tokens_en"],
+            language="en",
+        )
+        normalized_item["video_prompt_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["video_prompt_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["video_prompt_en"] = compile_tokens_to_prompt_text(
+            normalized_item["video_prompt_tokens_en"],
+            language="en",
+        )
+
         normalized_items.append(normalized_item)
     if seen_ids != known_shot_ids:
         missing_ids = sorted(known_shot_ids.difference(seen_ids))
@@ -694,7 +825,53 @@ def _validate_visual_asset_refs(items: Any, field_name: str, valid_ids: set[str]
                         f"{field_name}[{index}].refs[{ref_index}].neg_en",
                         ref_item.get("neg_en", ""),
                     ),
+                    "pos_tokens_zh": build_positive_prompt_tokens(
+                        ref_item.get("pos_zh", ""),
+                        language="zh",
+                        style_text="黑白 漫画",
+                    ),
+                    "pos_tokens_en": build_positive_prompt_tokens(
+                        ref_item.get("pos_en", ""),
+                        language="en",
+                        style_text="black and white manga",
+                    ),
+                    "neg_tokens_zh_increment": build_negative_tokens_with_fixed_template(
+                        ref_item.get("neg_zh", ""),
+                        language="zh",
+                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
+                    )[0],
+                    "neg_tokens_en_increment": build_negative_tokens_with_fixed_template(
+                        ref_item.get("neg_en", ""),
+                        language="en",
+                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
+                    )[0],
+                    "neg_tokens_zh": build_negative_tokens_with_fixed_template(
+                        ref_item.get("neg_zh", ""),
+                        language="zh",
+                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
+                    )[1],
+                    "neg_tokens_en": build_negative_tokens_with_fixed_template(
+                        ref_item.get("neg_en", ""),
+                        language="en",
+                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
+                    )[1],
                 }
+            )
+            normalized_refs[-1]["pos_zh"] = compile_tokens_to_prompt_text(
+                normalized_refs[-1]["pos_tokens_zh"],
+                language="zh",
+            )
+            normalized_refs[-1]["pos_en"] = compile_tokens_to_prompt_text(
+                normalized_refs[-1]["pos_tokens_en"],
+                language="en",
+            )
+            normalized_refs[-1]["neg_zh"] = compile_tokens_to_prompt_text(
+                normalized_refs[-1]["neg_tokens_zh"],
+                language="zh",
+            )
+            normalized_refs[-1]["neg_en"] = compile_tokens_to_prompt_text(
+                normalized_refs[-1]["neg_tokens_en"],
+                language="en",
             )
         seen_ids.add(item_id)
         normalized_items.append({"item_id": item_id, "refs": normalized_refs})
@@ -748,105 +925,38 @@ def _validate_single_id(value: Any, *, field_name: str, valid_ids: set[str]) -> 
     return normalized_id
 
 
-def _validate_camera_mapping_rules(data: Any, camera_preset_ids: set[str]) -> None:
+def _validate_optional_single_id(value: Any, *, field_name: str, valid_ids: set[str]) -> str:
     """
-    功能说明：校验模板中的运镜映射规则。
+    功能说明：校验可选单个字符串 ID，允许 `none` 语义输入。
     参数说明：
-    - data: camera_mapping 原始数据。
-    - camera_preset_ids: 合法 preset_id 集合。
-    返回值：无。
+    - value: 输入值。
+    - field_name: 字段名。
+    - valid_ids: 合法 ID 集合。
+    返回值：
+    - str: 标准化后的 ID，空语义返回空字符串。
     异常说明：
-    - ModuleBV2ParseError: 结构、重复键或 preset 引用非法时抛出。
-    边界条件：要求覆盖 3x3 的 energy/trend 组合。
+    - ModuleBV2ParseError: ID 非法时抛出。
+    边界条件：`none/null/-/无/空字符串` 统一视为空。
     """
-    if not isinstance(data, list):
-        raise ModuleBV2ParseError("camera_mapping 必须是列表。")
-    valid_energy_levels = {"low", "mid", "high"}
-    valid_trends = {"down", "flat", "up"}
-    seen_keys: set[tuple[str, str]] = set()
-    for index, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise ModuleBV2ParseError(f"camera_mapping[{index}] 必须是对象。")
-        energy_level = normalize_non_empty_text(f"camera_mapping[{index}].energy_level", item.get("energy_level", ""))
-        trend = normalize_non_empty_text(f"camera_mapping[{index}].trend", item.get("trend", ""))
-        if energy_level not in valid_energy_levels:
-            raise ModuleBV2ParseError(f"camera_mapping[{index}].energy_level 非法：{energy_level}")
-        if trend not in valid_trends:
-            raise ModuleBV2ParseError(f"camera_mapping[{index}].trend 非法：{trend}")
-        if (energy_level, trend) in seen_keys:
-            raise ModuleBV2ParseError(f"camera_mapping 存在重复规则：{energy_level}/{trend}")
-        seen_keys.add((energy_level, trend))
-        default_preset_id = normalize_non_empty_text(
-            f"camera_mapping[{index}].default_preset_id",
-            item.get("default_preset_id", ""),
-        )
-        if default_preset_id not in camera_preset_ids:
-            raise ModuleBV2ParseError(f"camera_mapping[{index}] 引用了未知 camera preset：{default_preset_id}")
-        candidate_ids = _validate_preset_id_list(
-            item.get("candidate_preset_ids", []),
-            field_name=f"camera_mapping[{index}].candidate_preset_ids",
-            valid_ids=camera_preset_ids,
-        )
-        if "none" not in candidate_ids:
-            raise ModuleBV2ParseError(f"camera_mapping[{index}] 候选中必须包含 none。")
-    expected_keys = {(energy, trend) for energy in valid_energy_levels for trend in valid_trends}
-    if seen_keys != expected_keys:
-        missing_keys = sorted(expected_keys.difference(seen_keys))
-        raise ModuleBV2ParseError(f"camera_mapping 覆盖不完整，missing={missing_keys}")
+    normalized_value = str(value or "").strip()
+    if normalized_value.lower() in {"", "none", "null", "-", "无"}:
+        return ""
+    return _validate_single_id(normalized_value, field_name=field_name, valid_ids=valid_ids)
 
 
-def _validate_transition_mapping_rules(data: Any, transition_preset_ids: set[str]) -> None:
+def _validate_preset_id(value: Any, *, field_name: str) -> str:
     """
-    功能说明：校验模板中的转场映射规则。
+    功能说明：校验单个 preset_id 文本的非空性。
     参数说明：
-    - data: transition_mapping 原始数据。
-    - transition_preset_ids: 合法 preset_id 集合。
-    返回值：无。
+    - value: 输入值。
+    - field_name: 字段名。
+    返回值：
+    - str: 标准化后的 preset_id。
     异常说明：
-    - ModuleBV2ParseError: 结构、重复键或 preset 引用非法时抛出。
-    边界条件：要求覆盖 3x3 的 current/next energy 组合。
+    - ModuleBV2ParseError: 为空时抛出。
+    边界条件：合法性由上层查表校验。
     """
-    if not isinstance(data, list):
-        raise ModuleBV2ParseError("transition_mapping 必须是列表。")
-    valid_energy_levels = {"low", "mid", "high"}
-    seen_keys: set[tuple[str, str]] = set()
-    for index, item in enumerate(data):
-        if not isinstance(item, dict):
-            raise ModuleBV2ParseError(f"transition_mapping[{index}] 必须是对象。")
-        current_energy = normalize_non_empty_text(
-            f"transition_mapping[{index}].current_energy_level",
-            item.get("current_energy_level", ""),
-        )
-        next_energy = normalize_non_empty_text(
-            f"transition_mapping[{index}].next_energy_level",
-            item.get("next_energy_level", ""),
-        )
-        if current_energy not in valid_energy_levels:
-            raise ModuleBV2ParseError(f"transition_mapping[{index}].current_energy_level 非法：{current_energy}")
-        if next_energy not in valid_energy_levels:
-            raise ModuleBV2ParseError(f"transition_mapping[{index}].next_energy_level 非法：{next_energy}")
-        if (current_energy, next_energy) in seen_keys:
-            raise ModuleBV2ParseError(f"transition_mapping 存在重复规则：{current_energy}/{next_energy}")
-        seen_keys.add((current_energy, next_energy))
-        default_preset_id = normalize_non_empty_text(
-            f"transition_mapping[{index}].default_preset_id",
-            item.get("default_preset_id", ""),
-        )
-        if default_preset_id not in transition_preset_ids:
-            raise ModuleBV2ParseError(
-                f"transition_mapping[{index}] 引用了未知 transition preset：{default_preset_id}"
-            )
-        candidate_ids = _validate_preset_id_list(
-            item.get("candidate_preset_ids", []),
-            field_name=f"transition_mapping[{index}].candidate_preset_ids",
-            valid_ids=transition_preset_ids,
-        )
-        if "none" not in candidate_ids:
-            raise ModuleBV2ParseError(f"transition_mapping[{index}] 候选中必须包含 none。")
-    expected_keys = {(left, right) for left in valid_energy_levels for right in valid_energy_levels}
-    if seen_keys != expected_keys:
-        missing_keys = sorted(expected_keys.difference(seen_keys))
-        raise ModuleBV2ParseError(f"transition_mapping 覆盖不完整，missing={missing_keys}")
+    return normalize_non_empty_text(field_name, value)
 
 
 def _validate_preset_id_list(items: Any, *, field_name: str, valid_ids: set[str]) -> list[str]:

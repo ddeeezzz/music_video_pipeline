@@ -2,10 +2,12 @@
 
 ## 1. 目标与范围
 
-本次改造将模块 B 的分镜提示词从单一 `image_prompt` 升级为双提示词契约：
+本次改造将模块 B 的分镜提示词从单一 `image_prompt` 升级为双关键帧 + 单视频轨的新契约：
 
-- `keyframe_prompt`：供模块 C 关键帧生成消费。
-- `video_prompt`：供模块 D 文图生视频链路预留消费（当前 D 仅透传，不启用新渲染分支）。
+- `keyframe_prompt_start_*`：供模块 C 起始关键帧消费。
+- `keyframe_prompt_end_*`：供模块 C 结束关键帧消费。
+- `video_prompt_*`：供模块 D 视频语义与后续扩展消费。
+- `camera_plan` / `transition_plan`：供模块 D 确定性运镜与转场消费。
 
 同时接入 SiliconFlow + DeepSeek-V3.2 真实 LLM 调用链。
 
@@ -45,14 +47,19 @@ echo "<your_api_key>" > .secrets/siliconflow_api_key.txt
 模块 B 必填字段（核心）：
 
 - `scene_desc`
-- `keyframe_prompt`
-- `video_prompt`
-- `camera_motion`
-- `transition`
+- `keyframe_prompt_start_zh`
+- `keyframe_prompt_start_en`
+- `keyframe_prompt_end_zh`
+- `keyframe_prompt_end_en`
+- `video_prompt_zh`
+- `video_prompt_en`
+- `camera_plan`
+- `transition_plan`
 
 说明：
 
 - 不再兼容旧字段 `image_prompt`。
+- 不再兼容旧字段 `camera_motion` / `transition`。
 - 旧任务若仍为 `image_prompt` 产物，需从模块 B 重跑。
 
 ## 5. 运行命令

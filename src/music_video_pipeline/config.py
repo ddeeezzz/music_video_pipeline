@@ -224,6 +224,15 @@ class ModuleBConfig:
     script_workers: int = 3
     unit_retry_times: int = 1
     storyboard_template_file: str = "configs/storyboard_templates/storyboard_template.v1.md"
+    fixed_negative_prompt_en: str = (
+        "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), "
+        "text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, "
+        "jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)"
+    )
+    fixed_negative_prompt_zh: str = (
+        "（彩色，彩色照片，写实：1.6），（CG，3D，渲染：1.2），低分辨率，（人体解剖结构错误），（手部错误），文字，错误，缺指，多余手指，"
+        "手指数量不足，裁剪，最差质量，低质量，正常质量，JPEG 伪影，签名，水印，用户名，模糊，（景深，散景：1.3），（灰度：0.8）"
+    )
     llm: ModuleBLlmConfig = field(default_factory=ModuleBLlmConfig)
 
 
@@ -625,6 +634,8 @@ def _merge_defaults(raw_data: dict) -> dict:
             "script_workers": 3,
             "unit_retry_times": 1,
             "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md",
+            "fixed_negative_prompt_en": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
+            "fixed_negative_prompt_zh": "（彩色，彩色照片，写实：1.6），（CG，3D，渲染：1.2），低分辨率，（人体解剖结构错误），（手部错误），文字，错误，缺指，多余手指，手指数量不足，裁剪，最差质量，低质量，正常质量，JPEG 伪影，签名，水印，用户名，模糊，（景深，散景：1.3），（灰度：0.8）",
             "llm": {
                 "provider": "siliconflow",
                 "base_url": "https://api.siliconflow.cn/v1",

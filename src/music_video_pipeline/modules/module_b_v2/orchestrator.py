@@ -1,10 +1,10 @@
 """
-文件用途：实现模块B v2 多角色编排主入口与新模式生成器。
-核心流程：加载模板 -> 规则增强音频 -> 调度4角色 -> 写入单元产物 -> 聚合 module_b_output。
-输入输出：输入 RuntimeContext 或模块A输出，输出模块B标准分镜数组/产物路径。
-依赖说明：依赖旧模块B单元模型/输出聚合器、v2 各角色、模板加载器与 JSON 工具。
-维护说明：本文件是 v2 唯一主编排入口，不回写旧 module_b 逻辑。
-"""
+ 文件用途：实现模块B v2 多角色编排主入口与新模式生成器。
+ 核心流程：加载模板 -> 规则增强音频 -> 调度4角色 -> 写入单元产物 -> 聚合 module_b_output。
+ 输入输出：输入 RuntimeContext 或模块A输出，输出模块B标准分镜数组/产物路径。
+ 依赖说明：依赖旧模块B单元模型/输出聚合器、v2 各角色、模板加载器与 JSON 工具。
+ 维护说明：本文件是 v2 唯一主编排入口，不回写旧 module_b 逻辑。
+ """
 
 # 标准库：用于异步 future 调度。
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -975,6 +975,41 @@ def _assemble_module_b_output(
             ).strip(),
             "video_prompt_zh": str(prompt_block.get("video_prompt_zh", "")).strip(),
             "video_prompt_en": str(prompt_block.get("video_prompt_en", "")).strip(),
+            "keyframe_prompt_start_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_zh", []) if isinstance(item, dict)],
+            "keyframe_prompt_start_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_en", []) if isinstance(item, dict)],
+            "keyframe_negative_prompt_start_tokens_zh_increment": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh_increment", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_start_tokens_en_increment": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en_increment", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_start_tokens_zh": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_start_tokens_en": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en", []) if isinstance(item, dict)
+            ],
+            "keyframe_prompt_end_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_zh", []) if isinstance(item, dict)],
+            "keyframe_prompt_end_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_en", []) if isinstance(item, dict)],
+            "keyframe_negative_prompt_end_tokens_zh_increment": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh_increment", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_end_tokens_en_increment": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en_increment", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_end_tokens_zh": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh", []) if isinstance(item, dict)
+            ],
+            "keyframe_negative_prompt_end_tokens_en": [
+                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en", []) if isinstance(item, dict)
+            ],
+            "video_prompt_tokens_zh": [dict(item) for item in prompt_block.get("video_prompt_tokens_zh", []) if isinstance(item, dict)],
+            "video_prompt_tokens_en": [dict(item) for item in prompt_block.get("video_prompt_tokens_en", []) if isinstance(item, dict)],
+            "camera_plan_preset_id": str(directing.get("camera_plan_preset_id", "")).strip(),
+            "transition_plan_preset_id": str(directing.get("transition_plan_preset_id", "")).strip(),
+            "motion_delta_label": str(directing.get("motion_delta_label", "")).strip(),
+            "motion_speed_label": str(directing.get("motion_speed_label", "")).strip(),
+            "composition_stability": str(directing.get("composition_stability", "")).strip(),
             "camera_plan": dict(directing.get("camera_plan", {})),
             "transition_plan": dict(directing.get("transition_plan", {})),
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},

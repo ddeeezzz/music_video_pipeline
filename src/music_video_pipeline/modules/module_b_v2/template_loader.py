@@ -35,12 +35,8 @@ SECTION_CHARACTER_CATALOG = "character_catalog"
 SECTION_COMPOSITION_CATALOG = "composition_catalog"
 # 常量：运镜预设 section 标题。
 SECTION_CAMERA_PLAN_PRESETS = "camera_plan_presets"
-# 常量：运镜映射 section 标题。
-SECTION_CAMERA_MAPPING = "camera_mapping"
 # 常量：转场预设 section 标题。
 SECTION_TRANSITION_PRESETS = "transition_presets"
-# 常量：转场映射 section 标题。
-SECTION_TRANSITION_MAPPING = "transition_mapping"
 
 
 def load_storyboard_template(project_root: Path, template_file: str = DEFAULT_STORYBOARD_TEMPLATE_FILE) -> dict:
@@ -178,22 +174,10 @@ def _extract_storyboard_template_payload(markdown_text: str, template_path: Path
             ),
             template_path=template_path,
         ),
-        "camera_mapping": _parse_camera_mapping_section(
-            section_node=_require_section(section_map=section_map, section_name=SECTION_CAMERA_MAPPING, template_path=template_path),
-            template_path=template_path,
-        ),
         "transition_presets": _parse_transition_presets_section(
             section_node=_require_section(
                 section_map=section_map,
                 section_name=SECTION_TRANSITION_PRESETS,
-                template_path=template_path,
-            ),
-            template_path=template_path,
-        ),
-        "transition_mapping": _parse_transition_mapping_section(
-            section_node=_require_section(
-                section_map=section_map,
-                section_name=SECTION_TRANSITION_MAPPING,
                 template_path=template_path,
             ),
             template_path=template_path,
@@ -385,54 +369,6 @@ def _parse_camera_plan_presets_section(*, section_node: MarkdownNode, template_p
     return items
 
 
-def _parse_camera_mapping_section(*, section_node: MarkdownNode, template_path: Path) -> list[dict]:
-    """
-    功能说明：解析运镜映射 section。
-    参数说明：
-    - section_node: 运镜映射 section。
-    - template_path: 模板路径。
-    返回值：
-    - list[dict]: 运镜映射数组。
-    异常说明：
-    - ModuleBV2ParseError: 字段缺失时抛出。
-    边界条件：三级标题仅作人读标签，不参与最终契约。
-    """
-    items: list[dict] = []
-    for item_node in section_node.subsections:
-        item_name = str(item_node.heading).strip() or "camera_mapping_item"
-        items.append(
-            {
-                "energy_level": _require_text(
-                    field_map=item_node.fields,
-                    key="energy_level",
-                    field_name=f"{section_node.heading}.{item_name}.energy_level",
-                    template_path=template_path,
-                ),
-                "trend": _require_text(
-                    field_map=item_node.fields,
-                    key="trend",
-                    field_name=f"{section_node.heading}.{item_name}.trend",
-                    template_path=template_path,
-                ),
-                "default_preset_id": _require_text(
-                    field_map=item_node.fields,
-                    key="default_preset_id",
-                    field_name=f"{section_node.heading}.{item_name}.default_preset_id",
-                    template_path=template_path,
-                ),
-                "candidate_preset_ids": _parse_csv_field(
-                    field_map=item_node.fields,
-                    key="candidate_preset_ids",
-                    field_name=f"{section_node.heading}.{item_name}.candidate_preset_ids",
-                    template_path=template_path,
-                ),
-            }
-        )
-    if not items:
-        raise ModuleBV2ParseError(f"编排模板 section 不能为空：{section_node.heading}，template={template_path}")
-    return items
-
-
 def _parse_transition_presets_section(*, section_node: MarkdownNode, template_path: Path) -> list[dict]:
     """
     功能说明：解析转场预设 section。
@@ -467,54 +403,6 @@ def _parse_transition_presets_section(*, section_node: MarkdownNode, template_pa
                     field_map=item_node.fields,
                     key="easing",
                     field_name=f"{section_node.heading}.{preset_id}.easing",
-                    template_path=template_path,
-                ),
-            }
-        )
-    if not items:
-        raise ModuleBV2ParseError(f"编排模板 section 不能为空：{section_node.heading}，template={template_path}")
-    return items
-
-
-def _parse_transition_mapping_section(*, section_node: MarkdownNode, template_path: Path) -> list[dict]:
-    """
-    功能说明：解析转场映射 section。
-    参数说明：
-    - section_node: 转场映射 section。
-    - template_path: 模板路径。
-    返回值：
-    - list[dict]: 转场映射数组。
-    异常说明：
-    - ModuleBV2ParseError: 字段缺失时抛出。
-    边界条件：三级标题仅作人读标签，不参与最终契约。
-    """
-    items: list[dict] = []
-    for item_node in section_node.subsections:
-        item_name = str(item_node.heading).strip() or "transition_mapping_item"
-        items.append(
-            {
-                "current_energy_level": _require_text(
-                    field_map=item_node.fields,
-                    key="current_energy_level",
-                    field_name=f"{section_node.heading}.{item_name}.current_energy_level",
-                    template_path=template_path,
-                ),
-                "next_energy_level": _require_text(
-                    field_map=item_node.fields,
-                    key="next_energy_level",
-                    field_name=f"{section_node.heading}.{item_name}.next_energy_level",
-                    template_path=template_path,
-                ),
-                "default_preset_id": _require_text(
-                    field_map=item_node.fields,
-                    key="default_preset_id",
-                    field_name=f"{section_node.heading}.{item_name}.default_preset_id",
-                    template_path=template_path,
-                ),
-                "candidate_preset_ids": _parse_csv_field(
-                    field_map=item_node.fields,
-                    key="candidate_preset_ids",
-                    field_name=f"{section_node.heading}.{item_name}.candidate_preset_ids",
                     template_path=template_path,
                 ),
             }

@@ -18,6 +18,13 @@ import pytest
 from music_video_pipeline.config import ModuleBConfig
 # 项目内模块：分镜生成器。
 from music_video_pipeline.generators.script_generator import MockScriptGenerator
+# 项目内模块：模块B v2 解析与校验。
+from music_video_pipeline.modules.module_b_v2.parser import (
+    validate_role1_visual_catalog_output,
+    validate_role2_big_segment_story_output,
+    validate_role3_segment_directing_output,
+    validate_role4_prompt_output,
+)
 # 项目内模块：模块B v2 音频规则。
 from music_video_pipeline.modules.module_b_v2.audio_rules import build_segment_audio_features_v2
 # 项目内模块：模块B v2 歌词上下文裁剪。
@@ -33,31 +40,31 @@ from music_video_pipeline.modules.module_b_v2.template_loader import load_storyb
 from music_video_pipeline.types import validate_module_b_output
 
 
-def test_storyboard_template_v1_should_load_and_cover_9x9_rules() -> None:
+def test_storyboard_template_v1_should_load_and_cover_current_catalogs() -> None:
     """
-    功能说明：验证正式模板文件可被加载，且包含 9 条运镜映射与 9 条转场映射。
+    功能说明：验证正式模板文件可被加载，且包含当前最小构图库与计划预设集。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：模板路径固定为 configs/prompts/storyboard_template.v1.md。
+    边界条件：模板路径固定为 configs/storyboard_templates/storyboard_template.v1.md。
     """
     project_root = Path(__file__).resolve().parents[1]
     template = load_storyboard_template(project_root=project_root)
     assert template["template_id"] == "storyboard_template_v1_monochrome_cat_hide_seek"
-    assert len(template["composition_catalog"]) == 9
-    assert len(template["camera_mapping"]) == 9
-    assert len(template["transition_mapping"]) == 9
+    assert len(template["composition_catalog"]) == 3
+    assert len(template["camera_plan_presets"]) == 4
+    assert len(template["transition_presets"]) == 8
     assert any(item["preset_id"] == "zoom_in_s" for item in template["camera_plan_presets"])
     assert any(item["preset_id"] == "wipe_left_200" for item in template["transition_presets"])
 
 
-def test_build_segment_audio_features_v2_should_produce_candidate_plans() -> None:
+def test_build_segment_audio_features_v2_should_produce_audio_semantics() -> None:
     """
-    功能说明：验证规则层会为每个 segment 补齐增强字段与候选运镜/转场计划。
+    功能说明：验证规则层会为每个 segment 补齐增强音频语义字段。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：按大段中位分布离散 tension_band。
+    边界条件：当前规则层只产出确定性音频语义，不直接产出运镜/转场候选。
     """
     project_root = Path(__file__).resolve().parents[1]
     template = load_storyboard_template(project_root=project_root)
@@ -74,9 +81,13 @@ def test_build_segment_audio_features_v2_should_produce_candidate_plans() -> Non
     result = build_segment_audio_features_v2(module_a_output=module_a_output, storyboard_template=template)
     assert result["seg_001"]["segment_rank_in_big_segment"] == 1
     assert result["seg_001"]["segment_count_in_big_segment"] == 2
-    assert result["seg_001"]["default_camera_plan"]["preset_id"] == "zoom_in_s"
-    assert result["seg_001"]["camera_plan_candidates"][0]["preset_id"] == "none"
-    assert result["seg_002"]["default_transition_plan"]["preset_id"] in {"fade_black_240", "none", "hard_cut_0", "crossfade_160"}
+    assert result["seg_001"]["energy_level"] == "low"
+    assert result["seg_001"]["tension_band"] == "low"
+    assert result["seg_001"]["position_in_big_segment"] == "start"
+    assert result["seg_002"]["energy_level"] == "high"
+    assert result["seg_002"]["tension_band"] == "high"
+    assert result["seg_002"]["tension_delta"] == "up"
+    assert result["seg_002"]["is_local_peak"] is True
 
 
 def test_lyric_context_should_strip_token_level_and_mount_tree_fields() -> None:
@@ -182,6 +193,164 @@ def test_validate_module_b_output_should_require_camera_plan_and_transition_plan
     ]
     with pytest.raises(KeyError):
         validate_module_b_output(invalid_output)
+
+
+def test_role2_should_accept_none_ids_and_normalize_to_empty_lists() -> None:
+    """
+    功能说明：验证角色2允许 scene/character/prop 使用 none，并标准化为空数组。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：none 语义仅在角色输出层生效，不要求真实目录包含 none。
+    """
+    result = validate_role2_big_segment_story_output(
+        data={
+            "big_segments": [
+                {
+                    "big_segment_id": "big_001",
+                    "title_zh": "空镜停顿",
+                    "story_outline_zh": "画面暂时留白，节奏停顿后再推进。",
+                    "selected_scene_ids": [],
+                    "selected_character_ids": [],
+                    "selected_prop_ids": [],
+                }
+            ]
+        },
+        big_segment_ids=["big_001"],
+        scene_ids=["scene_alley_dim"],
+        prop_ids=["prop_cage_wire"],
+        character_ids=["character_black_cat"],
+    )
+    assert result["big_segments"][0]["selected_scene_ids"] == []
+    assert result["big_segments"][0]["selected_character_ids"] == []
+    assert result["big_segments"][0]["selected_prop_ids"] == []
+
+
+def test_role3_should_accept_none_scene_and_resolve_preset_ids() -> None:
+    """
+    功能说明：验证角色3允许空场景，并使用 preset_id 回填完整运镜/转场计划。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：selected_scene_id 为空时标准化为 ""。
+    """
+    result = validate_role3_segment_directing_output(
+        data={
+            "shots": [
+                {
+                    "shot_id": "shot_001",
+                    "scene_desc_zh": "黑猫停在留白里，短暂停顿后轻微抬头。",
+                    "selected_scene_id": "",
+                    "selected_character_ids": [],
+                    "selected_prop_ids": [],
+                    "composition_id": "comp_sym_center",
+                    "camera_plan_preset_id": "zoom_in_s",
+                    "transition_plan_preset_id": "crossfade_160",
+                    "camera_plan": {
+                        "preset_id": "zoom_in_s",
+                        "mode": "zoom",
+                        "direction": "center",
+                        "strength": "small",
+                        "easing": "ease_in_out",
+                    },
+                    "transition_plan": {
+                        "preset_id": "crossfade_160",
+                        "kind": "crossfade",
+                        "duration_ms": 160,
+                        "easing": "ease_in_out",
+                    },
+                    "motion_delta_label": "tiny",
+                    "motion_speed_label": "slow",
+                    "composition_stability": "stable",
+                }
+            ]
+        },
+        shot_ids=["shot_001"],
+        scene_ids=["scene_alley_dim"],
+        prop_ids=["prop_cage_wire"],
+        character_ids=["character_black_cat"],
+        composition_ids=["comp_sym_center"],
+    )
+    assert result["shots"][0]["selected_scene_id"] == ""
+    assert result["shots"][0]["camera_plan_preset_id"] == "zoom_in_s"
+    assert result["shots"][0]["transition_plan_preset_id"] == "crossfade_160"
+
+
+def test_role1_should_normalize_tokens_and_merge_negative_template() -> None:
+    """
+    功能说明：验证角色1会将宽松 tag 文本标准化为 token，并把负面增量与固定模板合并。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：正向英文 token 超过上限时应被截断到 18 个以内。
+    """
+    long_pos_en = ", ".join([f"tag_{index:02d}" for index in range(1, 25)])
+    result = validate_role1_visual_catalog_output(
+        data={
+            "scene_refs": [
+                {
+                    "item_id": "scene_alley_dim",
+                    "refs": [
+                        {
+                            "ref_id": "ref_1",
+                            "pos_zh": "黑白, 单色, 小巷, 潮湿地面, 斑驳砖墙",
+                            "pos_en": long_pos_en,
+                            "neg_zh": "额外人物，彩色污染",
+                            "neg_en": "extra people, color contamination",
+                        }
+                    ],
+                }
+            ],
+            "prop_refs": [],
+            "character_refs": [],
+        },
+        scene_ids=["scene_alley_dim"],
+        prop_ids=[],
+        character_ids=[],
+    )
+    ref_item = result["scene_refs"][0]["refs"][0]
+    assert len(ref_item["pos_tokens_en"]) <= 18
+    assert any(str(item.get("text", "")) == "black and white" for item in ref_item["pos_tokens_en"])
+    assert any("extra people" == str(item.get("text", "")) for item in ref_item["neg_tokens_en_increment"])
+    assert "realistic" in ref_item["neg_en"]
+
+
+def test_role4_should_compile_tokens_and_merge_fixed_negative_prompt() -> None:
+    """
+    功能说明：验证角色4会把宽松 tag 文本编译为 token，并自动拼入固定风格与固定负面模板。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：style_color_mode/style_render_style 作为内部上下文输入，不属于最终公开字段要求。
+    """
+    result = validate_role4_prompt_output(
+        data={
+            "shots": [
+                {
+                    "shot_id": "shot_001",
+                    "scene_desc": "黑猫停住后轻轻抬头。",
+                    "keyframe_prompt_start_zh": "黑猫, 窗边, 留白",
+                    "keyframe_prompt_start_en": "black cat, windowsill, negative space",
+                    "keyframe_negative_prompt_start_zh": "彩色污染, 额外人物",
+                    "keyframe_negative_prompt_start_en": "color contamination, extra people",
+                    "keyframe_prompt_end_zh": "黑猫抬头, 窗边, 留白",
+                    "keyframe_prompt_end_en": "black cat raises head, windowsill, negative space",
+                    "keyframe_negative_prompt_end_zh": "彩色污染, 额外人物",
+                    "keyframe_negative_prompt_end_en": "color contamination, extra people",
+                    "video_prompt_zh": "黑猫慢慢抬头, 构图稳定",
+                    "video_prompt_en": "black cat slowly raises head, stable composition",
+                    "style_color_mode": "黑白",
+                    "style_render_style": "日本漫画风插图",
+                }
+            ]
+        },
+        shot_ids=["shot_001"],
+    )
+    item = result["shots"][0]
+    assert any(str(token.get("text", "")) == "black and white" for token in item["keyframe_prompt_start_tokens_en"])
+    assert any(str(token.get("text", "")) == "anime limited animation" for token in item["video_prompt_tokens_en"])
+    assert "realistic" in item["keyframe_negative_prompt_start_en"]
+    assert any(str(token.get("text", "")) == "extra people" for token in item["keyframe_negative_prompt_start_tokens_en_increment"])
 
 
 def test_mock_script_generator_should_emit_new_plan_fields() -> None:

@@ -30,9 +30,7 @@ from music_video_pipeline.modules.module_b_v2.models import SAFE_CLOSEUP_COMPOSI
 from music_video_pipeline.modules.module_b_v2.parser import (
     ModuleBV2ParseError,
     parse_role3_segment_directing_markdown,
-    validate_camera_plan,
     validate_role3_segment_directing_output,
-    validate_transition_plan,
 )
 # 项目内模块：统一 prompt 模板加载。
 from music_video_pipeline.modules.module_b_v2.prompt_templates import (
@@ -77,6 +75,9 @@ ROLE3_AUDIO_CONTEXT_SCHEMA = [
     MarkdownFieldSchema("tension_delta", "audio_profile.tension_delta", ""),
     MarkdownFieldSchema("is_local_peak", "audio_profile.is_local_peak", False),
     MarkdownFieldSchema("position_in_big_segment", "audio_profile.position_in_big_segment", ""),
+    MarkdownFieldSchema("motion_delta_label", "audio_profile.motion_delta_label", ""),
+    MarkdownFieldSchema("motion_speed_label", "audio_profile.motion_speed_label", ""),
+    MarkdownFieldSchema("composition_stability", "audio_profile.composition_stability", ""),
 ]
 # 常量：角色3选择提示字段 schema。
 ROLE3_SELECTION_HINT_SCHEMA = [
@@ -105,29 +106,18 @@ ROLE3_COMPOSITION_LINE_SCHEMA = MarkdownLineSchema(
     detail_separator=" | ",
     detail_with_key=False,
 )
-# 常量：角色3运镜候选行 schema。
-ROLE3_CAMERA_PLAN_LINE_SCHEMA = MarkdownLineSchema(
-    id_path="preset_id",
-    detail_schema=[
-        MarkdownFieldSchema("mode", "mode", "none"),
-        MarkdownFieldSchema("direction", "direction", "none"),
-        MarkdownFieldSchema("strength", "strength", "none"),
-        MarkdownFieldSchema("easing", "easing", "none"),
-    ],
-    detail_separator=", ",
-    detail_with_key=True,
-)
-# 常量：角色3转场候选行 schema。
-ROLE3_TRANSITION_PLAN_LINE_SCHEMA = MarkdownLineSchema(
-    id_path="preset_id",
-    detail_schema=[
-        MarkdownFieldSchema("kind", "kind", "none"),
-        MarkdownFieldSchema("duration_ms", "duration_ms", 0),
-        MarkdownFieldSchema("easing", "easing", "none"),
-    ],
-    detail_separator=", ",
-    detail_with_key=True,
-)
+def _render_preset_id_list(preset_ids: list[str]) -> str:
+    """
+    功能说明：将 preset_id 列表渲染为 role3 prompt 直接可读的文本块。
+    参数说明：
+    - preset_ids: preset_id 数组。
+    返回值：
+    - str: 渲染后的文本。
+    异常说明：无。
+    边界条件：空列表时返回 `none`。
+    """
+    normalized = [str(item).strip() for item in preset_ids if str(item).strip()]
+    return ", ".join(normalized) if normalized else "none"
 
 
 class Role3SegmentDirector:
@@ -268,6 +258,38 @@ class Role3SegmentDirector:
             "tension_delta": str(audio_payload.get("tension_delta", "")).strip(),
             "is_local_peak": bool(audio_payload.get("is_local_peak", False)),
             "position_in_big_segment": str(audio_payload.get("position_in_big_segment", "")).strip(),
+            "motion_delta_label": str(audio_payload.get("motion_delta_label", "")).strip(),
+            "motion_speed_label": str(audio_payload.get("motion_speed_label", "")).strip(),
+            "composition_stability": str(audio_payload.get("composition_stability", "stable")).strip() or "stable",
+        }
+
+    def _build_motion_labels(self, audio_payload: dict[str, Any]) -> dict[str, str]:
+        """
+        功能说明：根据音频能量离散化生成角色4将复用的动作尺度与速度标签。
+        参数说明：
+        - audio_payload: 当前小段规则增强音频对象。
+        返回值：
+        - dict[str, str]: motion_delta_label/motion_speed_label/composition_stability。
+        异常说明：无。
+        边界条件：当前统一固定为 stable 构图；未知能量回退到 small/moderate。
+        """
+        energy_level = str(audio_payload.get("energy_level", "")).strip().lower()
+        if energy_level == "low":
+            return {
+                "motion_delta_label": "tiny",
+                "motion_speed_label": "slow",
+                "composition_stability": "stable",
+            }
+        if energy_level == "high":
+            return {
+                "motion_delta_label": "medium",
+                "motion_speed_label": "fast",
+                "composition_stability": "stable",
+            }
+        return {
+            "motion_delta_label": "small",
+            "motion_speed_label": "moderate",
+            "composition_stability": "stable",
         }
 
     def _build_shot_id(self, segment: dict[str, Any]) -> str:
@@ -323,7 +345,9 @@ class Role3SegmentDirector:
             "scene_desc_zh": str(response.get("scene_desc_zh", "")).strip(),
             "selected_scene_id": str(response.get("selected_scene_id", "")).strip(),
             "composition_id": str(response.get("composition_id", "")).strip(),
-            "camera_plan_preset_id": str((response.get("camera_plan") or {}).get("preset_id", "")).strip(),
+            "camera_plan_preset_id": str(
+                response.get("camera_plan_preset_id", "") or (response.get("camera_plan") or {}).get("preset_id", "")
+            ).strip(),
         }
 
     def _resolve_segment_lyrics(self, *, lyric_timeline: Any, segment_id: str) -> list[str]:
@@ -393,8 +417,8 @@ class Role3SegmentDirector:
             "big_segment_lyric_excerpt": str(big_segment_lyric_context.get("lyric_excerpt", "")).strip(),
             "audio_profile": self._compact_audio_profile(audio_payload),
             "composition_catalog": composition_catalog,
-            "camera_plan_candidates": audio_payload.get("camera_plan_candidates", []),
-            "transition_plan_candidates": audio_payload.get("transition_plan_candidates", []),
+            "camera_preset_ids": audio_payload.get("camera_preset_ids", []),
+            "transition_preset_ids": audio_payload.get("transition_preset_ids", []),
             "history": history_items[-2:],
             "selection_hint": {
                 "prefer_scene_ids": self._resolve_preferred_scene_ids(
@@ -439,10 +463,20 @@ class Role3SegmentDirector:
             for item in role2_output.get("big_segments", [])
             if isinstance(item, dict)
         }
-        composition_catalog = [
-            dict(item) for item in storyboard_template.get("composition_catalog", []) if isinstance(item, dict)
-        ]
+        composition_catalog = [dict(item) for item in storyboard_template.get("composition_catalog", []) if isinstance(item, dict)]
         compact_composition_catalog = self._compact_composition_catalog(composition_catalog)
+        camera_preset_lookup = {
+            str(item.get("preset_id", "")).strip(): validate_camera_plan(item)
+            for item in storyboard_template.get("camera_plan_presets", [])
+            if isinstance(item, dict)
+        }
+        transition_preset_lookup = {
+            str(item.get("preset_id", "")).strip(): validate_transition_plan(item)
+            for item in storyboard_template.get("transition_presets", [])
+            if isinstance(item, dict)
+        }
+        camera_preset_ids = [preset_id for preset_id in camera_preset_lookup if preset_id]
+        transition_preset_ids = [preset_id for preset_id in transition_preset_lookup if preset_id]
         scene_ids = self._extract_item_ids(storyboard_template.get("scene_catalog", []), field_name="item_id")
         prop_ids = self._extract_item_ids(storyboard_template.get("prop_catalog", []), field_name="item_id")
         character_ids = self._extract_item_ids(storyboard_template.get("character_catalog", []), field_name="item_id")
@@ -476,6 +510,10 @@ class Role3SegmentDirector:
                     big_story=big_story_map.get(big_segment_id, {}),
                     composition_catalog=compact_composition_catalog,
                     segment_audio_features=segment_audio_features,
+                    camera_preset_ids=camera_preset_ids,
+                    transition_preset_ids=transition_preset_ids,
+                    camera_preset_lookup=camera_preset_lookup,
+                    transition_preset_lookup=transition_preset_lookup,
                     big_segment_lyric_context=big_segment_lyric_context_map.get(big_segment_id, {}),
                     required_shot_ids=required_shot_ids,
                     existing_shots=existing_shot_map,
@@ -529,6 +567,10 @@ class Role3SegmentDirector:
         big_story: dict[str, Any],
         composition_catalog: list[dict[str, Any]],
         segment_audio_features: dict[str, dict[str, Any]],
+        camera_preset_ids: list[str],
+        transition_preset_ids: list[str],
+        camera_preset_lookup: dict[str, dict[str, Any]],
+        transition_preset_lookup: dict[str, dict[str, Any]],
         big_segment_lyric_context: dict[str, Any],
         required_shot_ids: set[str],
         existing_shots: dict[str, dict[str, Any]],
@@ -580,6 +622,9 @@ class Role3SegmentDirector:
                 continue
             segment_id = str(segment.get("segment_id", "")).strip()
             audio_payload = dict(segment_audio_features.get(segment_id, {}))
+            audio_payload["camera_preset_ids"] = list(camera_preset_ids)
+            audio_payload["transition_preset_ids"] = list(transition_preset_ids)
+            audio_payload.update(self._build_motion_labels(audio_payload))
             payload = self._build_role3_prompt_payload(
                 shot_id=shot_id,
                 big_segment_id=big_segment_id,
@@ -607,12 +652,11 @@ class Role3SegmentDirector:
             )
             response = parse_role3_segment_directing_markdown(response_text)
             response["shot_id"] = shot_id
-            self._assert_plan_selected_from_candidates(
+            response = self._normalize_role3_plans(
                 shot_id=shot_id,
-                camera_plan=response.get("camera_plan", {}),
-                transition_plan=response.get("transition_plan", {}),
-                camera_plan_candidates=audio_payload.get("camera_plan_candidates", []),
-                transition_plan_candidates=audio_payload.get("transition_plan_candidates", []),
+                response=response,
+                camera_preset_lookup=camera_preset_lookup,
+                transition_preset_lookup=transition_preset_lookup,
             )
             if shot_id in required_shot_ids:
                 results.append(response)
@@ -654,14 +698,8 @@ class Role3SegmentDirector:
                 payload.get("composition_catalog", []),
                 line_schema=ROLE3_COMPOSITION_LINE_SCHEMA,
             ),
-            "camera_candidates": render_compound_lines(
-                payload.get("camera_plan_candidates", []),
-                line_schema=ROLE3_CAMERA_PLAN_LINE_SCHEMA,
-            ),
-            "transition_candidates": render_compound_lines(
-                payload.get("transition_plan_candidates", []),
-                line_schema=ROLE3_TRANSITION_PLAN_LINE_SCHEMA,
-            ),
+            "camera_preset_ids": _render_preset_id_list(payload.get("camera_preset_ids", [])),
+            "transition_preset_ids": _render_preset_id_list(payload.get("transition_preset_ids", [])),
             "history_context": render_compound_lines(
                 payload.get("history", []),
                 line_schema=ROLE3_HISTORY_LINE_SCHEMA,
@@ -669,41 +707,37 @@ class Role3SegmentDirector:
             "selection_hint": render_schema_fields(prompt_source, ROLE3_SELECTION_HINT_SCHEMA),
         }
 
-    def _assert_plan_selected_from_candidates(
+    def _normalize_role3_plans(
         self,
         *,
         shot_id: str,
-        camera_plan: Any,
-        transition_plan: Any,
-        camera_plan_candidates: Any,
-        transition_plan_candidates: Any,
-    ) -> None:
+        response: dict[str, Any],
+        camera_preset_lookup: dict[str, dict[str, Any]],
+        transition_preset_lookup: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
         """
-        功能说明：校验角色3返回的运镜/转场是否严格来自规则候选集。
+        功能说明：将 role3 输出的运镜/转场按 preset_id 查表归一化，删除“候选对象逐字段匹配”的死规则。
         参数说明：
         - shot_id: 当前镜头 ID。
-        - camera_plan/transition_plan: LLM 返回对象。
-        - camera_plan_candidates/transition_plan_candidates: 规则候选数组。
-        返回值：无。
+        - response: role3 单镜头解析结果。
+        - camera_preset_lookup/transition_preset_lookup: 模板预设索引。
+        返回值：
+        - dict[str, Any]: 归一化后的 response。
         异常说明：
-        - ModuleBV2ParseError: 检测到越权选择时抛出。
-        边界条件：比较逻辑按完整标准化对象匹配，而非仅比 preset_id。
+        - ModuleBV2ParseError: preset_id 不在模板预设中时抛出。
+        边界条件：会强制用模板预设覆盖 mode/direction/strength/easing 等字段。
         """
-        normalized_camera_plan = validate_camera_plan(camera_plan if isinstance(camera_plan, dict) else {})
-        normalized_transition_plan = validate_transition_plan(
-            transition_plan if isinstance(transition_plan, dict) else {}
-        )
-        normalized_camera_candidates = [
-            validate_camera_plan(item) for item in camera_plan_candidates if isinstance(item, dict)
-        ]
-        normalized_transition_candidates = [
-            validate_transition_plan(item) for item in transition_plan_candidates if isinstance(item, dict)
-        ]
-        if normalized_camera_candidates and normalized_camera_plan not in normalized_camera_candidates:
+        normalized_response = dict(response)
+        camera_preset_id = str(response.get("camera_plan_preset_id", "")).strip()
+        transition_preset_id = str(response.get("transition_plan_preset_id", "")).strip()
+        if camera_preset_id not in camera_preset_lookup:
+            raise ModuleBV2ParseError(f"role3[{shot_id}] 返回的 camera_plan.preset_id 不在模板预设中：{camera_preset_id}")
+        if transition_preset_id not in transition_preset_lookup:
             raise ModuleBV2ParseError(
-                f"role3[{shot_id}] 返回的 camera_plan 不在候选集中：{normalized_camera_plan}"
+                f"role3[{shot_id}] 返回的 transition_plan.preset_id 不在模板预设中：{transition_preset_id}"
             )
-        if normalized_transition_candidates and normalized_transition_plan not in normalized_transition_candidates:
-            raise ModuleBV2ParseError(
-                f"role3[{shot_id}] 返回的 transition_plan 不在候选集中：{normalized_transition_plan}"
-            )
+        normalized_response["camera_plan_preset_id"] = camera_preset_id
+        normalized_response["transition_plan_preset_id"] = transition_preset_id
+        normalized_response["camera_plan"] = dict(camera_preset_lookup[camera_preset_id])
+        normalized_response["transition_plan"] = dict(transition_preset_lookup[transition_preset_id])
+        return normalized_response

@@ -43,6 +43,50 @@ def _build_prompt_fields(prompt_en: str) -> dict[str, str]:
     }
 
 
+def _build_plan_fields(
+    camera_preset_id: str = "zoom_in_s",
+    transition_preset_id: str = "crossfade_160",
+) -> dict[str, dict]:
+    """
+    功能说明：构造模块B新契约所需的运镜与转场计划字段。
+    参数说明：
+    - camera_preset_id: 运镜预设ID。
+    - transition_preset_id: 转场预设ID。
+    返回值：
+    - dict[str, dict]: 包含 camera_plan 与 transition_plan 的字典。
+    异常说明：无。
+    边界条件：仅覆盖当前测试使用的预设。
+    """
+    camera_mapping = {
+        "zoom_in_s": {
+            "preset_id": "zoom_in_s",
+            "mode": "zoom",
+            "direction": "center",
+            "strength": "small",
+            "easing": "ease_in_out",
+        },
+        "none": {
+            "preset_id": "none",
+            "mode": "none",
+            "direction": "center",
+            "strength": "none",
+            "easing": "linear",
+        },
+    }
+    transition_mapping = {
+        "crossfade_160": {
+            "preset_id": "crossfade_160",
+            "kind": "crossfade",
+            "duration_ms": 160,
+            "easing": "ease_in_out",
+        },
+    }
+    return {
+        "camera_plan": dict(camera_mapping[camera_preset_id]),
+        "transition_plan": dict(transition_mapping[transition_preset_id]),
+    }
+
+
 def test_get_module_b_status_summary_should_return_counts_and_problem_units(tmp_path: Path) -> None:
     """
     功能说明：验证模块B状态摘要接口能返回任务与单元状态聚合信息。
@@ -146,8 +190,7 @@ def test_retry_module_b_segment_should_only_rerun_target_unit_and_mark_c_d_pendi
                     "end_time": float(record["end_time"]),
                     "scene_desc": f"scene-{unit_id}",
                     **_build_prompt_fields(prompt_en=f"prompt-{unit_id}"),
-                    "camera_motion": "zoom_in",
-                    "transition": "crossfade",
+                    **_build_plan_fields(camera_preset_id="zoom_in_s", transition_preset_id="crossfade_160"),
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
                 },
             )
@@ -171,8 +214,7 @@ def test_retry_module_b_segment_should_only_rerun_target_unit_and_mark_c_d_pendi
                     "end_time": 1.0,
                     "scene_desc": "s",
                     **_build_prompt_fields(prompt_en="p"),
-                    "camera_motion": "none",
-                    "transition": "crossfade",
+                    **_build_plan_fields(camera_preset_id="none", transition_preset_id="crossfade_160"),
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
                 }
             ],

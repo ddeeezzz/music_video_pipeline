@@ -65,6 +65,56 @@ def _build_prompt_fields(
     }
 
 
+def _build_plan_fields(
+    camera_preset_id: str = "zoom_in_s",
+    transition_preset_id: str = "crossfade_160",
+) -> dict[str, dict]:
+    """
+    功能说明：构造模块B新契约中的运镜与转场计划字段。
+    参数说明：
+    - camera_preset_id: 运镜预设ID。
+    - transition_preset_id: 转场预设ID。
+    返回值：
+    - dict[str, dict]: 包含 camera_plan 与 transition_plan 的字典。
+    异常说明：无。
+    边界条件：仅覆盖当前测试涉及的最小预设集合。
+    """
+    camera_mapping = {
+        "zoom_in_s": {
+            "preset_id": "zoom_in_s",
+            "mode": "zoom",
+            "direction": "center",
+            "strength": "small",
+            "easing": "ease_in_out",
+        },
+        "none": {
+            "preset_id": "none",
+            "mode": "none",
+            "direction": "center",
+            "strength": "none",
+            "easing": "linear",
+        },
+    }
+    transition_mapping = {
+        "crossfade_160": {
+            "preset_id": "crossfade_160",
+            "kind": "crossfade",
+            "duration_ms": 160,
+            "easing": "ease_in_out",
+        },
+        "hard_cut_0": {
+            "preset_id": "hard_cut_0",
+            "kind": "hard_cut",
+            "duration_ms": 0,
+            "easing": "linear",
+        },
+    }
+    return {
+        "camera_plan": dict(camera_mapping[camera_preset_id]),
+        "transition_plan": dict(transition_mapping[transition_preset_id]),
+    }
+
+
 class _ScriptedScriptGenerator:
     """
     功能说明：测试用分镜生成器，可按 segment_id 预设失败次数。
@@ -129,8 +179,7 @@ class _ScriptedScriptGenerator:
                 keyframe_start_en=f"prompt-{segment_id}",
                 video_en=f"prompt-{segment_id}",
             ),
-            "camera_motion": "zoom_in",
-            "transition": "crossfade",
+            **_build_plan_fields(camera_preset_id="zoom_in_s", transition_preset_id="crossfade_160"),
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": "",
             "lyric_units": [],
@@ -176,8 +225,7 @@ class _MemoryAwareScriptGenerator:
                 keyframe_start_en=f"prompt-{segment_id}",
                 video_en=f"video-{segment_id}",
             ),
-            "camera_motion": "zoom_in",
-            "transition": "crossfade",
+            **_build_plan_fields(camera_preset_id="zoom_in_s", transition_preset_id="crossfade_160"),
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": f"lyric-{segment_id}",
             "lyric_units": [],
@@ -329,8 +377,7 @@ def test_run_module_b_should_rebuild_memory_from_only_previous_done_units(tmp_pa
                 keyframe_start_en="prompt-seg_0003-manual",
                 video_en="video-seg_0003-manual",
             ),
-            "camera_motion": "zoom_in",
-            "transition": "crossfade",
+            **_build_plan_fields(camera_preset_id="zoom_in_s", transition_preset_id="crossfade_160"),
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": "lyric-seg_0003-manual",
             "lyric_units": [],

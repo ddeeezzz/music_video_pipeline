@@ -51,6 +51,9 @@ ROLE4_SHOT_BRIEF_SCHEMA = [
     MarkdownFieldSchema("composition_name_zh", "shot_brief.composition.name_zh", ""),
     MarkdownFieldSchema("composition_desc_zh", "shot_brief.composition.description_zh", ""),
     MarkdownFieldSchema("composition_tags_en", "shot_brief.composition.prompt_tags_en", []),
+    MarkdownFieldSchema("motion_delta_label", "shot_brief.motion_delta_label", ""),
+    MarkdownFieldSchema("motion_speed_label", "shot_brief.motion_speed_label", ""),
+    MarkdownFieldSchema("composition_stability", "shot_brief.composition_stability", ""),
 ]
 # 常量：角色4视觉参考字段 schema。
 ROLE4_VISUAL_REFERENCE_SCHEMA = [
@@ -138,6 +141,9 @@ class Role4PromptBuilder:
                 str(item).strip() for item in shot_item.get("selected_prop_ids", []) if str(item).strip()
             ],
             "composition": dict(composition_lookup.get(composition_id, {"composition_id": composition_id})),
+            "motion_delta_label": str(shot_item.get("motion_delta_label", "")).strip(),
+            "motion_speed_label": str(shot_item.get("motion_speed_label", "")).strip(),
+            "composition_stability": str(shot_item.get("composition_stability", "stable")).strip() or "stable",
         }
 
     def _compact_visual_reference_item(self, item: dict[str, Any]) -> dict[str, Any]:
@@ -303,6 +309,8 @@ class Role4PromptBuilder:
         )
         response = parse_role4_prompt_markdown(response_text)
         response["shot_id"] = str(shot_item.get("shot_id", "")).strip()
+        response["style_color_mode"] = str((storyboard_template.get("style") or {}).get("color_mode", "")).strip()
+        response["style_render_style"] = str((storyboard_template.get("style") or {}).get("render_style", "")).strip()
         self._llm_runtime.logger.info(
             "模块B v2 role4 完成 shot，shot_id=%s",
             str(shot_item.get("shot_id", "")).strip(),
@@ -337,6 +345,9 @@ class Role4PromptBuilder:
         return {
             "style_block": render_schema_fields(payload, ROLE4_STYLE_SCHEMA),
             "shot_brief": render_schema_fields(payload, ROLE4_SHOT_BRIEF_SCHEMA),
+            "motion_delta_label": str(shot_brief.get("motion_delta_label", "")).strip(),
+            "motion_speed_label": str(shot_brief.get("motion_speed_label", "")).strip(),
+            "composition_stability": str(shot_brief.get("composition_stability", "")).strip(),
             "visual_reference": render_repeated_sections(
                 visual_reference_items,
                 heading_builder=lambda item, _index: str(item.get("section_heading", "")).strip() or "reference",
