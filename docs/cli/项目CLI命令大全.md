@@ -17,7 +17,7 @@ uv run --no-sync mvpl run --task-id wuli_v2 --config configs/wuli_v2.json
 ### 手动启动任务监督（按需）
 
 ```bash
-uv run --no-sync mvpl monitor --task-id wuli_v2 --config configs/wuli_v2.json
+uv run --no-sync mvpl monitor --task-id jieranduhuo01 --config configs/music_yby/jieranduhuo_v2.json
 ```
 
 启动后会在 `runs/<task_id>/task_monitor.html` 写入监督入口页，打开该页面即可跳转到本次本地监督服务地址。

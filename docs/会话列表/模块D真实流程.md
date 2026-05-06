@@ -452,3 +452,74 @@
   - `shot_002 帧密度策略生效`: `03:57:21.495`
 - 本轮采样窗口内，`shot_002` 启动记录出现在 `shot_001` 完成之后约 `40ms`；
   - 该样本未直接体现“下一单元去噪早于上一单元完成”的重叠证据。
+
+---
+
+## 增量会话记录（2026-04-24）
+
+### 1. 用户本轮最新指令
+- 用户明确要求：本次收到消息后，仅向本文件追加会话记录，不执行任何改造计划。
+- 用户明确要求：模块 C/D 不再保留“单帧兼容/回退”方向，表达为“彻底不兼容单帧”。
+
+### 2. 用户本轮提出的设计口径（待后续实施确认）
+- 用户提出关键帧关系口径：
+  - 第二关键帧应基于“第一关键帧图像 + 文本”联合生成（图文联合生图）。
+- 用户提出 B 模块输入口径：
+  - 每个 segment 传入两组生图 prompt；
+  - 每组均包含中英文；
+  - 中文用于阅读与审阅，英文用于实际生成。
+- 用户提出 D 相关口径：
+  - 询问“生视频 prompt”是否也需要同步改造。
+- 用户提出可维护性要求：
+  - `animatediff_renderer.py` 体量过大，需要按 SOLID 原则拆分功能，便于维护。
+
+### 3. 本轮执行边界（仅事实）
+- 本轮按用户明确要求，仅追加会话记录。
+- 本轮未执行任何代码改动、配置改动、重跑验证或拆分实施。
+
+---
+
+## 增量会话记录（2026-04-25）
+
+### 1. 用户本轮新增要求（与模块D相关）
+- 用户要求：补齐 B/D prompt 契约为 `start/end + 中英分离`，并完成校验与回归测试。
+- 用户要求：继续保持“单帧不兼容”方向，不回退到旧兼容路径。
+- 用户要求：将本轮 C/D 相关工作写入会话记录文档。
+
+### 2. 本轮模块D代码变更事实（仅事实）
+- 已在模块 D 执行器中新增双轨提示词解析路径：
+  - 新增 `_resolve_unit_video_prompt_pair()`；
+  - 新增 `_compose_unit_video_prompt()`；
+  - 新增 `_extract_prompt_pair_from_shot_payload()` 与模块B产物回读双轨函数。
+- 已调整 D 的提示词消费行为：
+  - 优先读取 `video_prompt_start_en/video_prompt_end_en`；
+  - 在现有 renderer 单 `prompt` 入参前提下，将 start/end 合成为单条叙事过渡 prompt；
+  - 同步回填 `unit.shot` 的 `video_prompt_start_en/video_prompt_end_en` 与 start 别名字段。
+- 已扩展模块 D 输出摘要字段回写：
+  - `src/music_video_pipeline/modules/module_d/output_builder.py` 现包含 `keyframe/video prompt` 的 `start/end` 双轨字段。
+
+### 3. 本轮模块D可维护性相关事实
+- 已完成模块 D 后端职责拆分（降低单文件复杂度）：
+  - 新增 `src/music_video_pipeline/modules/module_d/backends/animatediff_runtime.py`（运行时资产加载/缓存相关）。
+  - 新增 `src/music_video_pipeline/modules/module_d/backends/animatediff_timing.py`（时序帧率、整数重复上采样、编码命令构建相关）。
+  - `animatediff_renderer.py` 已收敛为渲染主流程编排与后端调用。
+- 拆分后保留了既有入口与补丁点，不改变上层调用语义。
+
+### 4. 与模块D联动的本轮上游契约事实
+- `types.py` 的 `ModuleBOutput` 校验已升级为双轨必填（九字段语义），并校验别名一致性。
+- `module_b` LLM 解析与提示词模板已同步升级为双轨产出，D 的模块B回读逻辑可直接消费。
+- `module_c` 产物字段与 sidecar 仍保持双锚点强契约，未恢复单帧兼容。
+
+### 5. 本轮验证事实（仅事实）
+- 已通过与本轮 D 变更直接相关的测试：
+  - `tests/test_module_d_unit_retry_parallel.py`
+  - `tests/test_module_d_animatediff_renderer.py`
+  - `tests/test_module_d_timing.py`
+  - `tests/test_pipeline_module_d_cli.py`
+  - `tests/test_cross_module_bcd_parallel.py`
+  - `tests/test_pipeline_bcd_cli.py`
+- 与双轨契约联动的回归测试也已通过：
+  - `tests/test_module_b_llm_parser.py`
+  - `tests/test_module_b_llm_generator.py`
+  - `tests/test_module_c_unit_retry_parallel.py`
+  - `tests/test_contracts.py`

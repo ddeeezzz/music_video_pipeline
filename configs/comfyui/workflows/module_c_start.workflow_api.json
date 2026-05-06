@@ -1,0 +1,92 @@
+{
+  "1": {
+    "inputs": {
+      "ckpt_name": "anything-v5.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple"
+  },
+  "5": {
+    "inputs": {
+      "lora_name": "akebi/AkebiChar-000008.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0,
+      "model": ["1", 0],
+      "clip": ["1", 1]
+    },
+    "class_type": "LoraLoader"
+  },
+  "20": {
+    "inputs": {
+      "text": "AkebiChar, 1girl, solo, face focus, smiling, looking at viewer, long hair, bangs, (monochrome:1.3), (white background:1.3), hiro (artist), manga style, lineart, sketch, hatching (texture), delicate lines, sharp lines, (delicate eyelashes:1.2)，masterpiece",
+      "clip": ["5", 1]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "21": {
+    "inputs": {
+      "text": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
+      "clip": ["5", 1]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "30": {
+    "inputs": {
+      "width": 768,
+      "height": 432,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage"
+  },
+  "40": {
+    "inputs": {
+      "seed": 235235,
+      "steps": 25,
+      "cfg": 7.0,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1.0,
+      "model": ["5", 0],
+      "positive": ["20", 0],
+      "negative": ["21", 0],
+      "latent_image": ["30", 0]
+    },
+    "class_type": "KSampler"
+  },
+  "50": {
+    "inputs": {
+      "samples": ["40", 0],
+      "vae": ["1", 2]
+    },
+    "class_type": "VAEDecode"
+  },
+  "60": {
+    "inputs": {
+      "model_name": "RealESRGAN_x4plus_anime_6B.pth"
+    },
+    "class_type": "UpscaleModelLoader"
+  },
+  "61": {
+    "inputs": {
+      "upscale_model": ["60", 0],
+      "image": ["50", 0]
+    },
+    "class_type": "ImageUpscaleWithModel"
+  },
+  "85": {
+    "inputs": {
+      "image": ["61", 0],
+      "upscale_method": "lanczos",
+      "width": 768,
+      "height": 432,
+      "crop": "center"
+    },
+    "class_type": "ImageScale"
+  },
+  "99": {
+    "inputs": {
+      "filename_prefix": "mvpl/module_c_start",
+      "images": ["85", 0]
+    },
+    "class_type": "SaveImage"
+  }
+}

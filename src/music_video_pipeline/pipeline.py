@@ -29,6 +29,11 @@ from music_video_pipeline.constants import MODULE_ORDER, VALID_MODULES
 from music_video_pipeline.io_utils import ensure_dir
 # 项目内模块：模块执行函数
 from music_video_pipeline.modules import run_module_a_v2, run_module_b, run_module_c, run_module_d
+# 项目内模块：模块B v2 角色级/shot级缓存失效工具。
+from music_video_pipeline.modules.module_b_v2 import (
+    invalidate_module_b_v2_role_outputs,
+    invalidate_module_b_v2_role_shot_outputs,
+)
 # 项目内模块：跨模块 B/C/D 并行入口
 from music_video_pipeline.modules.cross_bcd import run_cross_module_bcd
 # 项目内模块：跨模块自适应窗口状态快照
@@ -499,6 +504,170 @@ class PipelineRunner:
             summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
             summary["downstream_rebuild_required"] = True
             summary["rebuild_from_module"] = "C"
+            return summary
+
+    def retry_module_b_role(self, task_id: str, role_name: str, config_path: Path) -> dict:
+        """
+        功能说明：按 role 级起点重试模块 B v2，并在成功后仅保留 C/D 待重建占位。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - role_name: 模块B v2 角色名（role1/role2/role3/role4）。
+        - config_path: 配置文件路径。
+        返回值：
+        - dict: 任务执行摘要，并附带本次重试 role 与缓存失效摘要。
+        异常说明：任务不存在、上游未完成、模块B非 v2 链路或模块执行失败时抛 RuntimeError。
+        边界条件：仅执行模块B，不自动执行 C/D；完成后 C/D 保持 pending 等待后续衔接。
+        """
+        normalized_role_name = str(role_name).strip().lower()
+        if not normalized_role_name:
+            raise RuntimeError("role_name 不能为空。")
+        if str(self.config.mode.script_generator).strip().lower() != "multi_role_llm_v2":
+            raise RuntimeError(
+                "模块B角色级重试仅支持 multi_role_llm_v2 链路，当前 script_generator="
+                f"{self.config.mode.script_generator}"
+            )
+
+        task_record = self.state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法重试模块B角色：task_id={task_id}")
+
+        audio_path = Path(str(task_record["audio_path"]))
+        context = self._prepare_context(task_id=task_id, audio_path=audio_path)
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_retry_role", config_path=config_path):
+            self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+            module_status_map = self.state_store.get_module_status_map(task_id=task_id)
+            if module_status_map.get("A") != "done":
+                raise RuntimeError(
+                    f"模块B角色级重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
+                )
+
+            invalidation_summary = invalidate_module_b_v2_role_outputs(
+                task_dir=context.task_dir,
+                role_name=normalized_role_name,
+                logger=self.logger,
+            )
+            self.state_store.reset_from_module(task_id=task_id, module_name="B")
+            self.logger.info(
+                "模块B角色级重试已完成状态重置与缓存失效，task_id=%s，role_name=%s",
+                task_id,
+                normalized_role_name,
+            )
+
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            self._execute_one_module(context=context, module_name="B")
+
+            module_d_record = self.state_store.get_module_record(task_id=task_id, module_name="D")
+            output_video_path = Path(module_d_record["artifact_path"]) if module_d_record and module_d_record["artifact_path"] else Path("")
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            summary["retry_role_name"] = normalized_role_name
+            summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
+            summary["downstream_rebuild_required"] = True
+            summary["rebuild_from_module"] = "C"
+            summary["module_b_v2_invalidation"] = invalidation_summary
+            return summary
+
+    def retry_module_b_role_shot(self, task_id: str, role_name: str, shot_id: str, config_path: Path) -> dict:
+        """
+        功能说明：按 role 内单 shot 重试模块 B v2，并仅将对应链路的 C/D 标记为待重建。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - role_name: 模块B v2 角色名，仅允许 role3 或 role4。
+        - shot_id: 目标 shot_id。
+        - config_path: 配置文件路径。
+        返回值：
+        - dict: 任务执行摘要，并附带本次重试 role/shot 与缓存失效摘要。
+        异常说明：任务不存在、上游未完成、目标 shot 不存在、模块B非 v2 链路或模块执行失败时抛 RuntimeError。
+        边界条件：仅执行模块B，不自动执行 C/D；仅将目标链路的 C/D 置为 pending。
+        """
+        normalized_role_name = str(role_name).strip().lower()
+        normalized_shot_id = str(shot_id).strip()
+        if normalized_role_name not in {"role3", "role4"}:
+            raise RuntimeError("模块B角色内 shot 重试仅支持 role3 或 role4。")
+        if not normalized_shot_id:
+            raise RuntimeError("shot_id 不能为空。")
+        if str(self.config.mode.script_generator).strip().lower() != "multi_role_llm_v2":
+            raise RuntimeError(
+                "模块B角色内 shot 重试仅支持 multi_role_llm_v2 链路，当前 script_generator="
+                f"{self.config.mode.script_generator}"
+            )
+
+        task_record = self.state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法重试模块B角色内 shot：task_id={task_id}")
+
+        audio_path = Path(str(task_record["audio_path"]))
+        context = self._prepare_context(task_id=task_id, audio_path=audio_path)
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name="b_retry_role_shot", config_path=config_path):
+            self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+            module_status_map = self.state_store.get_module_status_map(task_id=task_id)
+            if module_status_map.get("A") != "done":
+                raise RuntimeError(
+                    f"模块B角色内 shot 重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
+                )
+
+            chain_rows = self.state_store.list_bcd_chain_status(task_id=task_id)
+            matched_rows = [row for row in chain_rows if str(row.get("shot_id", "")).strip() == normalized_shot_id]
+            if not matched_rows:
+                raise RuntimeError(
+                    f"模块B角色内 shot 重试失败：shot_id 不存在或尚未建立链路，task_id={task_id}，shot_id={normalized_shot_id}"
+                )
+            target_row = matched_rows[0]
+            target_segment_id = str(target_row.get("segment_id", "")).strip()
+            if not target_segment_id:
+                raise RuntimeError(
+                    f"模块B角色内 shot 重试失败：目标 shot 缺少 segment_id，task_id={task_id}，shot_id={normalized_shot_id}"
+                )
+
+            non_done_units = self.state_store.list_module_units_by_status(
+                task_id=task_id,
+                module_name="B",
+                statuses=["pending", "running", "failed"],
+            )
+            blocking_unit_ids = [str(item["unit_id"]) for item in non_done_units if str(item["unit_id"]) != target_segment_id]
+            if blocking_unit_ids:
+                raise RuntimeError(
+                    "模块B角色内 shot 重试被拒绝：存在其他非done单元，请先清理后再重试。"
+                    f"task_id={task_id}，blocking_unit_ids={blocking_unit_ids}"
+                )
+
+            invalidation_summary = invalidate_module_b_v2_role_shot_outputs(
+                task_dir=context.task_dir,
+                role_name=normalized_role_name,
+                shot_id=normalized_shot_id,
+                logger=self.logger,
+            )
+            self.state_store.reset_module_unit(
+                task_id=task_id,
+                module_name="B",
+                unit_id=target_segment_id,
+            )
+            self.logger.info(
+                "模块B角色内 shot 重试已重置目标单元与缓存，task_id=%s，role_name=%s，shot_id=%s，segment_id=%s",
+                task_id,
+                normalized_role_name,
+                normalized_shot_id,
+                target_segment_id,
+            )
+
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            self._execute_one_module(context=context, module_name="B")
+            downstream_reset = self.state_store.reset_bcd_downstream_units(
+                task_id=task_id,
+                segment_id=target_segment_id,
+                from_module="B",
+            )
+
+            module_d_record = self.state_store.get_module_record(task_id=task_id, module_name="D")
+            output_video_path = Path(module_d_record["artifact_path"]) if module_d_record and module_d_record["artifact_path"] else Path("")
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            summary["retry_role_name"] = normalized_role_name
+            summary["retry_shot_id"] = normalized_shot_id
+            summary["retry_segment_id"] = target_segment_id
+            summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
+            summary["downstream_rebuild_required"] = True
+            summary["rebuild_from_module"] = "C"
+            summary["downstream_reset"] = downstream_reset
+            summary["module_b_v2_invalidation"] = invalidation_summary
             return summary
 
     def retry_module_c_shot(self, task_id: str, shot_id: str, config_path: Path) -> dict:

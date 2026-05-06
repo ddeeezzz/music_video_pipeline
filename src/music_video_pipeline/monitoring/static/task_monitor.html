@@ -3,43 +3,169 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>任务监督面板</title>
+  <title>任务监督面板 / 项目 Web</title>
   <style>
     :root {
-      --bg: #f7f8fc;
-      --card: #ffffff;
-      --text: #121622;
-      --muted: #5f6a82;
-      --line: #d9dff0;
-      --ok: #2f9e44;
-      --run: #1c7ed6;
-      --wait: #868e96;
-      --fail: #c92a2a;
-      --accent: #0b7285;
+      --bg: #eef3f7;
+      --panel: #ffffff;
+      --panel-soft: #f7fafc;
+      --line: #d8e0ea;
+      --text: #16202a;
+      --muted: #64707d;
+      --accent: #114b5f;
+      --accent-2: #1a759f;
+      --ok: #2b9348;
+      --run: #1d4ed8;
+      --wait: #6b7280;
+      --fail: #c1121f;
+      --nav: #102a43;
+      --nav-soft: #183b56;
+      --nav-text: #eaf4ff;
+      --shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+      --player-bottom-safe-gap: 18px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: linear-gradient(180deg, #f8fbff 0%, #f5f6fa 100%);
       color: var(--text);
-      font: 14px/1.5 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(17, 75, 95, 0.10), transparent 34%),
+        linear-gradient(180deg, #f6fafc 0%, var(--bg) 100%);
+      font: 14px/1.6 "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      overflow: hidden;
     }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 20px 16px 28px;
+    body.sync-view-active {
+      overflow: hidden;
     }
-    .title-row {
+    .app {
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .top-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 14px 18px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0) 22%),
+        linear-gradient(180deg, var(--nav) 0%, #0c2236 100%);
+      color: var(--nav-text);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 8px 24px rgba(8, 20, 32, 0.18);
+    }
+    .brand {
+      display: grid;
+      gap: 4px;
+      min-width: 180px;
+    }
+    .brand-kicker {
+      font-size: 12px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: rgba(234, 244, 255, 0.68);
+    }
+    .brand-title {
+      font-size: 24px;
+      line-height: 1.1;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .nav {
       display: flex;
       flex-wrap: wrap;
-      align-items: baseline;
-      gap: 10px 16px;
-      margin-bottom: 12px;
+      gap: 10px;
+      flex: 1 1 auto;
+      min-width: 0;
     }
-    h1 {
-      margin: 0;
-      font-size: 22px;
-      letter-spacing: 0.4px;
+    .nav-center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      flex: 1 1 240px;
+      padding: 0 12px;
+    }
+    .nav-task-id {
+      color: rgba(234, 244, 255, 0.82);
+      font-size: 13px;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: center;
+      max-width: 100%;
+    }
+    .nav-button {
+      appearance: none;
+      border: 1px solid rgba(234, 244, 255, 0.12);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      color: var(--nav-text);
+      text-align: left;
+      padding: 12px 16px;
+      cursor: pointer;
+      transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+      min-width: 124px;
+    }
+    .nav-button.active {
+      background: linear-gradient(135deg, rgba(26,117,159,0.40), rgba(17,75,95,0.82));
+      border-color: rgba(234, 244, 255, 0.26);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+    }
+    .nav-button:hover {
+      transform: translateY(-1px);
+      background: rgba(255,255,255,0.08);
+      border-color: rgba(234, 244, 255, 0.22);
+    }
+    .nav-index {
+      display: inline-flex;
+      width: 24px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      margin-right: 10px;
+      font-weight: 700;
+      background: rgba(255,255,255,0.10);
+      font-family: "JetBrains Mono", "Consolas", monospace;
+    }
+    .nav-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .nav-tip {
+      flex: 0 0 auto;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(234, 244, 255, 0.78);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .main {
+      min-width: 0;
+      min-height: 0;
+      flex: 1 1 auto;
+      padding: clamp(16px, 2vw, 22px);
+      display: flex;
+      flex-direction: column;
+      gap: clamp(12px, 1.6vh, 18px);
+      overflow: hidden;
+    }
+    body.sync-view-active .main {
+      overflow: hidden;
+    }
+    .topbar {
+      display: none;
+    }
+    .mono {
+      font-family: "JetBrains Mono", "Consolas", monospace;
     }
     .meta {
       color: var(--muted);
@@ -47,7 +173,7 @@
     .status-pill {
       display: inline-block;
       border-radius: 999px;
-      padding: 2px 10px;
+      padding: 4px 12px;
       font-size: 12px;
       color: #fff;
       background: var(--wait);
@@ -57,17 +183,802 @@
     .status-done { background: var(--ok); }
     .status-failed { background: var(--fail); }
     .status-not_found { background: #495057; }
-
+    .view {
+      display: none;
+      min-width: 0;
+    }
+    .view.active {
+      display: block;
+      min-height: 0;
+    }
+    #view-home.active {
+      display: block;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    body.sync-view-active #view-sync.active {
+      display: flex;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    .section-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px 12px;
+      padding: 16px 18px 0;
+    }
+    .section-title {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+    .section-sub {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .detail-head {
+      flex-wrap: nowrap;
+      align-items: flex-start;
+    }
+    .detail-head-main {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .detail-head-notice {
+      flex: 0 1 560px;
+      min-width: 280px;
+      margin: 0;
+    }
+    .link-inline {
+      color: var(--accent-2);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .link-inline:hover {
+      text-decoration: underline;
+    }
+    .home-layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+      gap: 18px;
+      height: 100%;
+      min-height: 0;
+    }
+    .home-card {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .home-body {
+      padding: 16px 18px 18px;
+      min-height: 0;
+    }
+    .task-list-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .task-list-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .toolbar-button,
+    .primary-button,
+    .secondary-button {
+      appearance: none;
+      border-radius: 12px;
+      padding: 9px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+    }
+    .toolbar-button:hover,
+    .primary-button:hover,
+    .secondary-button:hover,
+    .ghost-button:hover,
+    .nav-action:hover {
+      transform: translateY(-1px);
+    }
+    .primary-button {
+      background: linear-gradient(135deg, rgba(26,117,159,0.12), rgba(17,75,95,0.08));
+      border-color: rgba(26,117,159,0.24);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .secondary-button {
+      background: var(--panel-soft);
+    }
+    .toolbar-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 7px 12px;
+      color: var(--muted);
+    }
+    .button-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 2px solid rgba(100, 112, 125, 0.22);
+      border-top-color: var(--accent-2);
+      animation: button-spin 0.8s linear infinite;
+      display: none;
+      flex: 0 0 auto;
+    }
+    .toolbar-button.loading .button-spinner {
+      display: inline-block;
+    }
+    @keyframes button-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+    .toolbar-button:disabled,
+    .primary-button:disabled,
+    .secondary-button:disabled,
+    .ghost-button:disabled,
+    .nav-action:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .task-list {
+      display: grid;
+      gap: 10px;
+      overflow: hidden;
+      flex: 1 1 auto;
+      min-height: 0;
+      padding-right: 4px;
+    }
+    .task-item {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 14px;
+      padding: 12px 13px;
+      cursor: pointer;
+      transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+    }
+    .task-item:hover {
+      transform: translateY(-1px);
+      border-color: #b6c6d6;
+    }
+    .task-item.active {
+      border-color: rgba(26,117,159,0.65);
+      background: linear-gradient(180deg, #f4fbff 0%, #eef7fc 100%);
+      box-shadow: inset 0 0 0 1px rgba(26,117,159,0.14);
+    }
+    .task-item-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    .task-item-id {
+      color: var(--accent);
+      font-size: 14px;
+      font-weight: 700;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .task-module-tags,
+    .detail-module-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .module-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 22px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(26,117,159,0.14);
+      background: #fff;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .module-tag strong {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .home-detail {
+      display: grid;
+      gap: 14px;
+      overflow: auto;
+      padding-right: 6px;
+      min-height: 0;
+    }
+    .notice {
+      border-radius: 14px;
+      padding: 12px 14px;
+      border: 1px solid transparent;
+      background: linear-gradient(180deg, #f7fafc 0%, #f2f6fa 100%);
+      color: var(--muted);
+      font-size: 13px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .notice.success {
+      background: linear-gradient(180deg, #f1fff5 0%, #ebfaf0 100%);
+      border-color: rgba(43, 147, 72, 0.18);
+      color: #1f6f3b;
+    }
+    .notice.error {
+      background: linear-gradient(180deg, #fff4f4 0%, #ffefef 100%);
+      border-color: rgba(193, 18, 31, 0.18);
+      color: #9b1c28;
+    }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 14px;
+    }
+    .detail-field {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
+    .detail-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .detail-value {
+      color: var(--text);
+      font-size: 13px;
+      word-break: break-word;
+    }
+    .detail-value.mono {
+      font-size: 12px;
+    }
+    .detail-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .form-block {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .form-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .form-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--accent);
+    }
+    .form-sub {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px 12px;
+    }
+    .form-field {
+      display: grid;
+      gap: 6px;
+    }
+    .form-field.span-2 {
+      grid-column: 1 / -1;
+    }
+    .form-field label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .text-input {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    .text-input:focus {
+      outline: none;
+      border-color: rgba(26,117,159,0.45);
+      box-shadow: 0 0 0 3px rgba(26,117,159,0.12);
+    }
+    .form-actions {
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .player-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 10px 12px;
+    }
+    .player-head-main {
+      min-width: 0;
+    }
+    .player-head-link {
+      justify-self: end;
+    }
+    .player-current-segment {
+      color: var(--accent);
+      font-size: 15px;
+      font-weight: 700;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      text-align: right;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      justify-self: end;
+      max-width: 280px;
+    }
+    .sync-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.9fr);
+      gap: 18px;
+      align-items: stretch;
+      width: 100%;
+      min-height: 0;
+      flex: 1 1 auto;
+    }
+    #view-sync.active {
+      overflow: hidden;
+    }
+    #view-sync.active .sync-layout {
+      height: 100%;
+    }
+    .side-stack {
+      display: grid;
+      grid-template-rows: minmax(180px, 0.82fr) minmax(260px, 1.18fr);
+      gap: 18px;
+      min-width: 0;
+      min-height: 0;
+    }
+    #view-sync.active .side-stack {
+      align-self: stretch;
+      min-height: 0;
+    }
+    .player-card,
+    .segments-card,
+    .lyrics-card,
+    .monitor-panel,
+    .iframe-card {
+      overflow: hidden;
+    }
+    .player-card,
+    .segments-card,
+    .lyrics-card {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .player-body,
+    .segments-body,
+    .lyrics-body,
+    .monitor-body,
+    .iframe-body {
+      padding: 16px 18px 18px;
+    }
+    .player-body {
+      padding-bottom: var(--player-bottom-safe-gap);
+      overflow: hidden;
+    }
+    .player-body,
+    .segments-body,
+    .lyrics-body {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+    #player-content {
+      display: grid;
+      grid-template-rows: auto auto auto auto;
+      align-content: start;
+      gap: 12px;
+      min-height: 0;
+    }
+    .player-shell {
+      background: #000;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.08);
+      min-height: 0;
+      width: 100%;
+      aspect-ratio: var(--player-aspect-ratio, 16 / 9);
+      margin: 0 auto;
+    }
+    video {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      object-fit: contain;
+    }
+    .progress-wrap {
+      display: grid;
+      gap: 6px;
+    }
+    .time-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .progress-range {
+      width: 100%;
+      accent-color: var(--accent-2);
+      cursor: pointer;
+    }
+    .player-note {
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0;
+    }
+    .player-divider {
+      height: 1px;
+      margin: 0;
+      background: linear-gradient(90deg, rgba(17, 75, 95, 0.18), rgba(17, 75, 95, 0.06));
+    }
+    .scene-panel {
+      display: grid;
+      gap: 8px;
+      padding-bottom: var(--player-bottom-safe-gap);
+    }
+    .scene-head-row,
+    .scene-body-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px 14px;
+      min-width: 0;
+    }
+    .scene-head-row {
+      justify-content: space-between;
+      flex-wrap: nowrap;
+    }
+    .scene-body-row {
+      align-items: flex-start;
+      padding-bottom: 0;
+    }
+    .scene-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      min-width: 0;
+      flex: 0 0 auto;
+    }
+    .scene-kicker {
+      color: var(--muted);
+      font-size: 12px;
+      flex: 0 0 auto;
+      text-align: left;
+    }
+    .scene-desc {
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.65;
+      word-break: break-word;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .scene-camera {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      flex: 0 0 auto;
+      text-align: right;
+      margin-left: auto;
+    }
+    .ghost-button,
+    .nav-action {
+      appearance: none;
+      border: 1px solid rgba(26,117,159,0.22);
+      background: rgba(26,117,159,0.08);
+      color: var(--accent);
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      line-height: 1.2;
+      cursor: pointer;
+      white-space: nowrap;
+      flex: 0 0 auto;
+    }
+    .ghost-button[hidden] {
+      display: none;
+    }
+    .segments-scroll,
+    .lyrics-scroll {
+      overflow: auto;
+      padding-right: 4px;
+      display: grid;
+      gap: 10px;
+    }
+    .segments-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      max-height: none;
+    }
+    .lyrics-scroll {
+      min-height: 0;
+      max-height: none;
+    }
+    .segments-body {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .lyrics-body {
+      padding-top: 14px;
+      padding-bottom: 30px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      min-height: 0;
+    }
+    .lyrics-footer {
+      display: grid;
+      gap: 6px;
+      padding-top: 6px;
+      padding-bottom: 12px;
+    }
+    .lyrics-footer[hidden] {
+      display: none;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(9, 18, 30, 0.42);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 40;
+    }
+    .modal-backdrop.active {
+      display: flex;
+    }
+    .prompt-modal {
+      width: min(960px, calc(100vw - 48px));
+      max-height: min(82vh, 900px);
+      overflow: auto;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.22);
+      padding: 18px 18px 20px;
+    }
+    .modal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .modal-title {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+    .modal-sub {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .modal-close {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 999px;
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+      line-height: 1;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .prompt-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .prompt-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+      padding: 12px 14px;
+      min-width: 0;
+    }
+    .prompt-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .prompt-card-text {
+      font-size: 13px;
+      line-height: 1.7;
+      color: var(--text);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .prompt-frame-image {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      border-radius: 10px;
+      background: #0d1b2a;
+      border: 1px solid rgba(17, 75, 95, 0.12);
+      margin-bottom: 8px;
+    }
+    .prompt-frame-image[hidden] {
+      display: none;
+    }
+    .prompt-frame-path {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      word-break: break-all;
+      white-space: pre-wrap;
+    }
+    .segment-line,
+    .lyric-line {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 14px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+    }
+    .segment-line:hover,
+    .lyric-line:hover {
+      transform: translateY(-1px);
+      border-color: #b6c6d6;
+    }
+    .segment-line.active,
+    .lyric-line.active {
+      border-color: rgba(26,117,159,0.65);
+      background: linear-gradient(180deg, #f4fbff 0%, #eef7fc 100%);
+      box-shadow: inset 0 0 0 1px rgba(26,117,159,0.14);
+    }
+    .segment-meta {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px 8px;
+    }
+    .segment-id {
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 700;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+    }
+    .segment-tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 1px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(26,117,159,0.18);
+      color: var(--accent-2);
+      background: rgba(26,117,159,0.08);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+    .segment-time,
+    .lyric-time {
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 5px;
+      font-family: "JetBrains Mono", "Consolas", monospace;
+    }
+    .segment-text {
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.55;
+      word-break: break-word;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-right: 4px;
+    }
+    .segment-text strong {
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .lyric-text {
+      font-size: 18px;
+      line-height: 1.65;
+      letter-spacing: 0.01em;
+      word-break: break-word;
+    }
+    .lyric-token {
+      transition: color 0.10s linear, background 0.10s linear;
+      border-radius: 6px;
+      padding: 0 1px;
+    }
+    .lyric-token.active {
+      color: #0b3954;
+      background: rgba(17, 75, 95, 0.14);
+    }
+    .lyric-empty,
+    .empty-state {
+      border: 1px dashed var(--line);
+      border-radius: 16px;
+      padding: 26px 18px;
+      color: var(--muted);
+      text-align: center;
+      background: linear-gradient(180deg, #fbfdff 0%, #f7fafc 100%);
+    }
+    .iframe-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px 12px;
+      margin-bottom: 12px;
+    }
+    .iframe-shell {
+      min-height: 76vh;
+      border-radius: 16px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    iframe {
+      display: block;
+      width: 100%;
+      min-height: 76vh;
+      border: 0;
+      background: #fff;
+    }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 12px;
-      margin: 14px 0 18px;
+      margin: 0 0 18px;
     }
-    .card {
-      background: var(--card);
+    .module-card {
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 14px;
       padding: 12px;
       box-shadow: 0 4px 12px rgba(17, 27, 54, 0.05);
     }
@@ -80,7 +991,7 @@
     .module-name {
       font-weight: 700;
       color: var(--accent);
-      letter-spacing: 0.4px;
+      letter-spacing: 0.04em;
     }
     .progress {
       height: 8px;
@@ -111,13 +1022,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .panel {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: 0 4px 12px rgba(17, 27, 54, 0.05);
-    }
     .counts {
       display: flex;
       gap: 8px;
@@ -131,6 +1035,11 @@
       border: 1px solid var(--line);
       color: var(--muted);
       background: #fff;
+    }
+    .table-wrap {
+      overflow: auto;
+      max-height: 58vh;
+      border-top: 1px solid #edf1f6;
     }
     table {
       width: 100%;
@@ -149,62 +1058,541 @@
       background: #fafcff;
       position: sticky;
       top: 0;
+      z-index: 1;
     }
-    .mono { font-family: "JetBrains Mono", "Consolas", monospace; }
-    @media (max-width: 768px) {
-      .container { padding: 14px 10px 20px; }
-      h1 { font-size: 18px; }
-      table { font-size: 12px; }
+    @media (max-width: 1180px) {
+      .home-layout {
+        grid-template-columns: 1fr;
+        height: 100%;
+      }
+      .detail-head {
+        flex-wrap: wrap;
+      }
+      .detail-head-notice {
+        min-width: 0;
+        width: 100%;
+      }
+      .player-head {
+        grid-template-columns: 1fr;
+        align-items: start;
+      }
+      .player-head-link,
+      .player-current-segment {
+        justify-self: start;
+        text-align: left;
+        max-width: none;
+      }
+      .scene-head-row {
+        flex-wrap: wrap;
+      }
+      body.sync-view-active #view-sync.active {
+        display: block;
+      }
+      .sync-layout {
+        grid-template-columns: 1fr;
+      }
+      #view-sync.active {
+        height: auto;
+        overflow: visible;
+      }
+      #view-sync.active .sync-layout {
+        height: auto;
+      }
+      .side-stack {
+        grid-template-rows: none;
+      }
+      .prompt-grid,
+      .detail-grid,
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
     }
+    @media (max-width: 960px) {
+      .top-nav {
+        flex-wrap: wrap;
+      }
+      .nav {
+        width: 100%;
+      }
+      .nav-center {
+        order: 3;
+        width: 100%;
+        padding: 0;
+      }
+      .nav-tip {
+        white-space: normal;
+      }
+    }
+    @media (max-width: 720px) {
+      .main {
+        padding: 16px;
+      }
+      .nav-button {
+        min-width: calc(50% - 6px);
+      }
+      .iframe-shell,
+      iframe {
+        min-height: 60vh;
+      }
+    }
+
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="title-row">
-      <h1>任务监督面板</h1>
-      <span class="meta">task_id=<span id="task-id" class="mono">-</span></span>
-      <span id="task-status" class="status-pill status-pending">pending</span>
-      <span class="meta">更新时间：<span id="updated-at">-</span></span>
-    </div>
+  <div class="app">
+    <header class="top-nav">
+      <div class="brand">
+        <div class="brand-kicker">Music Video Pipeline</div>
+        <div class="brand-title">项目 Web</div>
+      </div>
 
-    <div id="module-grid" class="grid"></div>
+      <nav class="nav" aria-label="页面导航">
+        <button class="nav-button" data-view="home">
+          <div class="nav-title"><span class="nav-index">1</span>主页</div>
+        </button>
+        <button class="nav-button" data-view="sync">
+          <div class="nav-title"><span class="nav-index">2</span>视频结果</div>
+        </button>
+        <button class="nav-button" data-view="module-a">
+          <div class="nav-title"><span class="nav-index">3</span>模块 A 可视化</div>
+        </button>
+        <button class="nav-button" data-view="monitor">
+          <div class="nav-title"><span class="nav-index">4</span>Monitor</div>
+        </button>      </nav>
 
-    <div class="panel">
-      <div class="counts" id="chain-counts"></div>
-      <div style="overflow:auto;max-height: 58vh;">
-        <table>
-          <thead>
-            <tr>
-              <th>unit_index</th>
-              <th>segment_id</th>
-              <th>shot_id</th>
-              <th>B</th>
-              <th>C</th>
-              <th>D</th>
-              <th>错误摘要</th>
-            </tr>
-          </thead>
-          <tbody id="chain-table-body"></tbody>
-        </table>
+      <div class="nav-center">
+        <div id="task-id" class="nav-task-id">-</div>
+      </div>
+
+      <div class="nav-tip">
+        快捷键：按数字 <span class="mono">1</span> / <span class="mono">2</span> / <span class="mono">3</span> / <span class="mono">4</span> 可快速切页。
+      </div>
+    </header>
+
+    <main class="main">
+      <section id="view-home" class="view">
+        <div class="home-layout">
+          <div class="card home-card">
+            <div class="section-head">
+              <div>
+                <h2 class="section-title">任务列表</h2>
+                <div class="section-sub">按更新时间倒序展示任务，点击后切换当前任务上下文。</div>
+              </div>
+            </div>
+            <div class="home-body task-list-panel">
+              <div class="task-list-toolbar">
+                <span class="meta">当前主页用于创建 / 查看 / 修改以往任务。</span>
+                <button id="refresh-task-list" class="toolbar-button" type="button">
+                  <span class="button-spinner" aria-hidden="true"></span>
+                  <span class="button-label">刷新列表</span>
+                </button>
+              </div>
+              <div id="task-list-empty" class="empty-state" hidden>当前状态库还没有任务记录。</div>
+              <div id="task-list" class="task-list" hidden></div>
+            </div>
+          </div>
+
+          <div class="card home-card">
+            <div class="section-head detail-head">
+              <div class="detail-head-main">
+                <h2 class="section-title">任务详情与操作</h2>
+                <div class="section-sub">第一版只允许直接修改 <span class="mono">task_id</span>，其它变更通过复制为新任务来处理。</div>
+              </div>
+              <div id="home-notice" class="notice detail-head-notice">主页会在这里显示任务操作结果与错误提示。</div>
+            </div>
+            <div class="home-body home-detail">
+              <div class="form-block">
+                <div class="form-head">
+                  <h3 class="form-title">当前任务概览</h3>
+                  <div class="form-sub">切换任务后，2 / 3 / 4 页会自动跟随新的 task_id。</div>
+                </div>
+                <div class="detail-grid">
+                  <div class="detail-field">
+                    <div class="detail-label">task_id</div>
+                    <div id="detail-task-id" class="detail-value mono">-</div>
+                  </div>
+                  <div class="detail-field">
+                    <div class="detail-label">status</div>
+                    <div id="detail-status" class="detail-value">-</div>
+                  </div>
+                  <div class="detail-field">
+                    <div class="detail-label">audio_path</div>
+                    <div id="detail-audio-path" class="detail-value mono">-</div>
+                  </div>
+                  <div class="detail-field">
+                    <div class="detail-label">config_path</div>
+                    <div id="detail-config-path" class="detail-value mono">-</div>
+                  </div>
+                  <div class="detail-field">
+                    <div class="detail-label">output_video_path</div>
+                    <div id="detail-output-video-path" class="detail-value mono">-</div>
+                  </div>
+                  <div class="detail-field">
+                    <div class="detail-label">updated_at</div>
+                    <div id="detail-updated-at" class="detail-value mono">-</div>
+                  </div>
+                </div>
+                <div id="detail-module-tags" class="detail-module-tags"></div>
+                <div class="detail-actions">
+                  <button id="enter-sync-button" class="nav-action" type="button">进入音画校对</button>
+                  <button id="enter-module-a-button" class="nav-action" type="button">进入模块 A 可视化</button>
+                  <button id="enter-monitor-button" class="nav-action" type="button">进入 Monitor</button>
+                </div>
+              </div>
+
+              <div class="form-block">
+                <div class="form-head">
+                  <h3 class="form-title">新建任务</h3>
+                  <div class="form-sub">仅写入 tasks 与 module_runs 初始化记录，不自动启动 pipeline。</div>
+                </div>
+                <div class="form-grid">
+                  <div class="form-field">
+                    <label for="create-task-id">task_id</label>
+                    <input id="create-task-id" class="text-input mono" type="text" placeholder="例如 jieranduhuo02">
+                  </div>
+                  <div class="form-field">
+                    <label for="create-audio-path">audio_path</label>
+                    <input id="create-audio-path" class="text-input mono" type="text" placeholder="/root/data/.../audio.mp3">
+                  </div>
+                  <div class="form-field span-2">
+                    <label for="create-config-path">config_path</label>
+                    <input id="create-config-path" class="text-input mono" type="text" placeholder="/root/data/.../config.json">
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button id="create-task-button" class="primary-button" type="button">创建任务</button>
+                </div>
+              </div>
+
+              <div class="form-block">
+                <div class="form-head">
+                  <h3 class="form-title">修改 task_id</h3>
+                  <div class="form-sub">会同步迁移状态库关联记录，并尝试重命名 runs 目录下任务目录。</div>
+                </div>
+                <div class="form-grid">
+                  <div class="form-field span-2">
+                    <label for="rename-task-id">新的 task_id</label>
+                    <input id="rename-task-id" class="text-input mono" type="text" placeholder="例如 jieranduhuo01_v2">
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button id="rename-task-button" class="secondary-button" type="button">保存新的 task_id</button>
+                </div>
+              </div>
+
+              <div class="form-block">
+                <div class="form-head">
+                  <h3 class="form-title">复制为新任务 / 重跑任务</h3>
+                  <div class="form-sub">默认继承当前任务的音频与配置，可改成新的输入，但不会修改原任务。</div>
+                </div>
+                <div class="form-grid">
+                  <div class="form-field">
+                    <label for="copy-task-id">新的 task_id</label>
+                    <input id="copy-task-id" class="text-input mono" type="text" placeholder="例如 jieranduhuo01_rerun">
+                  </div>
+                  <div class="form-field">
+                    <label for="copy-audio-path">audio_path</label>
+                    <input id="copy-audio-path" class="text-input mono" type="text">
+                  </div>
+                  <div class="form-field span-2">
+                    <label for="copy-config-path">config_path</label>
+                    <input id="copy-config-path" class="text-input mono" type="text">
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button id="copy-task-button" class="primary-button" type="button">复制为新任务</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-sync" class="view">
+        <div class="sync-layout">
+          <div class="card player-card">
+            <div class="section-head player-head">
+              <div class="player-head-main">
+                <div class="section-sub">主页面播放最终成片，右侧同步查看 segment 与歌词滚动情况。</div>
+              </div>
+              <div id="player-current-segment" class="player-current-segment">-</div>
+              <a id="open-video-link" class="link-inline player-head-link" href="#" target="_blank" rel="noopener noreferrer" hidden>新标签打开视频</a>
+            </div>
+            <div class="player-body">
+              <div id="player-empty" class="empty-state" hidden>最终视频暂未生成。</div>
+              <div id="player-content" hidden>
+                <div class="player-shell">
+                  <video id="video-player" controls preload="metadata"></video>
+                </div>
+                <div class="progress-wrap">
+                  <div class="time-row">
+                    <span id="time-current" class="mono">00:00.00</span>
+                    <span class="meta">音乐进度条</span>
+                    <span id="time-duration" class="mono">00:00.00</span>
+                  </div>
+                  <input id="media-progress" class="progress-range" type="range" min="0" max="1" step="0.01" value="0">
+                </div>
+                <div class="player-divider" aria-hidden="true"></div>
+                <div id="scene-panel" class="scene-panel">
+                  <div class="scene-head-row">
+                    <div class="scene-kicker">当前段场景描述</div>
+                    <div id="scene-camera" class="scene-camera">运镜：-</div>
+                  </div>
+                  <div class="scene-body-row">
+                    <div id="scene-desc" class="scene-desc">等待定位到当前播放 segment。</div>
+                    <div class="scene-actions">
+                      <button id="scene-prompts-button" class="ghost-button" type="button" hidden>查看关键帧与提示词</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="side-stack">
+            <div class="card segments-card">
+              <div class="section-head">
+                <div>
+                  <h2 class="section-title">Segment 滚动</h2>
+                  <div class="section-sub">点击任意小段可直接跳转，播放时自动高亮当前段。</div>
+                </div>
+              </div>
+              <div class="segments-body">
+                <div id="segments-empty" class="lyric-empty">segment 时间轴尚未加载。</div>
+                <div id="segments-scroll" class="segments-scroll" hidden></div>
+              </div>
+            </div>
+
+            <div class="card lyrics-card">
+              <div class="section-head">
+                <div>
+                  <h2 class="section-title">歌词滚动</h2>
+                  <div class="section-sub">点击任意歌词句可直接跳转对应时间。</div>
+                </div>
+              </div>
+              <div class="lyrics-body">
+                <div id="lyrics-empty" class="lyric-empty">歌词时间戳尚未加载。</div>
+                <div id="lyrics-scroll" class="lyrics-scroll" hidden></div>
+                <div id="lyrics-footer" class="lyrics-footer">
+                  <div class="player-note">提示：歌词高亮直接使用模块 A 标准输出里的 FunASR 时间戳与 token 时间戳。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-module-a" class="view">
+        <div class="card iframe-card">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">模块 A 可视化</h2>
+              <div class="section-sub">同源转发任务目录里的模块 A V2 可视化页面，便于在本地直接查看云端产物。</div>
+            </div>
+          </div>
+          <div class="iframe-body">
+            <div id="module-a-empty" class="empty-state" hidden>模块 A 可视化文件尚未生成。</div>
+            <div id="module-a-content" hidden>
+              <div class="iframe-toolbar">
+                <span class="meta">下方 iframe 直接加载任务目录内的模块 A 可视化 HTML。</span>
+                <a id="module-a-open-link" class="link-inline" href="#" target="_blank" rel="noopener noreferrer">新标签打开模块 A 可视化</a>
+              </div>
+              <div class="iframe-shell">
+                <iframe id="module-a-frame" title="模块 A 可视化"></iframe>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-monitor" class="view">
+        <div class="card monitor-panel">
+          <div class="section-head">
+            <div>
+              <h2 class="section-title">任务监督</h2>
+              <div class="section-sub">保留原 monitor 的状态概览与 B/C/D 单元链路表。</div>
+            </div>
+          </div>
+          <div class="monitor-body">
+            <div id="module-grid" class="grid"></div>
+            <div class="counts" id="chain-counts"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>unit_index</th>
+                    <th>segment_id</th>
+                    <th>shot_id</th>
+                    <th>B</th>
+                    <th>C</th>
+                    <th>D</th>
+                    <th>错误摘要</th>
+                  </tr>
+                </thead>
+                <tbody id="chain-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>    </main>
+  </div>
+
+  <div id="prompt-modal-backdrop" class="modal-backdrop" aria-hidden="true">
+    <div class="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
+      <div class="modal-head">
+        <div>
+          <h3 id="prompt-modal-title" class="modal-title">当前段关键帧与提示词</h3>
+          <div id="prompt-modal-sub" class="modal-sub">-</div>
+        </div>
+        <button id="prompt-modal-close" class="modal-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="prompt-grid">
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧起始图</div>
+          <img id="prompt-frame-start" class="prompt-frame-image" alt="关键帧起始图" hidden>
+          <div id="prompt-frame-start-path" class="prompt-frame-path">-</div>
+          <div id="prompt-frame-start-empty" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧结束图</div>
+          <img id="prompt-frame-end" class="prompt-frame-image" alt="关键帧结束图" hidden>
+          <div id="prompt-frame-end-path" class="prompt-frame-path">-</div>
+          <div id="prompt-frame-end-empty" class="prompt-card-text">-</div>
+        </div>
+      </div>
+      <div class="prompt-grid">
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧起始提示词（中文）</div>
+          <div id="prompt-start-zh" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧结束提示词（中文）</div>
+          <div id="prompt-end-zh" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧起始提示词（英文）</div>
+          <div id="prompt-start-en" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">关键帧结束提示词（英文）</div>
+          <div id="prompt-end-en" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">Video Prompt（中文）</div>
+          <div id="prompt-video-zh" class="prompt-card-text">-</div>
+        </div>
+        <div class="prompt-card">
+          <div class="prompt-card-title">Video Prompt（英文）</div>
+          <div id="prompt-video-en" class="prompt-card-text">-</div>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
     const query = new URLSearchParams(window.location.search);
-    const taskId = query.get("task_id") || "";
+    let currentTaskId = query.get("task_id") || "";
+
     const taskIdNode = document.getElementById("task-id");
     const taskStatusNode = document.getElementById("task-status");
     const updatedAtNode = document.getElementById("updated-at");
+
+    const navButtons = Array.from(document.querySelectorAll(".nav-button"));
+    const views = {
+      home: document.getElementById("view-home"),
+      sync: document.getElementById("view-sync"),
+      "module-a": document.getElementById("view-module-a"),
+      monitor: document.getElementById("view-monitor"),
+    };
+
     const moduleGrid = document.getElementById("module-grid");
     const chainCountsNode = document.getElementById("chain-counts");
     const chainTableBody = document.getElementById("chain-table-body");
     const moduleOrder = ["A", "B", "C", "D"];
+
+    const playerEmpty = document.getElementById("player-empty");
+    const playerContent = document.getElementById("player-content");
+    const playerShell = document.querySelector(".player-shell");
+    const videoPlayer = document.getElementById("video-player");
+    const openVideoLink = document.getElementById("open-video-link");
+    const mediaProgress = document.getElementById("media-progress");
+    const timeCurrentNode = document.getElementById("time-current");
+    const timeDurationNode = document.getElementById("time-duration");
+    const scenePanel = document.getElementById("scene-panel");
+    const playerCurrentSegmentNode = document.getElementById("player-current-segment");
+    const sceneDescNode = document.getElementById("scene-desc");
+    const sceneCameraNode = document.getElementById("scene-camera");
+    const scenePromptsButton = document.getElementById("scene-prompts-button");
+    const promptModalBackdrop = document.getElementById("prompt-modal-backdrop");
+    const promptModalClose = document.getElementById("prompt-modal-close");
+    const promptModalSub = document.getElementById("prompt-modal-sub");
+    const promptFrameStartNode = document.getElementById("prompt-frame-start");
+    const promptFrameEndNode = document.getElementById("prompt-frame-end");
+    const promptFrameStartPathNode = document.getElementById("prompt-frame-start-path");
+    const promptFrameEndPathNode = document.getElementById("prompt-frame-end-path");
+    const promptFrameStartEmptyNode = document.getElementById("prompt-frame-start-empty");
+    const promptFrameEndEmptyNode = document.getElementById("prompt-frame-end-empty");
+    const promptStartZhNode = document.getElementById("prompt-start-zh");
+    const promptStartEnNode = document.getElementById("prompt-start-en");
+    const promptEndZhNode = document.getElementById("prompt-end-zh");
+    const promptEndEnNode = document.getElementById("prompt-end-en");
+    const promptVideoZhNode = document.getElementById("prompt-video-zh");
+    const promptVideoEnNode = document.getElementById("prompt-video-en");
+
+    const segmentsEmpty = document.getElementById("segments-empty");
+    const segmentsScroll = document.getElementById("segments-scroll");
+    const lyricsEmpty = document.getElementById("lyrics-empty");
+    const lyricsScroll = document.getElementById("lyrics-scroll");
+
+    const moduleAEmpty = document.getElementById("module-a-empty");
+    const moduleAContent = document.getElementById("module-a-content");
+    const moduleAFrame = document.getElementById("module-a-frame");
+    const moduleAOpenLink = document.getElementById("module-a-open-link");
+
+    const taskListNode = document.getElementById("task-list");
+    const taskListEmptyNode = document.getElementById("task-list-empty");
+    const refreshTaskListButton = document.getElementById("refresh-task-list");
+    const refreshTaskListButtonLabel = refreshTaskListButton ? refreshTaskListButton.querySelector(".button-label") : null;
+    const homeNoticeNode = document.getElementById("home-notice");
+    const detailTaskIdNode = document.getElementById("detail-task-id");
+    const detailStatusNode = document.getElementById("detail-status");
+    const detailAudioPathNode = document.getElementById("detail-audio-path");
+    const detailConfigPathNode = document.getElementById("detail-config-path");
+    const detailOutputVideoPathNode = document.getElementById("detail-output-video-path");
+    const detailUpdatedAtNode = document.getElementById("detail-updated-at");
+    const detailModuleTagsNode = document.getElementById("detail-module-tags");
+    const enterSyncButton = document.getElementById("enter-sync-button");
+    const enterModuleAButton = document.getElementById("enter-module-a-button");
+    const enterMonitorButton = document.getElementById("enter-monitor-button");
+    const createTaskIdInput = document.getElementById("create-task-id");
+    const createAudioPathInput = document.getElementById("create-audio-path");
+    const createConfigPathInput = document.getElementById("create-config-path");
+    const createTaskButton = document.getElementById("create-task-button");
+    const renameTaskIdInput = document.getElementById("rename-task-id");
+    const renameTaskButton = document.getElementById("rename-task-button");
+    const copyTaskIdInput = document.getElementById("copy-task-id");
+    const copyAudioPathInput = document.getElementById("copy-audio-path");
+    const copyConfigPathInput = document.getElementById("copy-config-path");
+    const copyTaskButton = document.getElementById("copy-task-button");
+
     let ws = null;
     let reconnectTimer = null;
     let fallbackPollTimer = null;
+    let webDataPollTimer = null;
     let lastSnapshotAt = 0;
-    taskIdNode.textContent = taskId || "-";
+    let mediaRafId = 0;
+    let segmentUnits = [];
+    let lyricUnits = [];
+    let lastActiveSegmentIndex = -1;
+    let lastActiveLyricIndex = -1;
+    let lastActiveTokenKey = "";
+    let currentScenePromptPayload = null;
+    let webPayloadCache = null;
+    let taskListCache = [];
+    let taskDetailCache = null;
+    let homeNoticeTimer = null;
+    let activeViewKey = "home";
+    let snapshotCache = null;
 
     function statusClass(status) {
       return `status-${String(status || "pending").replace(/[^a-z_]/gi, "_").toLowerCase()}`;
@@ -217,12 +1605,173 @@
       return span;
     }
 
+    function formatTime(seconds) {
+      const safeSeconds = Number.isFinite(seconds) ? Math.max(0, Number(seconds)) : 0;
+      const minutes = Math.floor(safeSeconds / 60);
+      const remainSeconds = safeSeconds - minutes * 60;
+      return `${String(minutes).padStart(2, "0")}:${remainSeconds.toFixed(2).padStart(5, "0")}`;
+    }
+
+    function switchView(viewKey, updateHash = true) {
+      const normalized = Object.prototype.hasOwnProperty.call(views, viewKey) ? viewKey : "home";
+      for (const [key, node] of Object.entries(views)) {
+        node.classList.toggle("active", key === normalized);
+      }
+      for (const button of navButtons) {
+        button.classList.toggle("active", button.dataset.view === normalized);
+      }
+      activeViewKey = normalized;
+      document.body.classList.toggle("sync-view-active", normalized === "sync");
+      if (updateHash) {
+        window.location.hash = normalized;
+      }
+      handleViewActivation(normalized).catch(() => {});
+    }
+
+    function updateTaskQuery(taskId) {
+      const url = new URL(window.location.href);
+      if (taskId) {
+        url.searchParams.set("task_id", taskId);
+      } else {
+        url.searchParams.delete("task_id");
+      }
+      window.history.replaceState({}, "", url.toString());
+    }
+
+    function setHomeNotice(message, tone = "") {
+      if (!homeNoticeNode) {
+        return;
+      }
+      if (homeNoticeTimer) {
+        clearTimeout(homeNoticeTimer);
+        homeNoticeTimer = null;
+      }
+      homeNoticeNode.textContent = message || "主页会在这里显示任务操作结果与错误提示。";
+      homeNoticeNode.className = `notice${tone ? ` ${tone}` : ""}`;
+      if (tone === "success" && message) {
+        homeNoticeTimer = window.setTimeout(() => {
+          homeNoticeNode.textContent = "主页会在这里显示任务操作结果与错误提示。";
+          homeNoticeNode.className = "notice";
+          homeNoticeTimer = null;
+        }, 2200);
+      }
+    }
+
+    function setRefreshTaskListLoading(isLoading) {
+      if (!refreshTaskListButton) {
+        return;
+      }
+      refreshTaskListButton.disabled = Boolean(isLoading);
+      refreshTaskListButton.classList.toggle("loading", Boolean(isLoading));
+      if (refreshTaskListButtonLabel) {
+        refreshTaskListButtonLabel.textContent = isLoading ? "刷新中" : "刷新列表";
+      }
+    }
+
+    function clearTaskContextDisplay() {
+      taskIdNode.textContent = "-";
+      taskStatusNode.className = "status-pill status-pending";
+      taskStatusNode.textContent = "pending";
+      updatedAtNode.textContent = "-";
+      detailTaskIdNode.textContent = "-";
+      detailStatusNode.textContent = "-";
+      detailAudioPathNode.textContent = "-";
+      detailConfigPathNode.textContent = "-";
+      detailOutputVideoPathNode.textContent = "-";
+      detailUpdatedAtNode.textContent = "-";
+      detailModuleTagsNode.innerHTML = "";
+      renameTaskIdInput.value = "";
+      copyTaskIdInput.value = "";
+      copyAudioPathInput.value = "";
+      copyConfigPathInput.value = "";
+      enterSyncButton.disabled = true;
+      enterModuleAButton.disabled = true;
+      enterMonitorButton.disabled = true;
+    }
+
+    function renderModuleTags(container, moduleStatusMap) {
+      container.innerHTML = "";
+      for (const moduleName of moduleOrder) {
+        const tag = document.createElement("span");
+        tag.className = "module-tag";
+        const nameNode = document.createElement("strong");
+        nameNode.textContent = moduleName;
+        const valueNode = document.createElement("span");
+        valueNode.textContent = moduleStatusMap && moduleStatusMap[moduleName] ? moduleStatusMap[moduleName] : "pending";
+        tag.appendChild(nameNode);
+        tag.appendChild(valueNode);
+        container.appendChild(tag);
+      }
+    }
+
+    function applyTaskDetail(detailPayload) {
+      const task = detailPayload && detailPayload.task ? detailPayload.task : null;
+      taskDetailCache = task;
+      if (!task) {
+        clearTaskContextDisplay();
+        return;
+      }
+      currentTaskId = task.task_id || "";
+      taskIdNode.textContent = currentTaskId || "-";
+      taskStatusNode.className = `status-pill ${statusClass(task.status)}`;
+      taskStatusNode.textContent = task.status || "unknown";
+      updatedAtNode.textContent = task.updated_at || "-";
+
+      detailTaskIdNode.textContent = task.task_id || "-";
+      detailStatusNode.textContent = task.status || "-";
+      detailAudioPathNode.textContent = task.audio_path || "-";
+      detailConfigPathNode.textContent = task.config_path || "-";
+      detailOutputVideoPathNode.textContent = task.output_video_path || "-";
+      detailUpdatedAtNode.textContent = task.updated_at || "-";
+      renderModuleTags(detailModuleTagsNode, task.module_status || {});
+
+      renameTaskIdInput.value = "";
+      copyAudioPathInput.value = task.audio_path || "";
+      copyConfigPathInput.value = task.config_path || "";
+      enterSyncButton.disabled = !currentTaskId;
+      enterModuleAButton.disabled = !currentTaskId;
+      enterMonitorButton.disabled = !currentTaskId;
+      updateTaskQuery(currentTaskId);
+      renderTaskList(taskListCache);
+    }
+
+    function renderTaskList(tasks) {
+      taskListCache = Array.isArray(tasks) ? tasks : [];
+      taskListNode.innerHTML = "";
+      if (!taskListCache.length) {
+        taskListEmptyNode.hidden = false;
+        taskListNode.hidden = true;
+        return;
+      }
+      taskListEmptyNode.hidden = true;
+      taskListNode.hidden = false;
+      taskListCache.forEach((item) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "task-item";
+        button.classList.toggle("active", currentTaskId === item.task_id);
+
+        const row = document.createElement("div");
+        row.className = "task-item-row";
+        const idNode = document.createElement("div");
+        idNode.className = "task-item-id";
+        idNode.textContent = item.task_id || "-";
+
+        row.appendChild(idNode);
+        button.appendChild(row);
+        button.addEventListener("click", () => {
+          setCurrentTaskId(item.task_id, { switchViewKey: null, notice: "" }).catch(() => {});
+        });
+        taskListNode.appendChild(button);
+      });
+    }
+
     function renderModuleOverview(moduleOverview) {
       moduleGrid.innerHTML = "";
       for (const moduleName of moduleOrder) {
         const item = moduleOverview[moduleName] || {};
         const card = document.createElement("div");
-        card.className = "card";
+        card.className = "module-card";
 
         const head = document.createElement("div");
         head.className = "card-head";
@@ -278,7 +1827,6 @@
         chainTableBody.appendChild(tr);
         return;
       }
-
       for (const row of rows) {
         const tr = document.createElement("tr");
         const errorText = [row.b_error_message, row.c_error_message, row.d_error_message].filter(Boolean).join(" | ");
@@ -297,26 +1845,603 @@
 
     function applySnapshot(snapshot) {
       lastSnapshotAt = Date.now();
-      taskIdNode.textContent = snapshot.task_id || "-";
-      taskStatusNode.className = `status-pill ${statusClass(snapshot.task_status)}`;
-      taskStatusNode.textContent = snapshot.task_status || "unknown";
-      updatedAtNode.textContent = snapshot.updated_at || "-";
+      snapshotCache = snapshot || null;
+      if (!snapshot) {
+        return;
+      }
+      if (snapshot.task_id && snapshot.task_id === currentTaskId) {
+        taskIdNode.textContent = snapshot.task_id || "-";
+        taskStatusNode.className = `status-pill ${statusClass(snapshot.task_status)}`;
+        taskStatusNode.textContent = snapshot.task_status || "unknown";
+        updatedAtNode.textContent = snapshot.updated_at || "-";
+        if (taskDetailCache) {
+          taskDetailCache.status = snapshot.task_status || taskDetailCache.status;
+          taskDetailCache.updated_at = snapshot.updated_at || taskDetailCache.updated_at;
+          detailStatusNode.textContent = taskDetailCache.status || "-";
+          detailUpdatedAtNode.textContent = taskDetailCache.updated_at || "-";
+        }
+      }
       renderModuleOverview(snapshot.module_overview || {});
       renderChainCounts(snapshot.chain_counts || {});
       renderChains(snapshot.bcd_chains || []);
+      if ((!webPayloadCache || !webPayloadCache.video || !webPayloadCache.video.available) && snapshot.task_status === "done") {
+        fetchWebData().catch(() => {});
+      }
+    }
+
+    function applyVideoPayload(videoPayload) {
+      const available = Boolean(videoPayload && videoPayload.available && videoPayload.url);
+      playerEmpty.hidden = available;
+      playerContent.hidden = !available;
+      openVideoLink.hidden = !available;
+      if (!available) {
+        playerEmpty.textContent = "最终视频暂未生成。";
+        videoPlayer.removeAttribute("src");
+        videoPlayer.load();
+        playerShell.style.removeProperty("width");
+        playerShell.style.removeProperty("height");
+        return;
+      }
+      if (videoPlayer.dataset.src !== videoPayload.url) {
+        videoPlayer.dataset.src = videoPayload.url;
+        videoPlayer.src = videoPayload.url;
+        videoPlayer.load();
+      }
+      openVideoLink.href = videoPayload.url;
+      openVideoLink.hidden = false;
+      requestAnimationFrame(() => {
+        fitPlayerShell();
+      });
+    }
+
+    function applyModuleAVisualizationPayload(payload) {
+      const available = Boolean(payload && payload.available && payload.url);
+      moduleAEmpty.hidden = available;
+      moduleAContent.hidden = !available;
+      if (!available) {
+        moduleAEmpty.textContent = "模块 A 可视化文件尚未生成。";
+        moduleAFrame.removeAttribute("src");
+        moduleAOpenLink.removeAttribute("href");
+        return;
+      }
+      moduleAOpenLink.href = payload.url;
+      if (moduleAFrame.dataset.src !== payload.url) {
+        moduleAFrame.dataset.src = payload.url;
+        moduleAFrame.src = payload.url;
+      }
+    }
+
+    function renderSegments(items) {
+      segmentUnits = Array.isArray(items) ? items : [];
+      segmentsScroll.innerHTML = "";
+      lastActiveSegmentIndex = -1;
+      if (!segmentUnits.length) {
+        segmentsEmpty.hidden = false;
+        segmentsScroll.hidden = true;
+        segmentsEmpty.textContent = "模块 A 未产出 segment 时间轴。";
+        updateCurrentScenePanel(-1);
+        return;
+      }
+      segmentsEmpty.hidden = true;
+      segmentsScroll.hidden = false;
+      segmentUnits.forEach((item, index) => {
+        const lineButton = document.createElement("button");
+        lineButton.type = "button";
+        lineButton.className = "segment-line";
+        lineButton.dataset.index = String(index);
+
+        const startTime = Number(item.start_time || 0);
+        const endTime = Number(item.end_time || startTime);
+
+        const timeNode = document.createElement("div");
+        timeNode.className = "segment-time";
+        timeNode.textContent = `${formatTime(startTime)} - ${formatTime(endTime)}  /  ${(Math.max(0, endTime - startTime)).toFixed(2)}s`;
+
+        const metaNode = document.createElement("div");
+        metaNode.className = "segment-meta";
+
+        const textNode = document.createElement("div");
+        textNode.className = "segment-text";
+        const labelStrongNode = document.createElement("strong");
+        labelStrongNode.textContent = item.label || "segment";
+        textNode.appendChild(labelStrongNode);
+        if (item.role) {
+          textNode.appendChild(document.createTextNode(` · ${item.role}`));
+        }
+        metaNode.appendChild(textNode);
+
+        const idNode = document.createElement("span");
+        idNode.className = "segment-id";
+        idNode.textContent = item.segment_id || `seg_${String(index + 1).padStart(4, "0")}`;
+        metaNode.appendChild(idNode);
+
+        if (item.big_segment_id) {
+          const bigNode = document.createElement("span");
+          bigNode.className = "segment-tag";
+          bigNode.textContent = item.big_segment_id;
+          metaNode.appendChild(bigNode);
+        }
+
+        lineButton.appendChild(timeNode);
+        lineButton.appendChild(metaNode);
+        lineButton.addEventListener("click", () => {
+          videoPlayer.currentTime = Math.max(0, startTime);
+          updateMediaState();
+        });
+        segmentsScroll.appendChild(lineButton);
+      });
+      requestAnimationFrame(() => {
+        fitPlayerShell();
+      });
+      updateMediaState();
+    }
+
+    function renderLyrics(items) {
+      lyricUnits = Array.isArray(items) ? items : [];
+      lyricsScroll.innerHTML = "";
+      lastActiveLyricIndex = -1;
+      lastActiveTokenKey = "";
+      if (!lyricUnits.length) {
+        lyricsEmpty.hidden = false;
+        lyricsScroll.hidden = true;
+        lyricsEmpty.textContent = "模块 A 未产出歌词时间戳。";
+        return;
+      }
+      lyricsEmpty.hidden = true;
+      lyricsScroll.hidden = false;
+      lyricUnits.forEach((item, index) => {
+        const lineButton = document.createElement("button");
+        lineButton.type = "button";
+        lineButton.className = "lyric-line";
+        lineButton.dataset.index = String(index);
+
+        const timeNode = document.createElement("div");
+        timeNode.className = "lyric-time";
+        timeNode.textContent = `${formatTime(Number(item.start_time || 0))} - ${formatTime(Number(item.end_time || 0))}`;
+
+        const textNode = document.createElement("div");
+        textNode.className = "lyric-text";
+        const tokenUnits = Array.isArray(item.token_units) ? item.token_units : [];
+        if (tokenUnits.length) {
+          tokenUnits.forEach((tokenItem, tokenIndex) => {
+            const span = document.createElement("span");
+            span.className = "lyric-token";
+            span.dataset.tokenIndex = String(tokenIndex);
+            span.textContent = tokenItem.text || "";
+            textNode.appendChild(span);
+          });
+        } else {
+          const span = document.createElement("span");
+          span.className = "lyric-token";
+          span.dataset.tokenIndex = "0";
+          span.textContent = item.text || "";
+          textNode.appendChild(span);
+        }
+        lineButton.appendChild(timeNode);
+        lineButton.appendChild(textNode);
+        lineButton.addEventListener("click", () => {
+          videoPlayer.currentTime = Math.max(0, Number(item.start_time || 0));
+          updateMediaState();
+        });
+        lyricsScroll.appendChild(lineButton);
+      });
+      requestAnimationFrame(() => {
+        fitPlayerShell();
+      });
+      updateMediaState();
+    }
+
+    function applyWebPayload(payload) {
+      webPayloadCache = payload || null;
+      applyVideoPayload(payload ? payload.video : null);
+      applyModuleAVisualizationPayload(payload ? payload.module_a_visualization : null);
+      renderSegments(payload ? payload.segment_units : []);
+      renderLyrics(payload ? payload.lyric_units : []);
+    }
+
+
+    function findActiveSegmentIndex(currentTime) {
+      if (!segmentUnits.length) {
+        return -1;
+      }
+      for (let index = 0; index < segmentUnits.length; index += 1) {
+        const item = segmentUnits[index];
+        const start = Number(item.start_time || 0);
+        const end = Number(item.end_time || start);
+        if (currentTime >= start && currentTime <= end + 0.08) {
+          return index;
+        }
+      }
+      for (let index = segmentUnits.length - 1; index >= 0; index -= 1) {
+        if (currentTime >= Number(segmentUnits[index].start_time || 0)) {
+          return index;
+        }
+      }
+      return -1;
+    }
+
+    function findActiveLyricIndex(currentTime) {
+      if (!lyricUnits.length) {
+        return -1;
+      }
+      for (let index = 0; index < lyricUnits.length; index += 1) {
+        const item = lyricUnits[index];
+        const start = Number(item.start_time || 0);
+        const end = Number(item.end_time || start);
+        if (currentTime >= start && currentTime <= end + 0.10) {
+          return index;
+        }
+      }
+      for (let index = lyricUnits.length - 1; index >= 0; index -= 1) {
+        if (currentTime >= Number(lyricUnits[index].start_time || 0)) {
+          return index;
+        }
+      }
+      return -1;
+    }
+
+    function updateActiveToken(lineNode, lyricItem, currentTime) {
+      const tokenNodes = Array.from(lineNode.querySelectorAll(".lyric-token"));
+      if (!tokenNodes.length) {
+        return;
+      }
+      let activeTokenIndex = -1;
+      const tokenUnits = Array.isArray(lyricItem.token_units) ? lyricItem.token_units : [];
+      if (tokenUnits.length) {
+        for (let index = 0; index < tokenUnits.length; index += 1) {
+          const tokenItem = tokenUnits[index];
+          const start = Number(tokenItem.start_time || 0);
+          const end = Number(tokenItem.end_time || start);
+          if (currentTime >= start && currentTime <= end + 0.04) {
+            activeTokenIndex = index;
+            break;
+          }
+        }
+        if (activeTokenIndex < 0) {
+          for (let index = tokenUnits.length - 1; index >= 0; index -= 1) {
+            if (currentTime >= Number(tokenUnits[index].start_time || 0)) {
+              activeTokenIndex = index;
+              break;
+            }
+          }
+        }
+      } else {
+        activeTokenIndex = 0;
+      }
+      tokenNodes.forEach((node, tokenIndex) => {
+        node.classList.toggle("active", tokenIndex === activeTokenIndex);
+      });
+      lastActiveTokenKey = `${lastActiveLyricIndex}:${activeTokenIndex}`;
+    }
+
+    function updateActiveSegment(currentTime) {
+      const activeIndex = findActiveSegmentIndex(currentTime);
+      const lineNodes = Array.from(segmentsScroll.querySelectorAll(".segment-line"));
+      if (activeIndex !== lastActiveSegmentIndex) {
+        lineNodes.forEach((node, index) => node.classList.toggle("active", index === activeIndex));
+        if (activeIndex >= 0 && lineNodes[activeIndex]) {
+          lineNodes[activeIndex].scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+        lastActiveSegmentIndex = activeIndex;
+        updateCurrentScenePanel(activeIndex);
+      }
+    }
+
+    function formatCameraPlan(cameraPlan) {
+      const plan = cameraPlan && typeof cameraPlan === "object" ? cameraPlan : {};
+      const presetId = String(plan.preset_id || "").trim();
+      const mode = String(plan.mode || "").trim();
+      const direction = String(plan.direction || "").trim();
+      const strength = String(plan.strength || "").trim();
+      const modeMap = {
+        zoom: "变焦 / Zoom",
+        pan: "平移 / Pan",
+        tilt: "俯仰 / Tilt",
+        truck: "跟移 / Truck",
+        dolly: "推进 / Dolly",
+        orbit: "环绕 / Orbit",
+        static: "固定 / Static",
+      };
+      const directionMap = {
+        left: "向左 / Left",
+        right: "向右 / Right",
+        up: "向上 / Up",
+        down: "向下 / Down",
+        center: "居中 / Center",
+        forward: "向前 / Forward",
+        backward: "向后 / Backward",
+        in: "推近 / In",
+        out: "拉远 / Out",
+      };
+      const strengthMap = {
+        small: "小幅 / Small",
+        medium: "中幅 / Medium",
+        large: "大幅 / Large",
+      };
+      const presetText = presetId ? `预设 ${presetId} / Preset ${presetId}` : "";
+      const modeText = mode ? (modeMap[mode] || `${mode} / ${mode}`) : "";
+      const directionText = direction ? (directionMap[direction] || `${direction} / ${direction}`) : "";
+      const strengthText = strength ? (strengthMap[strength] || `${strength} / ${strength}`) : "";
+      const parts = [presetText, modeText, directionText, strengthText].filter(Boolean);
+      return parts.length ? parts.join(" · ") : "-";
+    }
+
+    function hasPromptPayload(item) {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      const keys = [
+        "keyframe_prompt_start_zh",
+        "keyframe_prompt_start_en",
+        "keyframe_prompt_end_zh",
+        "keyframe_prompt_end_en",
+        "video_prompt_zh",
+        "video_prompt_en",
+      ];
+      return keys.some((key) => String(item[key] || "").trim());
+    }
+
+    function updateCurrentScenePanel(activeIndex) {
+      if (!scenePanel || !playerCurrentSegmentNode || !sceneDescNode) {
+        return;
+      }
+      if (activeIndex < 0 || activeIndex >= segmentUnits.length) {
+        playerCurrentSegmentNode.textContent = "-";
+        sceneDescNode.textContent = "等待定位到当前播放 segment。";
+        if (sceneCameraNode) {
+          sceneCameraNode.textContent = "运镜：-";
+        }
+        currentScenePromptPayload = null;
+        if (scenePromptsButton) {
+          scenePromptsButton.hidden = true;
+        }
+        return;
+      }
+      const item = segmentUnits[activeIndex] || {};
+      const segmentId = String(item.segment_id || `seg_${String(activeIndex + 1).padStart(4, "0")}`);
+      const label = String(item.label || "segment");
+      playerCurrentSegmentNode.textContent = `${segmentId} · ${label}`;
+      sceneDescNode.textContent = String(item.scene_desc || "").trim() || "当前段暂无场景描述。";
+      if (sceneCameraNode) {
+        sceneCameraNode.textContent = `运镜：${formatCameraPlan(item.camera_plan)}`;
+      }
+      currentScenePromptPayload = item;
+      if (scenePromptsButton) {
+        scenePromptsButton.hidden = !hasPromptPayload(item);
+      }
+    }
+
+    function fillPromptNode(node, text) {
+      node.textContent = String(text || "").trim() || "-";
+    }
+
+    function fillPromptImage(imageNode, pathNode, emptyNode, imageUrl, imagePath) {
+      const normalized = String(imageUrl || "").trim();
+      const normalizedPath = String(imagePath || "").trim();
+      if (pathNode) {
+        pathNode.textContent = normalizedPath || "未记录关键帧路径。";
+      }
+      if (!normalized) {
+        imageNode.hidden = true;
+        imageNode.removeAttribute("src");
+        emptyNode.hidden = false;
+        emptyNode.textContent = "当前段未找到关键帧产物。";
+        return;
+      }
+      imageNode.src = normalized;
+      imageNode.hidden = false;
+      emptyNode.hidden = true;
+      emptyNode.textContent = "";
+    }
+
+    function openPromptModal(item) {
+      if (!promptModalBackdrop || !hasPromptPayload(item)) {
+        return;
+      }
+      const segmentId = String(item.segment_id || "").trim() || "-";
+      const shotId = String(item.shot_id || "").trim() || "-";
+      promptModalSub.textContent = `${segmentId} · ${shotId} · ${formatCameraPlan(item.camera_plan)}`;
+      fillPromptImage(
+        promptFrameStartNode,
+        promptFrameStartPathNode,
+        promptFrameStartEmptyNode,
+        item.frame_url_start,
+        item.frame_path_start,
+      );
+      fillPromptImage(
+        promptFrameEndNode,
+        promptFrameEndPathNode,
+        promptFrameEndEmptyNode,
+        item.frame_url_end,
+        item.frame_path_end,
+      );
+      fillPromptNode(promptStartZhNode, item.keyframe_prompt_start_zh);
+      fillPromptNode(promptStartEnNode, item.keyframe_prompt_start_en);
+      fillPromptNode(promptEndZhNode, item.keyframe_prompt_end_zh);
+      fillPromptNode(promptEndEnNode, item.keyframe_prompt_end_en);
+      fillPromptNode(promptVideoZhNode, item.video_prompt_zh);
+      fillPromptNode(promptVideoEnNode, item.video_prompt_en);
+      promptModalBackdrop.classList.add("active");
+      promptModalBackdrop.setAttribute("aria-hidden", "false");
+    }
+
+    function closePromptModal() {
+      promptModalBackdrop.classList.remove("active");
+      promptModalBackdrop.setAttribute("aria-hidden", "true");
+    }
+
+    function updateActiveLyric(currentTime) {
+      const activeIndex = findActiveLyricIndex(currentTime);
+      const lineNodes = Array.from(lyricsScroll.querySelectorAll(".lyric-line"));
+      if (activeIndex !== lastActiveLyricIndex) {
+        lineNodes.forEach((node, index) => node.classList.toggle("active", index === activeIndex));
+        if (activeIndex >= 0 && lineNodes[activeIndex]) {
+          lineNodes[activeIndex].scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+        lastActiveLyricIndex = activeIndex;
+        lastActiveTokenKey = "";
+      }
+      if (activeIndex >= 0 && lineNodes[activeIndex]) {
+        updateActiveToken(lineNodes[activeIndex], lyricUnits[activeIndex], currentTime);
+      }
+    }
+
+    function updatePlayerAspectRatio() {
+      const width = Number(videoPlayer.videoWidth || 0);
+      const height = Number(videoPlayer.videoHeight || 0);
+      if (width > 0 && height > 0) {
+        playerShell.style.setProperty("--player-aspect-ratio", `${width} / ${height}`);
+        fitPlayerShell();
+        return;
+      }
+      playerShell.style.setProperty("--player-aspect-ratio", "16 / 9");
+      fitPlayerShell();
+    }
+
+    function fitPlayerShell() {
+      if (!playerShell || !playerContent || playerContent.hidden) {
+        return;
+      }
+      const minVideoHeight = 120;
+      const minVideoWidth = 180;
+      const ratioWidth = Number(videoPlayer.videoWidth || 16);
+      const ratioHeight = Number(videoPlayer.videoHeight || 9);
+      const safeRatio = ratioWidth > 0 && ratioHeight > 0 ? (ratioWidth / ratioHeight) : (16 / 9);
+
+      const playerBodyNode = playerShell.closest(".player-body");
+      if (!playerBodyNode) {
+        return;
+      }
+
+      const contentWidth = playerContent.clientWidth;
+      const bodyHeight = playerBodyNode.clientHeight;
+      if (contentWidth <= 0 || bodyHeight <= 0) {
+        return;
+      }
+      const shellBorderHeight = playerShell.offsetHeight - playerShell.clientHeight;
+      const contentStyle = window.getComputedStyle(playerContent);
+      const rowGap = Number.parseFloat(contentStyle.rowGap || contentStyle.gap || "0") || 0;
+      const rootStyle = window.getComputedStyle(document.documentElement);
+      const safeBottomGap = Number.parseFloat(rootStyle.getPropertyValue("--player-bottom-safe-gap") || "0") || 0;
+
+      let occupiedHeight = 0;
+      const siblings = Array.from(playerContent.children);
+      siblings.forEach((node) => {
+        if (node === playerShell) {
+          return;
+        }
+        occupiedHeight += node.getBoundingClientRect().height;
+      });
+
+      const gapCount = Math.max(0, siblings.length - 1);
+      const availableHeight = bodyHeight - occupiedHeight - (gapCount * rowGap) - shellBorderHeight - safeBottomGap;
+      const maxVideoHeight = Math.max(minVideoHeight, availableHeight);
+      const preferredWidth = contentWidth;
+      const preferredHeight = preferredWidth / safeRatio;
+      const fittedHeight = Math.max(minVideoHeight, Math.min(preferredHeight, maxVideoHeight));
+      const fittedWidth = Math.min(contentWidth, fittedHeight * safeRatio);
+
+      playerShell.style.width = `${Math.max(minVideoWidth, fittedWidth)}px`;
+      playerShell.style.height = `${fittedHeight}px`;
+    }
+
+    function updateMediaState() {
+      updatePlayerAspectRatio();
+      const duration = Number.isFinite(videoPlayer.duration) ? videoPlayer.duration : 0;
+      const currentTime = Number.isFinite(videoPlayer.currentTime) ? videoPlayer.currentTime : 0;
+      timeCurrentNode.textContent = formatTime(currentTime);
+      timeDurationNode.textContent = formatTime(duration);
+      mediaProgress.max = String(duration > 0 ? duration : 1);
+      mediaProgress.value = String(Math.min(currentTime, duration || 1));
+      updateActiveSegment(currentTime);
+      updateActiveLyric(currentTime);
+    }
+
+    function stopMediaLoop() {
+      if (mediaRafId) {
+        cancelAnimationFrame(mediaRafId);
+        mediaRafId = 0;
+      }
+    }
+
+    function startMediaLoop() {
+      stopMediaLoop();
+      const tick = () => {
+        updateMediaState();
+        if (!videoPlayer.paused && !videoPlayer.ended) {
+          mediaRafId = requestAnimationFrame(tick);
+        } else {
+          mediaRafId = 0;
+        }
+      };
+      mediaRafId = requestAnimationFrame(tick);
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const errorText = payload && payload.error ? payload.error : `请求失败：${response.status}`;
+        throw new Error(errorText);
+      }
+      return payload;
+    }
+
+    async function fetchTaskList() {
+      const payload = await fetchJson("/api/tasks");
+      renderTaskList(payload.tasks || []);
+      if (!currentTaskId && payload.tasks && payload.tasks.length) {
+        await setCurrentTaskId(payload.tasks[0].task_id, { switchViewKey: null, notice: "" });
+      } else if (!payload.tasks || !payload.tasks.length) {
+        currentTaskId = "";
+        clearTaskContextDisplay();
+        updateTaskQuery("");
+      }
+      return payload;
+    }
+
+    async function fetchTaskDetail(taskId) {
+      if (!taskId) {
+        clearTaskContextDisplay();
+        return null;
+      }
+      const payload = await fetchJson(`/api/task?task_id=${encodeURIComponent(taskId)}`);
+      applyTaskDetail(payload);
+      return payload;
     }
 
     async function fetchSnapshot() {
-      const response = await fetch(`/snapshot?task_id=${encodeURIComponent(taskId)}`, { cache: "no-store" });
-      if (!response.ok) {
+      if (!currentTaskId) {
         return;
       }
-      const snapshot = await response.json();
-      applySnapshot(snapshot);
+      const payload = await fetchJson(`/snapshot?task_id=${encodeURIComponent(currentTaskId)}`);
+      applySnapshot(payload);
+    }
+
+    async function fetchWebData() {
+      if (!currentTaskId) {
+        applyWebPayload(null);
+        return;
+      }
+      const payload = await fetchJson(`/web-data?task_id=${encodeURIComponent(currentTaskId)}`);
+      applyWebPayload(payload);
+    }
+
+    function stopSocket() {
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+        ws = null;
+      }
     }
 
     function scheduleReconnect(delayMs = 1000) {
-      if (reconnectTimer) {
+      if (reconnectTimer || !currentTaskId) {
         return;
       }
       reconnectTimer = setTimeout(() => {
@@ -326,17 +2451,24 @@
     }
 
     function connectSocket() {
+      if (!currentTaskId || activeViewKey !== "monitor") {
+        stopSocket();
+        return;
+      }
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         return;
       }
       const protocol = location.protocol === "https:" ? "wss" : "ws";
-      ws = new WebSocket(`${protocol}://${location.host}/ws?task_id=${encodeURIComponent(taskId)}`);
+      ws = new WebSocket(`${protocol}://${location.host}/ws?task_id=${encodeURIComponent(currentTaskId)}`);
       ws.onopen = () => {
         lastSnapshotAt = Date.now();
       };
       ws.onmessage = (event) => {
         try {
-          applySnapshot(JSON.parse(event.data));
+          const payload = JSON.parse(event.data);
+          if (payload.task_id && payload.task_id === currentTaskId) {
+            applySnapshot(payload);
+          }
         } catch (_error) {
           console.error("快照解析失败");
         }
@@ -346,25 +2478,253 @@
       };
     }
 
+    async function setCurrentTaskId(taskId, options = {}) {
+      const normalizedTaskId = String(taskId || "").trim();
+      const switchViewKey = Object.prototype.hasOwnProperty.call(options, "switchViewKey") ? options.switchViewKey : null;
+      const notice = Object.prototype.hasOwnProperty.call(options, "notice") ? options.notice : "";
+      currentTaskId = normalizedTaskId;
+      webPayloadCache = null;
+      taskDetailCache = null;
+      snapshotCache = null;
+      segmentUnits = [];
+      lyricUnits = [];
+      stopSocket();
+      if (!normalizedTaskId) {
+        clearTaskContextDisplay();
+        renderTaskList(taskListCache);
+        updateTaskQuery("");
+        if (switchViewKey) {
+          switchView(switchViewKey, true);
+        }
+        return;
+      }
+      await fetchTaskDetail(normalizedTaskId);
+      await handleViewActivation(activeViewKey);
+      if (switchViewKey) {
+        switchView(switchViewKey, true);
+      }
+      if (notice) {
+        setHomeNotice(notice, "success");
+      }
+    }
+
+    async function handleViewActivation(viewKey) {
+      const normalized = Object.prototype.hasOwnProperty.call(views, viewKey) ? viewKey : "home";
+      if (!currentTaskId) {
+        stopSocket();
+        return;
+      }
+      if (normalized === "home") {
+        stopSocket();
+        return;
+      }
+      if (normalized === "sync") {
+        if (!webPayloadCache) {
+          await fetchWebData().catch(() => {});
+        }
+        stopSocket();
+        return;
+      }
+      if (normalized === "module-a") {
+        if (!webPayloadCache) {
+          await fetchWebData().catch(() => {});
+        }
+        stopSocket();
+        return;
+      }
+      if (normalized === "monitor") {
+        if (!snapshotCache) {
+          await fetchSnapshot().catch(() => {});
+        }
+        connectSocket();
+      }
+    }
+
+    async function createTask() {
+      const taskId = createTaskIdInput.value.trim();
+      const audioPath = createAudioPathInput.value.trim();
+      const configPath = createConfigPathInput.value.trim();
+      const payload = await fetchJson(
+        `/api/task/create?task_id=${encodeURIComponent(taskId)}&audio_path=${encodeURIComponent(audioPath)}&config_path=${encodeURIComponent(configPath)}`
+      );
+      createTaskIdInput.value = "";
+      await fetchTaskList();
+      await setCurrentTaskId(payload.task_id, { switchViewKey: "home", notice: `新任务已创建：${payload.task_id}` });
+    }
+
+    async function renameTask() {
+      if (!currentTaskId) {
+        throw new Error("请先在左侧选择一个任务。");
+      }
+      const newTaskId = renameTaskIdInput.value.trim();
+      const payload = await fetchJson(
+        `/api/task/rename?old_task_id=${encodeURIComponent(currentTaskId)}&new_task_id=${encodeURIComponent(newTaskId)}`
+      );
+      renameTaskIdInput.value = "";
+      await fetchTaskList();
+      await setCurrentTaskId(payload.task_id, { switchViewKey: "home", notice: `任务已改名为：${payload.task_id}` });
+    }
+
+    async function copyTask() {
+      if (!currentTaskId) {
+        throw new Error("请先在左侧选择一个任务。");
+      }
+      const newTaskId = copyTaskIdInput.value.trim();
+      const audioPath = copyAudioPathInput.value.trim();
+      const configPath = copyConfigPathInput.value.trim();
+      const payload = await fetchJson(
+        `/api/task/copy?source_task_id=${encodeURIComponent(currentTaskId)}&new_task_id=${encodeURIComponent(newTaskId)}&audio_path=${encodeURIComponent(audioPath)}&config_path=${encodeURIComponent(configPath)}`
+      );
+      copyTaskIdInput.value = "";
+      await fetchTaskList();
+      await setCurrentTaskId(payload.task_id, { switchViewKey: "home", notice: `已复制为新任务：${payload.task_id}` });
+    }
+
+    function bindNavigation() {
+      for (const button of navButtons) {
+        button.addEventListener("click", () => switchView(button.dataset.view, true));
+      }
+      window.addEventListener("hashchange", () => switchView(window.location.hash.slice(1) || "home", false));
+      window.addEventListener("keydown", (event) => {
+        const targetTag = event.target && event.target.tagName ? String(event.target.tagName).toLowerCase() : "";
+        if (targetTag === "input" || targetTag === "textarea") {
+          return;
+        }
+        if (event.key === "1") switchView("home", true);
+        if (event.key === "2") switchView("sync", true);
+        if (event.key === "3") switchView("module-a", true);
+        if (event.key === "4") switchView("monitor", true);
+      });
+      switchView(window.location.hash.slice(1) || "home", false);
+    }
+
+    function bindMedia() {
+      videoPlayer.addEventListener("loadedmetadata", updateMediaState);
+      videoPlayer.addEventListener("timeupdate", updateMediaState);
+      videoPlayer.addEventListener("seeked", updateMediaState);
+      videoPlayer.addEventListener("play", startMediaLoop);
+      videoPlayer.addEventListener("pause", () => {
+        stopMediaLoop();
+        updateMediaState();
+      });
+      videoPlayer.addEventListener("ended", () => {
+        stopMediaLoop();
+        updateMediaState();
+      });
+      mediaProgress.addEventListener("input", () => {
+        const targetTime = Number(mediaProgress.value || 0);
+        if (Number.isFinite(targetTime)) {
+          videoPlayer.currentTime = targetTime;
+          updateMediaState();
+        }
+      });
+      scenePromptsButton.addEventListener("click", () => {
+        if (currentScenePromptPayload) {
+          openPromptModal(currentScenePromptPayload);
+        }
+      });
+      promptModalClose.addEventListener("click", closePromptModal);
+      promptModalBackdrop.addEventListener("click", (event) => {
+        if (event.target === promptModalBackdrop) {
+          closePromptModal();
+        }
+      });
+    }
+
+    function bindHomeActions() {
+      refreshTaskListButton.addEventListener("click", () => {
+        setRefreshTaskListLoading(true);
+        fetchTaskList().then(() => {
+          setHomeNotice("任务列表已刷新。", "success");
+        }).catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        }).finally(() => {
+          setRefreshTaskListLoading(false);
+        });
+      });
+      createTaskButton.addEventListener("click", () => {
+        createTask().catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
+      renameTaskButton.addEventListener("click", () => {
+        renameTask().catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
+      copyTaskButton.addEventListener("click", () => {
+        copyTask().catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
+      enterSyncButton.addEventListener("click", () => switchView("sync", true));
+      enterModuleAButton.addEventListener("click", () => switchView("module-a", true));
+      enterMonitorButton.addEventListener("click", () => switchView("monitor", true));
+    }
+
     function startFallbackPolling() {
       fallbackPollTimer = setInterval(() => {
+        if (!currentTaskId) {
+          return;
+        }
+        if (activeViewKey !== "monitor") {
+          return;
+        }
         const wsReady = ws && ws.readyState === WebSocket.OPEN;
         const stale = Date.now() - lastSnapshotAt > 5000;
         if (!wsReady || stale) {
           fetchSnapshot().catch(() => {});
         }
       }, 2000);
+      webDataPollTimer = setInterval(() => {
+        if (!currentTaskId) {
+          return;
+        }
+        if (activeViewKey !== "sync" && activeViewKey !== "module-a") {
+          return;
+        }
+        const needsRefresh = (
+          !webPayloadCache
+          || !webPayloadCache.video
+          || !webPayloadCache.video.available
+          || !webPayloadCache.module_a_visualization
+          || !webPayloadCache.module_a_visualization.available
+        );
+        if (needsRefresh) {
+          fetchWebData().catch(() => {});
+        }
+      }, 10000);
     }
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        fetchSnapshot().catch(() => {});
-        connectSocket();
+        fetchTaskList().catch(() => {});
+        handleViewActivation(activeViewKey).catch(() => {});
+        fitPlayerShell();
       }
     });
 
-    fetchSnapshot().catch(() => {});
-    connectSocket();
+    window.addEventListener("resize", () => {
+      fitPlayerShell();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closePromptModal();
+      }
+    });
+
+    bindNavigation();
+    bindMedia();
+    bindHomeActions();
+    clearTaskContextDisplay();
+    fetchTaskList().then(async () => {
+      if (currentTaskId) {
+        await setCurrentTaskId(currentTaskId, { switchViewKey: null, notice: "" });
+      }
+    }).catch((error) => {
+      setHomeNotice(error.message || String(error), "error");
+    });
     startFallbackPolling();
   </script>
 </body>

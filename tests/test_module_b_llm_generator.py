@@ -30,7 +30,7 @@ def test_llm_script_generator_should_fill_bilingual_prompt_fields(monkeypatch: p
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：camera_motion/transition 仍由规则逻辑生成。
+    边界条件：camera_plan/transition_plan 仍由规则逻辑生成。
     """
 
     def _fake_generate_module_b_prompts(logger, llm_config, llm_input_payload, project_root):
@@ -41,12 +41,12 @@ def test_llm_script_generator_should_fill_bilingual_prompt_fields(monkeypatch: p
         assert llm_input_payload["memory_context"]["recent_history"] == []
         return {
             "scene_desc": "雨夜街口，人物在霓虹下停步回望，镜头缓慢推进。",
-            "keyframe_prompt_zh": "电影感关键帧，雨夜霓虹街道，孤立主体，中景，构图稳定",
-            "keyframe_prompt_en": "cinematic keyframe, rainy neon street, lone figure, soft rim light, medium shot, film still",
-            "video_prompt_zh": "电影感视频提示词，雨夜街道，慢速推进，风雨细微运动，忧郁氛围",
-            "video_prompt_en": "cinematic video prompt, rainy neon street, slow push-in, gentle wind and rain motion, melancholic mood",
-            "keyframe_prompt": "cinematic keyframe, rainy neon street, lone figure, soft rim light, medium shot, film still",
-            "video_prompt": "cinematic video prompt, rainy neon street, slow push-in, gentle wind and rain motion, melancholic mood",
+            "keyframe_prompt_start_zh": "电影感关键帧起始态，雨夜霓虹街道，孤立主体，中景，构图稳定",
+            "keyframe_prompt_start_en": "cinematic keyframe start frame, rainy neon street, lone figure, soft rim light, medium shot, film still",
+            "keyframe_prompt_end_zh": "电影感关键帧结束态，雨夜霓虹街道，人物回望，构图稳定",
+            "keyframe_prompt_end_en": "cinematic keyframe end frame, rainy neon street, lone figure looking back, stable composition",
+            "video_prompt_zh": "电影感视频提示词，雨夜街道，从起始到结束慢速推进，风雨细微运动，线条连续，忧郁氛围",
+            "video_prompt_en": "cinematic video prompt, rainy neon street, slow push-in from start to end, gentle wind and rain motion, clean line continuity, melancholic mood",
         }
 
     monkeypatch.setattr(script_generator_module, "generate_module_b_prompts", _fake_generate_module_b_prompts)
@@ -81,15 +81,14 @@ def test_llm_script_generator_should_fill_bilingual_prompt_fields(monkeypatch: p
     )
 
     assert shot["scene_desc"].startswith("雨夜街口")
-    assert "雨夜霓虹街道" in shot["keyframe_prompt_zh"]
-    assert "rainy neon street" in shot["keyframe_prompt_en"]
+    assert "雨夜霓虹街道" in shot["keyframe_prompt_start_zh"]
+    assert "rainy neon street" in shot["keyframe_prompt_start_en"]
+    assert "雨夜霓虹街道" in shot["keyframe_prompt_end_zh"]
+    assert "looking back" in shot["keyframe_prompt_end_en"]
     assert "雨夜街道" in shot["video_prompt_zh"]
     assert "rainy neon street" in shot["video_prompt_en"]
-    # 兼容字段默认指向英文版本。
-    assert "neon street" in shot["keyframe_prompt"]
-    assert "video prompt" in shot["video_prompt"]
-    assert shot["camera_motion"] in {"none", "slow_pan", "zoom_in", "shake", "push_pull"}
-    assert shot["transition"] in {"crossfade", "hard_cut"}
+    assert shot["camera_plan"]["preset_id"] in {"none", "pan_right_s", "zoom_in_s", "pan_ul_s", "zoom_in_m"}
+    assert shot["transition_plan"]["kind"] in {"crossfade", "hard_cut"}
 
 
 def test_llm_script_generator_should_raise_when_llm_generation_failed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,10 +165,12 @@ def test_generate_module_b_prompts_should_render_external_prompt_template(tmp_pa
         captured_messages.append(messages)
         return (
             "{\"scene_desc\":\"中文描述\","
-            "\"keyframe_prompt_zh\":\"中文关键帧\","
-            "\"keyframe_prompt_en\":\"english keyframe\","
-            "\"video_prompt_zh\":\"中文视频\","
-            "\"video_prompt_en\":\"english video\"}"
+            "\"keyframe_prompt_start_zh\":\"中文关键帧起始\","
+            "\"keyframe_prompt_start_en\":\"english keyframe start\","
+            "\"keyframe_prompt_end_zh\":\"中文关键帧结束\","
+            "\"keyframe_prompt_end_en\":\"english keyframe end\","
+            "\"video_prompt_zh\":\"中文视频提示词\","
+            "\"video_prompt_en\":\"english video prompt\"}"
         )
 
     monkeypatch.setattr(llm_generator_module, "call_module_b_llm_chat", _fake_call_module_b_llm_chat)
@@ -243,10 +244,12 @@ def test_generate_module_b_prompts_should_allow_empty_user_custom_prompt(
         captured_messages.append(messages)
         return (
             "{\"scene_desc\":\"中文描述\","
-            "\"keyframe_prompt_zh\":\"中文关键帧\","
-            "\"keyframe_prompt_en\":\"english keyframe\","
-            "\"video_prompt_zh\":\"中文视频\","
-            "\"video_prompt_en\":\"english video\"}"
+            "\"keyframe_prompt_start_zh\":\"中文关键帧起始\","
+            "\"keyframe_prompt_start_en\":\"english keyframe start\","
+            "\"keyframe_prompt_end_zh\":\"中文关键帧结束\","
+            "\"keyframe_prompt_end_en\":\"english keyframe end\","
+            "\"video_prompt_zh\":\"中文视频提示词\","
+            "\"video_prompt_en\":\"english video prompt\"}"
         )
 
     monkeypatch.setattr(llm_generator_module, "call_module_b_llm_chat", _fake_call_module_b_llm_chat)
@@ -374,16 +377,20 @@ def test_generate_module_b_prompts_should_append_retry_hint_from_template(
         if call_count["value"] == 1:
             return (
                 "{\"scene_desc\":\"中文描述\","
-                "\"keyframe_prompt_zh\":\"中文关键帧\","
-                "\"keyframe_prompt_en\":\"english keyframe\","
-                "\"video_prompt_zh\":\"中文视频\"}"
+                "\"keyframe_prompt_start_zh\":\"中文关键帧起始\","
+                "\"keyframe_prompt_start_en\":\"english keyframe start\","
+                "\"keyframe_prompt_end_zh\":\"中文关键帧结束\","
+                "\"keyframe_prompt_end_en\":\"english keyframe end\","
+                "\"video_prompt_zh\":\"中文视频提示词\"}"
             )
         return (
             "{\"scene_desc\":\"中文描述\","
-            "\"keyframe_prompt_zh\":\"中文关键帧\","
-            "\"keyframe_prompt_en\":\"english keyframe\","
-            "\"video_prompt_zh\":\"中文视频\","
-            "\"video_prompt_en\":\"english video\"}"
+            "\"keyframe_prompt_start_zh\":\"中文关键帧起始\","
+            "\"keyframe_prompt_start_en\":\"english keyframe start\","
+            "\"keyframe_prompt_end_zh\":\"中文关键帧结束\","
+            "\"keyframe_prompt_end_en\":\"english keyframe end\","
+            "\"video_prompt_zh\":\"中文视频提示词\","
+            "\"video_prompt_en\":\"english video prompt\"}"
         )
 
     monkeypatch.setattr(llm_generator_module, "call_module_b_llm_chat", _fake_call_module_b_llm_chat)
@@ -394,7 +401,7 @@ def test_generate_module_b_prompts_should_append_retry_hint_from_template(
         project_root=tmp_path,
     )
 
-    assert result["video_prompt_en"] == "english video"
+    assert result["video_prompt_en"] == "english video prompt"
     assert len(captured_messages) == 2
     assert captured_messages[0][1]["content"] == "请强调镜头连贯"
     assert "补救要求：上次输出不符合要求：" in captured_messages[1][1]["content"]

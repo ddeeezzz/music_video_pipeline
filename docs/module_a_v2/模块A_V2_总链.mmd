@@ -58,9 +58,10 @@ flowchart TD
     SplitStats -->|提供dynamic_gap_threshold_seconds| WindowsRaw
     BigA0 -->|inject_boundary_points_into_windows(仅other窗口)| WindowsRaw
 
-    WindowsRaw -->|classify_window_roles| WindowsClassified
-    VocalCandidates -->|人声RMS判定chant/silence| WindowsClassified
-    Accompaniment -->|伴奏RMS判定inst| WindowsClassified
+    WindowsRaw -->|inject_boundary_points_into_windows(仅other窗口注入活动窗边界)| WindowsClassified
+    VocalCandidates -->|build_dual_track_activity_windows(提取vocal activity intervals)| WindowsClassified
+    Accompaniment -->|build_dual_track_activity_windows(提取accompaniment activity intervals)| WindowsClassified
+    WindowsClassified -->|classify_window_roles(lyric > vocal_active > accompaniment_active)| WindowsClassified
 
     WindowsClassified -->|merge_windows_by_rules(tiny + 短于1小节)| WindowsMerged
     BeatPack -->|估计bar_length_seconds| WindowsMerged

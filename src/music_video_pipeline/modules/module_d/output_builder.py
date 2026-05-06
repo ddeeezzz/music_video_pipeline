@@ -48,16 +48,24 @@ def build_module_d_output(
         if isinstance(shot_payload, dict):
             for optional_key in [
                 "scene_desc",
-                "keyframe_prompt",
-                "video_prompt",
-                "keyframe_prompt_zh",
-                "keyframe_prompt_en",
+                "keyframe_prompt_start_zh",
+                "keyframe_prompt_start_en",
+                "keyframe_negative_prompt_start_zh",
+                "keyframe_negative_prompt_start_en",
+                "keyframe_prompt_end_zh",
+                "keyframe_prompt_end_en",
+                "keyframe_negative_prompt_end_zh",
+                "keyframe_negative_prompt_end_en",
                 "video_prompt_zh",
                 "video_prompt_en",
             ]:
                 optional_value = shot_payload.get(optional_key, "")
                 if isinstance(optional_value, str) and optional_value.strip():
                     segment_item[optional_key] = optional_value.strip()
+            for plan_key in ["camera_plan", "transition_plan"]:
+                optional_plan = shot_payload.get(plan_key)
+                if isinstance(optional_plan, dict) and optional_plan:
+                    segment_item[plan_key] = dict(optional_plan)
         segment_items.append(segment_item)
     return {
         "task_id": task_id,

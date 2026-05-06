@@ -41,7 +41,7 @@ def test_smoke_run_should_generate_playable_mp4(tmp_path: Path) -> None:
         pytest.skip(f"示例音频不存在，跳过 smoke 测试: {audio_path}")
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

@@ -22,6 +22,28 @@
       "base_model_path": "models/base_model/fl/diffusers",
       "meta_base_model_text": "Flux.1 D",
       "updated_at": "2026-04-16T19:10:42"
+    },
+    {
+      "binding_name": "akebi_scene",
+      "model_series": "15",
+      "remote_dir": "/lora/15/akebi",
+      "lora_file": "models/lora/15/akebi/AkebiScene-000012.safetensors",
+      "meta_file": "",
+      "base_model_key": "base_15_single_anything_v5_safetensors",
+      "base_model_path": "models/base_model/15/single/anything-v5.safetensors",
+      "meta_base_model_text": "",
+      "updated_at": "2026-05-06T12:00:00"
+    },
+    {
+      "binding_name": "akebi_char",
+      "model_series": "15",
+      "remote_dir": "/lora/15/akebi",
+      "lora_file": "models/lora/15/akebi/AkebiChar-000008.safetensors",
+      "meta_file": "",
+      "base_model_key": "base_15_single_anything_v5_safetensors",
+      "base_model_path": "models/base_model/15/single/anything-v5.safetensors",
+      "meta_base_model_text": "",
+      "updated_at": "2026-05-06T12:00:00"
     }
   ]
 }

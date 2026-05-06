@@ -119,12 +119,10 @@ def _resolve_c_generator_pool_size(
     返回值：
     - int: 生成器实例数。
     异常说明：无。
-    边界条件：仅对 diffusion 模式放大实例池，默认上限 3，避免显存峰值过高。
+    边界条件：仅对 ComfyUI 模式按 worker 数扩展请求并发，默认上限 3，避免服务端排队过长。
     """
-    if bool(adaptive_window_runtime.get("single_gpu_mode", False)):
-        return 1
-    frame_mode = str(context.config.mode.frame_generator).strip().lower()
-    if frame_mode != "diffusion":
+    frame_mode = str(context.config.module_c.render_backend).strip().lower()
+    if frame_mode != "comfyui":
         return 1
     try:
         configured_workers = int(context.config.module_c.render_workers)
@@ -134,7 +132,7 @@ def _resolve_c_generator_pool_size(
         c_limit_max = int(adaptive_window_runtime.get("c_limit_max", 1))
     except (TypeError, ValueError):
         c_limit_max = 1
-    env_override_text = str(os.environ.get("MVPL_C_DIFFUSION_POOL_SIZE", "")).strip()
+    env_override_text = str(os.environ.get("MVPL_C_COMFYUI_POOL_SIZE", "")).strip()
     env_override: int | None = None
     if env_override_text:
         try:
@@ -144,6 +142,8 @@ def _resolve_c_generator_pool_size(
     default_pool_cap = 3
     if env_override is not None:
         default_pool_cap = max(1, min(4, env_override))
+    if bool(adaptive_window_runtime.get("single_gpu_mode", False)):
+        default_pool_cap = max(1, min(default_pool_cap, 3))
     normalized_size = max(1, min(default_pool_cap, max(1, configured_workers), max(1, c_limit_max)))
     return normalized_size
 

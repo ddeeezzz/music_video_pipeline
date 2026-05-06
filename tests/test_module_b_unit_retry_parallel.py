@@ -36,6 +36,35 @@ from music_video_pipeline.modules.module_b import orchestrator as module_b_orche
 from music_video_pipeline.state_store import StateStore
 
 
+def _build_prompt_fields(
+    keyframe_start_en: str,
+    video_en: str,
+    keyframe_end_en: str | None = None,
+) -> dict[str, str]:
+    """
+    功能说明：构造模块B提示词字段，减少测试样例重复。
+    参数说明：
+    - keyframe_start_en: 起始关键帧英文提示词。
+    - video_en: 视频英文提示词。
+    - keyframe_end_en: 结束关键帧英文提示词（可选，默认复用起始态）。
+    返回值：
+    - dict[str, str]: 可直接合并进 shot 的字段字典。
+    异常说明：无。
+    边界条件：视频提示词为单轨字段（video_prompt_zh/video_prompt_en）。
+    """
+    normalized_keyframe_start = str(keyframe_start_en).strip()
+    normalized_video = str(video_en).strip()
+    normalized_keyframe_end = str(keyframe_end_en or keyframe_start_en).strip()
+    return {
+        "keyframe_prompt_start_zh": f"关键帧起始：{normalized_keyframe_start}",
+        "keyframe_prompt_start_en": normalized_keyframe_start,
+        "keyframe_prompt_end_zh": f"关键帧结束：{normalized_keyframe_end}",
+        "keyframe_prompt_end_en": normalized_keyframe_end,
+        "video_prompt_zh": f"视频提示词：{normalized_video}",
+        "video_prompt_en": normalized_video,
+    }
+
+
 class _ScriptedScriptGenerator:
     """
     功能说明：测试用分镜生成器，可按 segment_id 预设失败次数。
@@ -96,7 +125,10 @@ class _ScriptedScriptGenerator:
             "start_time": start_time,
             "end_time": end_time,
             "scene_desc": f"scene-{segment_id}",
-            "keyframe_prompt": f"prompt-{segment_id}", "video_prompt": f"prompt-{segment_id}",
+            **_build_prompt_fields(
+                keyframe_start_en=f"prompt-{segment_id}",
+                video_en=f"prompt-{segment_id}",
+            ),
             "camera_motion": "zoom_in",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -140,8 +172,10 @@ class _MemoryAwareScriptGenerator:
             "start_time": start_time,
             "end_time": end_time,
             "scene_desc": f"scene-{segment_id}",
-            "keyframe_prompt": f"prompt-{segment_id}",
-            "video_prompt": f"video-{segment_id}",
+            **_build_prompt_fields(
+                keyframe_start_en=f"prompt-{segment_id}",
+                video_en=f"video-{segment_id}",
+            ),
             "camera_motion": "zoom_in",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -291,8 +325,10 @@ def test_run_module_b_should_rebuild_memory_from_only_previous_done_units(tmp_pa
             "start_time": 2.0,
             "end_time": 3.0,
             "scene_desc": "scene-seg_0003-manual",
-            "keyframe_prompt": "prompt-seg_0003-manual",
-            "video_prompt": "video-seg_0003-manual",
+            **_build_prompt_fields(
+                keyframe_start_en="prompt-seg_0003-manual",
+                video_en="video-seg_0003-manual",
+            ),
             "camera_motion": "zoom_in",
             "transition": "crossfade",
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -341,7 +377,7 @@ def _build_context(tmp_path: Path, task_id: str, script_workers: int, unit_retry
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(runs_dir), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

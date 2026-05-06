@@ -42,7 +42,7 @@ def generate_module_b_prompts(
     - llm_input_payload: 单段分镜输入上下文字典（含 memory_context + current_segment）。
     - project_root: 项目根目录，用于解析密钥相对路径。
     返回值：
-    - dict[str, str]: scene_desc/keyframe_prompt/video_prompt。
+    - dict[str, str]: scene_desc 与双关键帧+单视频轨中英提示词字段。
     异常说明：由模块B llm_generator 统一抛出。
     边界条件：本函数仅做转发，不做业务字段校验。
     """
@@ -111,14 +111,14 @@ class MockScriptGenerator(ScriptGenerator):
                     "start_time": 0.0,
                     "end_time": 2.0,
                     "scene_desc": "默认场景占位",
-                    "keyframe_prompt_zh": "电影感关键帧占位场景，中性光线，居中构图",
-                    "keyframe_prompt": "Cinematic keyframe placeholder scene, neutral lighting, centered composition",
-                    "keyframe_prompt_en": "Cinematic keyframe placeholder scene, neutral lighting, centered composition",
-                    "video_prompt_zh": "电影感视频占位场景，轻微运动，稳定镜头，中性氛围",
-                    "video_prompt": "Cinematic video scene, subtle motion, stable camera movement, neutral atmosphere",
-                    "video_prompt_en": "Cinematic video scene, subtle motion, stable camera movement, neutral atmosphere",
-                    "camera_motion": "slow_pan",
-                    "transition": "crossfade",
+                    "keyframe_prompt_start_zh": "电影感关键帧起始态，占位场景，中性光线，居中构图",
+                    "keyframe_prompt_start_en": "Cinematic keyframe start frame, placeholder scene, neutral lighting, centered composition",
+                    "keyframe_prompt_end_zh": "电影感关键帧结束态，占位场景，动作收束，构图稳定",
+                    "keyframe_prompt_end_en": "Cinematic keyframe end frame, placeholder scene, motion settled, stable composition",
+                    "video_prompt_zh": "电影感视频提示词，占位场景，从起始到结束的轻微运动，稳定镜头，中性氛围",
+                    "video_prompt_en": "Cinematic video prompt, placeholder scene, subtle motion from start to end, stable camera, neutral atmosphere",
+                    "camera_plan": self._build_camera_plan_from_rule("slow_pan"),
+                    "transition_plan": self._build_transition_plan_from_rule("crossfade"),
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
                     "lyric_text": "",
                     "lyric_units": [],
@@ -185,14 +185,14 @@ class MockScriptGenerator(ScriptGenerator):
             "start_time": segment_start,
             "end_time": segment_end,
             "scene_desc": f"大段落{big_label}中的小段落{small_label}，强调节奏同步",
-            "keyframe_prompt_zh": f"电影感关键帧，{big_label}，{small_label}，节奏对齐，细节清晰，主体明确",
-            "keyframe_prompt": f"Cinematic keyframe, {big_label}, {small_label}, rhythm aligned, high detail, sharp focus",
-            "keyframe_prompt_en": f"Cinematic keyframe, {big_label}, {small_label}, rhythm aligned, high detail, sharp focus",
-            "video_prompt_zh": f"电影感视频提示词，{big_label}，{small_label}，节奏运动，镜头平滑，氛围鲜明",
-            "video_prompt": f"Cinematic video prompt, {big_label}, {small_label}, rhythmic movement, smooth camera motion, vivid atmosphere",
-            "video_prompt_en": f"Cinematic video prompt, {big_label}, {small_label}, rhythmic movement, smooth camera motion, vivid atmosphere",
-            "camera_motion": camera_motion,
-            "transition": transition,
+            "keyframe_prompt_start_zh": f"电影感关键帧起始态，{big_label}，{small_label}，节奏起拍，细节清晰，主体明确",
+            "keyframe_prompt_start_en": f"Cinematic keyframe start frame, {big_label}, {small_label}, rhythm entry, high detail, clear subject",
+            "keyframe_prompt_end_zh": f"电影感关键帧结束态，{big_label}，{small_label}，动作收束，细节清晰，主体明确",
+            "keyframe_prompt_end_en": f"Cinematic keyframe end frame, {big_label}, {small_label}, motion settle, high detail, clear subject",
+            "video_prompt_zh": f"电影感视频提示词，{big_label}，{small_label}，从起始到结束的节奏运动，镜头平滑，氛围鲜明",
+            "video_prompt_en": f"Cinematic video prompt, {big_label}, {small_label}, rhythmic motion from start to end, smooth camera, vivid atmosphere",
+            "camera_plan": self._build_camera_plan_from_rule(camera_motion),
+            "transition_plan": self._build_transition_plan_from_rule(transition),
             "constraints": {"must_keep_style": True, "must_align_to_beat": True},
             "lyric_text": lyric_text,
             "lyric_units": shot_lyric_units,
@@ -265,6 +265,27 @@ class MockScriptGenerator(ScriptGenerator):
         if energy_level == "mid":
             return "zoom_in"
         return "slow_pan"
+
+    def _build_camera_plan_from_rule(self, camera_motion: str) -> dict[str, str]:
+        """将旧规则运镜标签映射为新的 camera_plan 结构。"""
+        mapping = {
+            "none": {"preset_id": "none", "mode": "none", "direction": "center", "strength": "none", "easing": "linear"},
+            "slow_pan": {"preset_id": "pan_right_s", "mode": "pan", "direction": "right", "strength": "small", "easing": "linear"},
+            "zoom_in": {"preset_id": "zoom_in_s", "mode": "zoom", "direction": "center", "strength": "small", "easing": "ease_in_out"},
+            "shake": {"preset_id": "pan_ul_s", "mode": "pan", "direction": "up_left", "strength": "small", "easing": "ease_in_out"},
+            "push_pull": {"preset_id": "zoom_in_m", "mode": "zoom", "direction": "center", "strength": "medium", "easing": "ease_in_out"},
+        }
+        return dict(mapping.get(str(camera_motion).strip(), mapping["none"]))
+
+    def _build_transition_plan_from_rule(self, transition: str) -> dict[str, Any]:
+        """将旧规则转场标签映射为新的 transition_plan 结构。"""
+        mapping: dict[str, dict[str, Any]] = {
+            "none": {"preset_id": "none", "kind": "none", "duration_ms": 0, "easing": "linear"},
+            "hard_cut": {"preset_id": "hard_cut_0", "kind": "hard_cut", "duration_ms": 0, "easing": "linear"},
+            "crossfade": {"preset_id": "crossfade_160", "kind": "crossfade", "duration_ms": 160, "easing": "ease_in_out"},
+            "flash": {"preset_id": "fade_white_200", "kind": "fade_white", "duration_ms": 200, "easing": "ease_in_out"},
+        }
+        return dict(mapping.get(str(transition).strip(), mapping["none"]))
 
     def _build_lyric_index_by_segment(self, lyric_units: Any) -> dict[str, list[dict[str, Any]]]:
         """
@@ -440,7 +461,7 @@ class LlmScriptGenerator(MockScriptGenerator):
         返回值：
         - dict[str, Any]: 单个分镜字典。
         异常说明：LLM请求失败或返回不合法时抛 RuntimeError。
-        边界条件：camera_motion/transition 等节奏字段保持规则生成，不由LLM回填。
+        边界条件：camera_plan/transition_plan 等节奏字段保持规则生成，不由LLM回填。
         """
         baseline_shot = super().generate_one(
             module_a_output=module_a_output,
@@ -470,8 +491,8 @@ class LlmScriptGenerator(MockScriptGenerator):
             "big_segment_label": big_segment_label,
             "energy_level": str(energy.get("energy_level", "mid")),
             "trend": str(energy.get("trend", "flat")),
-            "camera_motion_rule": str(baseline_shot.get("camera_motion", "none")),
-            "transition_rule": str(baseline_shot.get("transition", "crossfade")),
+            "camera_motion_rule": str((baseline_shot.get("camera_plan") or {}).get("preset_id", "none")),
+            "transition_rule": str((baseline_shot.get("transition_plan") or {}).get("preset_id", "crossfade_160")),
             "lyric_text": str(baseline_shot.get("lyric_text", "")),
             "lyric_units": baseline_shot.get("lyric_units", []),
         }
@@ -499,19 +520,20 @@ class LlmScriptGenerator(MockScriptGenerator):
             ) from error
 
         baseline_shot["scene_desc"] = llm_result["scene_desc"]
-        baseline_shot["keyframe_prompt_zh"] = llm_result["keyframe_prompt_zh"]
-        baseline_shot["keyframe_prompt_en"] = llm_result["keyframe_prompt_en"]
+        baseline_shot["keyframe_prompt_start_zh"] = llm_result["keyframe_prompt_start_zh"]
+        baseline_shot["keyframe_prompt_start_en"] = llm_result["keyframe_prompt_start_en"]
+        baseline_shot["keyframe_prompt_end_zh"] = llm_result["keyframe_prompt_end_zh"]
+        baseline_shot["keyframe_prompt_end_en"] = llm_result["keyframe_prompt_end_en"]
         baseline_shot["video_prompt_zh"] = llm_result["video_prompt_zh"]
         baseline_shot["video_prompt_en"] = llm_result["video_prompt_en"]
-        # 兼容字段：下游当前消费 keyframe_prompt/video_prompt，默认写英文版本。
-        baseline_shot["keyframe_prompt"] = llm_result["keyframe_prompt"]
-        baseline_shot["video_prompt"] = llm_result["video_prompt"]
         return baseline_shot
 
 
 def build_script_generator(mode: str, logger: logging.Logger, module_b_config: ModuleBConfig | None = None) -> ScriptGenerator:
     """根据模式构建分镜生成器实例。"""
     mode_text = mode.lower().strip()
+    if mode_text == "multi_role_llm_v2":
+        raise ValueError("multi_role_llm_v2 必须通过 module_b_v2.run_module_b_v2() 入口执行，不再走旧 ScriptGenerator 工厂。")
     if mode_text == "llm":
         return LlmScriptGenerator(logger=logger, module_b_config=module_b_config)
     if mode_text != "mock":

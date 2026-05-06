@@ -42,7 +42,7 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
     audio_path = tmp_path / "demo.wav"
     audio_path.write_bytes(b"fake-audio")
     app_config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.wav"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

@@ -15,6 +15,8 @@ from typing import Any
 
 # 项目内模块：运行上下文定义
 from music_video_pipeline.context import RuntimeContext
+# 项目内模块：JSON写入工具（用于落盘模块C单元完整产物）
+from music_video_pipeline.io_utils import write_json
 # 项目内模块：关键帧生成器抽象
 from music_video_pipeline.generators import FrameGenerator
 # 项目内模块：模块C单元数据模型
@@ -151,6 +153,7 @@ def execute_one_unit_with_retry(
         )
         try:
             frame_item = _generate_one_frame_item(
+                context=context,
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
@@ -198,6 +201,7 @@ def _execute_units_serial(
     for unit in pending_units:
         try:
             frame_item = _generate_one_frame_item(
+                context=context,
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
@@ -236,6 +240,7 @@ def _execute_units_parallel(
         future_to_unit = {
             executor.submit(
                 _generate_one_frame_item,
+                context,
                 generator,
                 unit,
                 frames_dir,
@@ -256,6 +261,7 @@ def _execute_units_parallel(
 
 
 def _generate_one_frame_item(
+    context: RuntimeContext,
     generator: FrameGenerator,
     unit: ModuleCUnit,
     frames_dir: Path,
@@ -293,11 +299,50 @@ def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict
     - frame_item: 渲染返回结构。
     返回值：无。
     异常说明：数据库写入失败时抛出 sqlite3.Error。
-    边界条件：frame_item 缺失 frame_path 时视为失败。
+    边界条件：frame_item 必须满足“双关键帧契约”，缺字段直接失败。
     """
-    frame_path = str(frame_item.get("frame_path", "")).strip()
-    if not frame_path:
-        raise RuntimeError(f"模块C单元执行失败：未返回有效 frame_path，unit_id={unit.unit_id}")
+    frame_path_start = str(frame_item.get("frame_path_start", "")).strip()
+    frame_path_end = str(frame_item.get("frame_path_end", "")).strip()
+    if (not frame_path_start) or (not frame_path_end):
+        raise RuntimeError(
+            "模块C单元执行失败：缺失双关键帧字段，"
+            f"unit_id={unit.unit_id}，要求包含 frame_path_start 与 frame_path_end。"
+        )
+    control_frame_paths_payload = frame_item.get("control_frame_paths")
+    if isinstance(control_frame_paths_payload, list):
+        normalized_control_frame_paths = [str(item).strip() for item in control_frame_paths_payload if str(item).strip()]
+    else:
+        normalized_control_frame_paths = []
+    if len(normalized_control_frame_paths) < 2:
+        raise RuntimeError(
+            "模块C单元执行失败：缺失 control_frame_paths 双锚点，"
+            f"unit_id={unit.unit_id}，当前有效数量={len(normalized_control_frame_paths)}。"
+        )
+    if (
+        str(normalized_control_frame_paths[0]) != frame_path_start
+        or str(normalized_control_frame_paths[-1]) != frame_path_end
+    ):
+        raise RuntimeError(
+            "模块C单元执行失败：双关键帧字段不一致，"
+            f"unit_id={unit.unit_id}，frame_path_start={frame_path_start}，"
+            f"frame_path_end={frame_path_end}，control_frame_paths={normalized_control_frame_paths}。"
+        )
+    frame_path = frame_path_start
+
+    normalized_frame_item = {
+        **dict(frame_item),
+        "shot_id": str(frame_item.get("shot_id", unit.unit_id)).strip() or unit.unit_id,
+        "frame_path": frame_path,
+        "frame_path_start": frame_path_start,
+        "frame_path_end": frame_path_end,
+        "control_frame_paths": [
+            str(normalized_control_frame_paths[0]),
+            str(normalized_control_frame_paths[-1]),
+        ],
+    }
+    unit_payload_path = context.artifacts_dir / "module_c_units" / f"{unit.unit_id}.json"
+    write_json(unit_payload_path, normalized_frame_item)
+
     context.state_store.set_module_unit_status(
         task_id=context.task_id,
         module_name="C",
@@ -306,7 +351,14 @@ def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict
         artifact_path=frame_path,
         error_message="",
     )
-    context.logger.info("模块C单元执行完成，task_id=%s，unit_id=%s，frame=%s", context.task_id, unit.unit_id, frame_path)
+    context.logger.info(
+        "模块C单元执行完成，task_id=%s，unit_id=%s，frame_start=%s，frame_end=%s，payload=%s",
+        context.task_id,
+        unit.unit_id,
+        frame_path_start,
+        frame_path_end,
+        unit_payload_path,
+    )
 
 
 def _mark_unit_failed(context: RuntimeContext, unit: ModuleCUnit, error: Exception) -> None:

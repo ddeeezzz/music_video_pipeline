@@ -43,7 +43,7 @@ def test_content_role_pipeline_should_build_lyric_and_other_windows() -> None:
         accompaniment_rms_times=[0.0, 4.0, 8.0, 12.0, 16.0, 20.0],
         accompaniment_rms_values=[0.2, 0.15, 0.3, 0.25, 0.18, 0.2],
         tiny_merge_bars=0.01,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=20.0,
     )
@@ -61,13 +61,13 @@ def test_content_role_pipeline_should_build_lyric_and_other_windows() -> None:
     assert len(segments_final) <= len(result["windows_merged"])
 
 
-def test_content_role_pipeline_should_move_boundary_by_cross_window_ratio_without_a0_injection() -> None:
+def test_content_role_pipeline_should_split_other_windows_by_activity_boundaries_before_big_ratio_move() -> None:
     """
-    功能说明：验证不做A0注入时，big边界可由“跨big窗口占比”后置动态调整。
+    功能说明：验证新四分类主链会先按活动窗切开 other 窗口，再进入 big 边界阶段。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：设置 near_anchor 极小值，避免近锚点裁决干扰本断言。
+    边界条件：当前 case 中活动窗已在 10.0 处切开，后续不再触发 other-window ratio move。
     """
     result = apply_content_role_pipeline(
         big_segments_stage1=[
@@ -92,21 +92,89 @@ def test_content_role_pipeline_should_move_boundary_by_cross_window_ratio_withou
         accompaniment_rms_times=[0.0, 5.0, 10.0, 15.0, 20.0],
         accompaniment_rms_values=[0.3, 0.28, 0.32, 0.25, 0.2],
         tiny_merge_bars=0.01,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=0.01,
         duration_seconds=20.0,
     )
 
     big_a1 = result["big_segments_a1"]
     moves = result["big_boundary_moves"]
+    windows_classified = result["windows_classified"]
+    activity_windows = result["activity_windows"]
 
     assert len(big_a1) == 2
-    assert abs(float(big_a1[0]["end_time"]) - 4.1) <= 1e-6
+    assert abs(float(big_a1[0]["end_time"]) - 10.0) <= 1e-6
     assert float(big_a1[1]["start_time"]) == float(big_a1[0]["end_time"])
+    assert [str(item.get("role", "")) for item in windows_classified] == [
+        "chant",
+        "lyric",
+        "chant",
+        "inst",
+        "lyric",
+        "inst",
+    ]
+    assert activity_windows["vocal"]["intervals"] == [
+        {"start_time": 0.0, "end_time": 10.0, "duration": 10.0}
+    ]
     other_window_ratio_moves = moves.get("other_window_ratio_moves", [])
     assert isinstance(other_window_ratio_moves, list)
-    assert len(other_window_ratio_moves) == 1
-    assert str(other_window_ratio_moves[0].get("action", "")) == "move_next_left_to_window_start"
+    assert other_window_ratio_moves == []
+
+
+def test_content_role_pipeline_should_derive_chant_inst_and_silence_from_activity_windows() -> None:
+    """
+    功能说明：验证无歌词场景下会先抽活动窗，再得到 chant/inst/silence 三类窗口。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：活动边界直接决定窗口切分，避免退回旧版“整窗看峰值”策略。
+    """
+    result = apply_content_role_pipeline(
+        big_segments_stage1=[
+            {"segment_id": "big_001", "start_time": 0.0, "end_time": 10.0, "label": "inst"},
+        ],
+        sentence_units=[],
+        sentence_split_stats={"dynamic_gap_threshold_seconds": 0.35},
+        beat_candidates=[0.0, 2.0, 4.0, 6.0, 8.0, 10.0],
+        beats=[
+            {"time": 0.0, "type": "major", "source": "allin1"},
+            {"time": 2.0, "type": "minor", "source": "allin1"},
+            {"time": 4.0, "type": "major", "source": "allin1"},
+            {"time": 6.0, "type": "minor", "source": "allin1"},
+            {"time": 8.0, "type": "major", "source": "allin1"},
+        ],
+        vocal_rms_times=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        vocal_rms_values=[0.0, 0.0, 0.12, 0.12, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        accompaniment_rms_times=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        accompaniment_rms_values=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.0, 0.0, 0.0],
+        vocal_energy_enter_quantile=0.70,
+        vocal_energy_exit_quantile=0.45,
+        vocal_mid_segment_min_duration_seconds=0.5,
+        short_vocal_non_lyric_merge_seconds=0.2,
+        tiny_merge_bars=0.01,
+        visual_lead_seconds=0.0,
+        near_anchor_seconds=1.5,
+        duration_seconds=10.0,
+    )
+
+    windows_classified = result["windows_classified"]
+    activity_windows = result["activity_windows"]
+
+    assert [str(item.get("role", "")) for item in windows_classified] == [
+        "silence",
+        "chant",
+        "silence",
+        "inst",
+        "silence",
+    ]
+    assert [(float(item["start_time"]), float(item["end_time"])) for item in activity_windows["vocal"]["intervals"]] == [
+        (2.0, 4.0)
+    ]
+    assert [
+        (float(item["start_time"]), float(item["end_time"])) for item in activity_windows["accompaniment"]["intervals"]
+    ] == [
+        (6.0, 8.0)
+    ]
 
 
 def test_content_role_pipeline_should_left_merge_short_gap_between_lyrics() -> None:
@@ -139,7 +207,7 @@ def test_content_role_pipeline_should_left_merge_short_gap_between_lyrics() -> N
         accompaniment_rms_times=[0.0, 5.0, 10.0],
         accompaniment_rms_values=[0.2, 0.2, 0.2],
         tiny_merge_bars=1.3,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=10.0,
     )
@@ -204,7 +272,7 @@ def test_role_merger_should_merge_tiny_into_lyric_when_neighbor_has_lyric() -> N
     assert abs(float(merged[0].get("end_time", 0.0)) - 1.3) <= 1e-6
     assert abs(float(merged[1].get("start_time", 0.0)) - 1.3) <= 1e-6
     assert events
-    assert any(str(item.get("reason", "")) == "neighbor_lyric_left" for item in events)
+    assert any(str(item.get("reason", "")) == "tiny_chant_default_left" for item in events)
 
 
 def test_role_merger_should_merge_tiny_lyric_to_shorter_gap_side_when_both_neighbors_are_lyric() -> None:
@@ -263,13 +331,13 @@ def test_role_merger_should_merge_tiny_lyric_to_shorter_gap_side_when_both_neigh
     assert any(str(item.get("reason", "")) == "both_lyric_shorter_gap_right" for item in events)
 
 
-def test_role_merger_should_pick_right_when_both_neighbors_are_chant_without_lyric() -> None:
+def test_role_merger_should_left_merge_tiny_inst_when_between_two_chant_windows() -> None:
     """
-    功能说明：验证无 lyric 且左右都是 chant 时，tiny 优先并入右侧。
+    功能说明：验证微器乐段夹在两个 chant 之间时，按新规则默认并左。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅覆盖左右同为chant的规则分支。
+    边界条件：覆盖“left=chant, source=inst, right=chant”场景。
     """
     merged, events = merge_windows_by_rules(
         windows_classified=[
@@ -312,18 +380,18 @@ def test_role_merger_should_pick_right_when_both_neighbors_are_chant_without_lyr
 
     assert len(merged) == 2
     assert events
-    assert str(events[0].get("reason", "")) == "both_chant_prefer_right"
-    assert str(events[0].get("direction", "")) == "to_right"
+    assert str(events[0].get("reason", "")) == "tiny_inst_default_left"
+    assert str(events[0].get("direction", "")) == "to_left"
     assert str(events[0].get("target_role", "")) == "chant"
 
 
-def test_role_merger_should_pick_chant_when_one_neighbor_is_chant_and_other_is_non_chant() -> None:
+def test_role_merger_should_left_merge_tiny_lyric_when_no_lyric_neighbor_exists() -> None:
     """
-    功能说明：验证无 lyric 时，chant 与 inst/silence 对冲下优先并入 chant。
+    功能说明：验证微歌词段在两侧都不是 lyric 时，按现行兜底规则并左。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：覆盖“1个chant + 1个silence”场景。
+    边界条件：覆盖“left=silence, source=lyric, right=chant”场景。
     """
     merged, events = merge_windows_by_rules(
         windows_classified=[
@@ -367,17 +435,17 @@ def test_role_merger_should_pick_chant_when_one_neighbor_is_chant_and_other_is_n
     assert len(merged) == 2
     assert events
     assert str(events[0].get("source_role", "")) == "lyric"
-    assert str(events[0].get("reason", "")) == "chant_vs_instsilence_right"
-    assert str(events[0].get("target_role", "")) == "chant"
+    assert str(events[0].get("reason", "")) == "tiny_default_left"
+    assert str(events[0].get("target_role", "")) == "silence"
 
 
-def test_role_merger_should_pick_inst_when_no_lyric_and_no_chant_neighbors() -> None:
+def test_role_merger_should_left_merge_tiny_silence_except_right_silence_case() -> None:
     """
-    功能说明：验证无 lyric/chant 时优先并入 inst 邻段。
+    功能说明：验证微静音段除“右静音且左非静音”外，默认并左。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：覆盖“silence + tiny + inst”场景。
+    边界条件：覆盖“left=silence, source=silence, right=inst”场景。
     """
     merged, events = merge_windows_by_rules(
         windows_classified=[
@@ -420,8 +488,8 @@ def test_role_merger_should_pick_inst_when_no_lyric_and_no_chant_neighbors() -> 
 
     assert len(merged) == 2
     assert events
-    assert str(events[0].get("reason", "")) == "inst_prefer_right"
-    assert str(events[0].get("target_role", "")) == "inst"
+    assert str(events[0].get("reason", "")) == "tiny_silence_default_left"
+    assert str(events[0].get("target_role", "")) == "silence"
 
 
 def test_role_merger_should_merge_when_shorter_than_1_3_bar() -> None:
@@ -484,7 +552,7 @@ def test_role_merger_should_split_long_inst_window_by_major_before_tiny_merge() 
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：当前固定3小节步长下，24秒窗口应切为 12s + 12s 两个子窗。
+    边界条件：当前默认 2.5 小节步长下，24 秒窗口应切为 8s + 8s + 8s 三个子窗。
     """
     merged, events = merge_windows_by_rules(
         windows_classified=[
@@ -532,9 +600,9 @@ def test_role_merger_should_split_long_inst_window_by_major_before_tiny_merge() 
         duration_seconds=24.0,
     )
 
-    assert len(merged) == 2
-    assert [round(float(item.get("duration", 0.0)), 6) for item in merged] == [12.0, 12.0]
-    assert all(int(item.get("split_step_bars", 0)) == 3 for item in merged)
+    assert len(merged) == 3
+    assert [round(float(item.get("duration", 0.0)), 6) for item in merged] == [8.0, 8.0, 8.0]
+    assert all(abs(float(item.get("split_step_bars", 0.0)) - 2.5) <= 1e-6 for item in merged)
     assert all(str(item.get("split_basis", "")) == "major" for item in merged)
     assert events == []
 
@@ -585,6 +653,7 @@ def test_role_merger_should_pick_major_by_onset_energy_for_long_silence_window()
             {"time": 19.0, "type": "minor", "source": "allin1"},
         ],
         duration_seconds=20.0,
+        major_split_step_bars=3.0,
         onset_points=[
             {"time": 4.0, "energy_raw": 0.2},
             {"time": 8.0, "energy_raw": 0.9},
@@ -646,6 +715,7 @@ def test_role_merger_should_pick_major_by_onset_energy_for_long_chant_window() -
             {"time": 19.0, "type": "minor", "source": "allin1"},
         ],
         duration_seconds=20.0,
+        major_split_step_bars=3.0,
         onset_points=[
             {"time": 4.0, "energy_raw": 0.1},
             {"time": 8.0, "energy_raw": 1.1},
@@ -692,6 +762,7 @@ def test_role_merger_should_fallback_to_index_when_major_onset_energy_all_zero()
             {"time": 16.0, "type": "major", "source": "allin1"},
         ],
         duration_seconds=20.0,
+        major_split_step_bars=3.0,
         onset_points=[],
     )
 
@@ -735,6 +806,7 @@ def test_role_merger_should_use_sliding_major_bucket_after_selected_boundary() -
             {"time": 24.0, "type": "major", "source": "allin1"},
         ],
         duration_seconds=24.0,
+        major_split_step_bars=3.0,
         onset_points=[
             {"time": 4.0, "energy_raw": 10.0},
             {"time": 8.0, "energy_raw": 1.0},
@@ -787,6 +859,7 @@ def test_role_merger_should_use_chroma_delta_priority_for_inst_role() -> None:
             {"time": 20.0, "type": "major", "source": "allin1"},
         ],
         duration_seconds=20.0,
+        major_split_step_bars=3.0,
         onset_points=[],
         accompaniment_chroma_points=[
             {"time": 7.0, "chroma": [1.0] + [0.0] * 11},
@@ -834,6 +907,7 @@ def test_role_merger_should_use_f0_priority_and_pitch_source_for_chant_role() ->
             {"time": 20.0, "type": "major", "source": "allin1"},
         ],
         duration_seconds=20.0,
+        major_split_step_bars=3.0,
         onset_points=[],
         vocal_rms_times=[7.0, 8.0, 9.0, 12.0],
         vocal_rms_values=[1.0, 1.0, 1.0, 0.2],
@@ -986,7 +1060,7 @@ def test_content_role_pipeline_should_bias_to_next_big_when_spans_are_close() ->
         accompaniment_rms_times=[0.0, 5.0, 10.0, 15.0, 20.0],
         accompaniment_rms_values=[0.2, 0.2, 0.2, 0.2, 0.2],
         tiny_merge_bars=0.01,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=0.01,
         duration_seconds=20.0,
     )
@@ -1039,7 +1113,7 @@ def test_content_role_pipeline_should_bias_to_next_big_with_aggressive_ratio() -
         accompaniment_rms_times=[0.0, 60.0, 120.0, 150.0, 170.0],
         accompaniment_rms_values=[0.2, 0.2, 0.2, 0.2, 0.2],
         tiny_merge_bars=0.01,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=0.01,
         duration_seconds=170.0,
     )
@@ -1089,12 +1163,12 @@ def test_content_role_pipeline_should_resplit_long_lyric_window_by_punctuation_d
         accompaniment_rms_times=[0.0, 2.0, 4.0, 6.0, 8.0],
         accompaniment_rms_values=[0.1, 0.1, 0.1, 0.1, 0.1],
         tiny_merge_bars=0.9,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=8.0,
     )
 
-    assert int(result["long_lyric_remaining_over3_count"]) == 0
+    assert int(result["long_lyric_remaining_over_limit_count"]) == 0
     assert any(str(item.get("split_basis", "")) == "punct_dynamic" for item in result["windows_raw"])
     assert any("split_rank" in item for item in result["windows_raw"] if str(item.get("split_basis", "")) == "punct_dynamic")
     assert any(
@@ -1110,7 +1184,7 @@ def test_content_role_pipeline_should_resplit_long_lyric_window_by_ranked_token_
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：切分后 remaining_over3_count 应为0。
+    边界条件：切分后 remaining_over_limit_count 应为0。
     """
     beats = [{"time": float(index), "type": "major", "source": "allin1"} for index in range(0, 10)]
     result = apply_content_role_pipeline(
@@ -1140,12 +1214,12 @@ def test_content_role_pipeline_should_resplit_long_lyric_window_by_ranked_token_
         accompaniment_rms_times=[0.0, 3.0, 6.0, 9.0],
         accompaniment_rms_values=[0.08, 0.08, 0.08, 0.08],
         tiny_merge_bars=0.9,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=9.0,
     )
 
-    assert int(result["long_lyric_remaining_over3_count"]) == 0
+    assert int(result["long_lyric_remaining_over_limit_count"]) == 0
     assert any(str(item.get("split_basis", "")) == "token_gap_rank" for item in result["windows_raw"])
     assert any(
         int(float(item.get("split_rank", 0))) >= 1
@@ -1203,14 +1277,14 @@ def test_content_role_pipeline_should_resplit_multiple_long_lyric_windows_until_
         accompaniment_rms_times=[0.0, 5.0, 10.0, 15.0],
         accompaniment_rms_values=[0.08, 0.08, 0.08, 0.08],
         tiny_merge_bars=0.9,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=15.0,
     )
 
     max_lyric_window_seconds = float(result.get("max_lyric_window_seconds", 0.0))
     lyric_windows = [item for item in result["windows_raw"] if str(item.get("window_role_hint", "")).lower() == "lyric"]
-    assert int(result["long_lyric_remaining_over3_count"]) == 0
+    assert int(result["long_lyric_remaining_over_limit_count"]) == 0
     assert max_lyric_window_seconds > 0.0
     assert all(float(item.get("duration", 0.0)) <= max_lyric_window_seconds + 1e-6 for item in lyric_windows)
     assert len(result.get("long_lyric_resplit_events", [])) >= 2
@@ -1252,7 +1326,7 @@ def test_content_role_pipeline_should_merge_tiny_within_long_lyric_before_global
         accompaniment_rms_times=[0.0, 2.0, 4.0, 6.0, 8.0, 9.0],
         accompaniment_rms_values=[0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
         tiny_merge_bars=0.9,
-        lyric_head_offset_seconds=0.03,
+        visual_lead_seconds=0.0,
         near_anchor_seconds=1.5,
         duration_seconds=9.0,
     )

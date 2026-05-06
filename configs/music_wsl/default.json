@@ -1,7 +1,6 @@
 {
   "mode": {
-    "script_generator": "llm",
-    "frame_generator": "diffusion"
+    "script_generator": "multi_role_llm_v2"
   },
   "paths": {
     "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
@@ -14,7 +13,7 @@
     "audio_codec": "aac",
     "fps": 24,
     "video_preset": "veryfast",
-    "video_crf": 30,
+    "video_crf": 24,
     "render_batch_size": 1
   },
   "logging": {
@@ -89,6 +88,10 @@
     "merge_gap_seconds": 0.25,
     "max_visual_unit_seconds": 6.0,
     "content_role_tiny_merge_bars": 0.9,
+    "long_lyric_resplit_max_bars": 2.0,
+    "long_other_split_min_bars": 1.0,
+    "major_split_step_bars": 2.5,
+    "visual_lead_seconds": 0.06,
     "implementation": "v2"
   }
 }

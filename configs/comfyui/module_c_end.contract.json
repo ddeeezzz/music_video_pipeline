@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "name": "module_c_end",
+  "workflow_api_file": "configs/comfyui/workflows/module_c_end.workflow_api.json",
+  "output_node_id": "99",
+  "output_kind": "images",
+  "bindings": {
+    "checkpoint_name": {"node_id": "1", "input_name": "ckpt_name"},
+    "scene_lora_name": {"node_id": "4", "input_name": "lora_name"},
+    "scene_lora_strength_model": {"node_id": "4", "input_name": "strength_model"},
+    "scene_lora_strength_clip": {"node_id": "4", "input_name": "strength_clip"},
+    "char_lora_name": {"node_id": "5", "input_name": "lora_name"},
+    "char_lora_strength_model": {"node_id": "5", "input_name": "strength_model"},
+    "char_lora_strength_clip": {"node_id": "5", "input_name": "strength_clip"},
+    "init_image": {"node_id": "10", "input_name": "image"},
+    "positive_prompt": {"node_id": "20", "input_name": "text"},
+    "negative_prompt": {"node_id": "21", "input_name": "text"},
+    "seed": {"node_id": "40", "input_name": "seed"},
+    "steps": {"node_id": "40", "input_name": "steps"},
+    "cfg": {"node_id": "40", "input_name": "cfg"},
+    "sampler_name": {"node_id": "40", "input_name": "sampler_name"},
+    "scheduler": {"node_id": "40", "input_name": "scheduler"},
+    "denoise": {"node_id": "40", "input_name": "denoise"},
+    "filename_prefix": {"node_id": "99", "input_name": "filename_prefix"}
+  }
+}

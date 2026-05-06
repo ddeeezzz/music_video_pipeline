@@ -54,6 +54,15 @@
       "type": "directory",
       "enabled": true,
       "description": "HF 仓库下载基础模型目录：stabilityai/stable-diffusion-xl-base-1.0@main"
+    },
+    {
+      "key": "base_15_single_anything_v5_safetensors",
+      "series": "15",
+      "format": "single",
+      "path": "models/base_model/15/single/anything-v5.safetensors",
+      "type": "file",
+      "enabled": true,
+      "description": "Bypy 同步基础模型file：single/anything-v5.safetensors"
     }
   ]
 }

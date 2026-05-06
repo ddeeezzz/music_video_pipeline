@@ -19,7 +19,7 @@ import time
 # 标准库：用于HTTP请求
 from urllib.request import urlopen
 # 标准库：用于URL解析
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 # 标准库：用于路径处理
 from pathlib import Path
 
@@ -151,6 +151,85 @@ def test_task_monitor_service_should_wait_for_browser_close_after_terminal(tmp_p
     while service.is_running and time.time() < deadline:
         time.sleep(0.1)
     assert service.is_running is False
+
+
+def test_task_monitor_service_should_support_home_task_management_apis(tmp_path: Path) -> None:
+    """
+    功能说明：验证主页相关任务列表、详情、新建、复制与改名接口可正常工作。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：接口只创建或迁移状态记录，不自动触发运行。
+    """
+    pytest.importorskip("websockets")
+    state_store = StateStore(db_path=tmp_path / "pipeline_state.sqlite3")
+    task_id = "task_home_api_001"
+    _seed_task(state_store=state_store, task_id=task_id, workspace=tmp_path)
+
+    task_dir = tmp_path / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "artifacts").mkdir(parents=True, exist_ok=True)
+    state_store.set_module_status(task_id=task_id, module_name="A", status="done", artifact_path=str(task_dir / "artifacts" / "module_a_output.json"))
+    state_store.update_task_status(task_id=task_id, status="running")
+
+    logger = logging.getLogger("test_task_monitor_service_should_support_home_task_management_apis")
+    logger.setLevel(logging.INFO)
+    service = TaskMonitorService(state_store=state_store, task_id=task_id, logger=logger, tick_seconds=0.2, auto_stop_on_terminal=False)
+    service.start()
+    try:
+        monitor_parsed = urlparse(service.monitor_url)
+        base_url = f"http://{monitor_parsed.netloc}"
+
+        task_list_payload = json.loads(urlopen(f"{base_url}/api/tasks", timeout=3).read().decode("utf-8"))
+        assert task_list_payload["ok"] is True
+        assert task_list_payload["tasks"][0]["task_id"] == task_id
+        assert task_list_payload["tasks"][0]["module_status"]["A"] == "done"
+
+        task_detail_payload = json.loads(
+            urlopen(f"{base_url}/api/task?task_id={task_id}", timeout=3).read().decode("utf-8")
+        )
+        assert task_detail_payload["ok"] is True
+        assert task_detail_payload["task"]["task_id"] == task_id
+        assert task_detail_payload["task"]["status"] == "running"
+
+        create_query = urlencode(
+            {
+                "task_id": "task_home_api_002",
+                "audio_path": str(tmp_path / "audio_002.mp3"),
+                "config_path": str(tmp_path / "config_002.json"),
+            }
+        )
+        create_payload = json.loads(urlopen(f"{base_url}/api/task/create?{create_query}", timeout=3).read().decode("utf-8"))
+        assert create_payload["ok"] is True
+        assert create_payload["task_id"] == "task_home_api_002"
+        created_task = state_store.get_task(task_id="task_home_api_002")
+        assert created_task is not None
+        assert created_task["status"] == "pending"
+
+        copy_query = urlencode(
+            {
+                "source_task_id": task_id,
+                "new_task_id": "task_home_api_003",
+                "audio_path": str(tmp_path / "audio_003.mp3"),
+                "config_path": str(tmp_path / "config_003.json"),
+            }
+        )
+        copy_payload = json.loads(urlopen(f"{base_url}/api/task/copy?{copy_query}", timeout=3).read().decode("utf-8"))
+        assert copy_payload["ok"] is True
+        copied_task = state_store.get_task(task_id="task_home_api_003")
+        assert copied_task is not None
+        assert copied_task["audio_path"] == str(tmp_path / "audio_003.mp3")
+
+        rename_query = urlencode({"old_task_id": task_id, "new_task_id": "task_home_api_001_renamed"})
+        rename_payload = json.loads(urlopen(f"{base_url}/api/task/rename?{rename_query}", timeout=3).read().decode("utf-8"))
+        assert rename_payload["ok"] is True
+        assert state_store.get_task(task_id=task_id) is None
+        renamed_task = state_store.get_task(task_id="task_home_api_001_renamed")
+        assert renamed_task is not None
+        assert (tmp_path / "task_home_api_001_renamed").exists()
+    finally:
+        service.stop()
 
 
 def _seed_task(state_store: StateStore, task_id: str, workspace: Path) -> None:

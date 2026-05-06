@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 # 标准库：用于耗时统计
 from time import perf_counter, time_ns
+# 标准库：用于线程间事件同步
+from threading import Event
 
 # 项目内模块：V2 Allin1 后端
 from music_video_pipeline.modules.module_a_v2.backends.allin1 import analyze_with_allin1
@@ -140,8 +142,6 @@ def run_perception_stage(
         "no_vocals": no_vocals_path,
     }
 
-    precheck_rms_times: list[float] = []
-    precheck_rms_values: list[float] = []
     funasr_skipped_for_silent_vocals = False
     allin1_work_dir = artifacts.perception_model_allin1_runtime_dir / f"run_{time_ns()}"
     allin1_work_dir.mkdir(parents=True, exist_ok=True)
@@ -227,8 +227,75 @@ def run_perception_stage(
                 logger=logger,
                 **kwargs,
             )
+        except Exception:
+            if track_name == "vocals" and not precheck_ready_event.is_set():
+                precheck_payload["should_skip"] = False
+                precheck_payload["rms_times"] = []
+                precheck_payload["rms_values"] = []
+                timing_marks["precheck_end"] = perf_counter()
+                precheck_ready_event.set()
+            raise
         finally:
             timing_marks[end_key] = perf_counter()
+
+    precheck_ready_event = Event()
+    precheck_payload: dict[str, object] = {
+        "rms_times": [],
+        "rms_values": [],
+        "should_skip": False,
+        "peak_rms": 0.0,
+        "active_ratio": 0.0,
+    }
+
+    def _handle_vocal_rms_ready(rms_times: list[float], rms_values: list[float]) -> None:
+        """
+        功能说明：在 vocal Librosa 任务拿到 RMS 后立即完成 FunASR 预检。
+        参数说明：
+        - rms_times: 人声 RMS 时间轴。
+        - rms_values: 人声 RMS 数值序列。
+        返回值：无。
+        异常说明：内部吞掉异常并默认“不跳过 FunASR”。
+        边界条件：仅在启用静音跳过策略时实际工作。
+        """
+        if not bool(skip_funasr_when_vocals_silent):
+            precheck_ready_event.set()
+            return
+        timing_marks["precheck_start"] = timing_marks.get("librosa_vocals_start") or perf_counter()
+        try:
+            should_skip, peak_rms, active_ratio = _should_skip_funasr_by_vocal_energy(
+                vocal_rms_values=rms_values,
+                peak_threshold=vocal_skip_peak_rms_threshold,
+                active_ratio_threshold=vocal_skip_active_ratio_threshold,
+            )
+            precheck_payload["rms_times"] = list(rms_times)
+            precheck_payload["rms_values"] = list(rms_values)
+            precheck_payload["should_skip"] = bool(should_skip)
+            precheck_payload["peak_rms"] = float(peak_rms)
+            precheck_payload["active_ratio"] = float(active_ratio)
+            dump_json_artifact(
+                output_path=artifacts.perception_signal_librosa_vocal_precheck_path,
+                payload={
+                    "rms_times": list(rms_times),
+                    "rms_values": list(rms_values),
+                    "should_skip_funasr": bool(should_skip),
+                    "peak_rms": float(peak_rms),
+                    "active_ratio": float(active_ratio),
+                    "peak_threshold": float(vocal_skip_peak_rms_threshold),
+                    "active_ratio_threshold": float(vocal_skip_active_ratio_threshold),
+                },
+                logger=logger,
+                artifact_name="vocal_precheck_rms",
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.warning("模块A V2-人声RMS早期预检失败，按不跳过 FunASR 继续，错误=%s", error)
+            precheck_payload["rms_times"] = list(rms_times)
+            precheck_payload["rms_values"] = list(rms_values)
+            precheck_payload["should_skip"] = False
+            precheck_payload["peak_rms"] = 0.0
+            precheck_payload["active_ratio"] = 0.0
+        finally:
+            timing_marks["precheck_end"] = perf_counter()
+            precheck_ready_event.set()
 
     def _run_funasr_task_with_timing():
         """
@@ -240,6 +307,7 @@ def run_perception_stage(
         边界条件：不改变FunASR识别语义。
         """
         timing_marks["funasr_start"] = perf_counter()
+        logger.info("模块A V2-FunASR任务线程启动，开始进入识别链路")
         try:
             return recognize_lyrics_with_funasr_v2(
                 audio_path=str(demucs_stems["vocals"]),
@@ -250,6 +318,22 @@ def run_perception_stage(
             )
         finally:
             timing_marks["funasr_end"] = perf_counter()
+
+    def _run_funasr_after_precheck():
+        """
+        功能说明：等待 vocal RMS 预检完成后决定是否执行 FunASR。
+        参数说明：无。
+        返回值：
+        - tuple | None: 需要执行时返回 FunASR 结果，否则返回空。
+        异常说明：若预检永远未完成则抛错，避免静默挂死。
+        边界条件：仅在启用静音跳过策略时使用。
+        """
+        precheck_ready_event.wait()
+        if bool(precheck_payload.get("should_skip", False)):
+            logger.info("模块A V2-FunASR预检判定为静音人声，跳过识别")
+            return None
+        logger.info("模块A V2-FunASR预检完成，继续执行识别")
+        return _run_funasr_task_with_timing()
 
     logger.info("模块A V2-Librosa双轨并行提取开始，tracks=vocals/no_vocals")
     timing_marks["librosa_parallel_start"] = perf_counter()
@@ -264,7 +348,10 @@ def run_perception_stage(
                 _run_librosa_track_with_timing,
                 "vocals",
                 demucs_stems["vocals"],
+                extract_beat=False,
+                extract_onset=False,
                 with_f0_points=True,
+                on_rms_ready=_handle_vocal_rms_ready,
             )
             accompaniment_future = librosa_executor.submit(
                 _run_librosa_track_with_timing,
@@ -276,37 +363,10 @@ def run_perception_stage(
             )
 
             if bool(skip_funasr_when_vocals_silent):
-                timing_marks["precheck_start"] = perf_counter()
-                _, _, precheck_rms_times, precheck_rms_values = extract_acoustic_candidates_with_librosa(
-                    audio_path=demucs_stems["vocals"],
-                    duration_seconds=duration_seconds,
-                    logger=logger,
-                    extract_beat=False,
-                    extract_onset=False,
-                )
-                timing_marks["precheck_end"] = perf_counter()
-                should_skip, peak_rms, active_ratio = _should_skip_funasr_by_vocal_energy(
-                    vocal_rms_values=precheck_rms_values,
-                    peak_threshold=vocal_skip_peak_rms_threshold,
-                    active_ratio_threshold=vocal_skip_active_ratio_threshold,
-                )
-                funasr_skipped_for_silent_vocals = bool(should_skip)
-                dump_json_artifact(
-                    output_path=artifacts.perception_signal_librosa_vocal_precheck_path,
-                    payload={
-                        "rms_times": precheck_rms_times,
-                        "rms_values": precheck_rms_values,
-                        "should_skip_funasr": bool(should_skip),
-                        "peak_rms": float(peak_rms),
-                        "active_ratio": float(active_ratio),
-                        "peak_threshold": float(vocal_skip_peak_rms_threshold),
-                        "active_ratio_threshold": float(vocal_skip_active_ratio_threshold),
-                    },
-                    logger=logger,
-                    artifact_name="vocal_precheck_rms",
-                )
-
-            if not funasr_skipped_for_silent_vocals:
+                funasr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
+                funasr_future = funasr_executor.submit(_run_funasr_after_precheck)
+            else:
+                precheck_ready_event.set()
                 funasr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
                 funasr_future = funasr_executor.submit(_run_funasr_task_with_timing)
 
@@ -359,12 +419,13 @@ def run_perception_stage(
 
     if vocal_error is not None:
         vocal_onset_candidates = []
-        vocal_rms_times = precheck_rms_times.copy()
-        vocal_rms_values = precheck_rms_values.copy()
+        vocal_rms_times = list(precheck_payload.get("rms_times", []))
+        vocal_rms_values = list(precheck_payload.get("rms_values", []))
         vocal_f0_points = []
     else:
         assert vocal_result is not None
-        _, vocal_onset_candidates, vocal_rms_times, vocal_rms_values = vocal_result[:4]
+        _, _, vocal_rms_times, vocal_rms_values = vocal_result[:4]
+        vocal_onset_candidates = []
         vocal_f0_points = list(vocal_result[4]) if len(vocal_result) >= 5 else []
 
     dump_json_artifact(
@@ -381,6 +442,7 @@ def run_perception_stage(
 
     lyric_sentence_units: list[dict] = []
     sentence_split_stats: dict = {}
+    funasr_skipped_for_silent_vocals = bool(precheck_payload.get("should_skip", False)) if bool(skip_funasr_when_vocals_silent) else False
     if funasr_skipped_for_silent_vocals:
         dump_json_artifact(
             output_path=artifacts.perception_model_funasr_raw_response_path,
@@ -406,6 +468,8 @@ def run_perception_stage(
         )
     else:
         try:
+            if funasr_future is None:
+                raise RuntimeError("FunASR 任务未创建。")
             funasr_raw_result, lyric_sentence_units, sentence_split_stats = funasr_future.result()
             dump_json_artifact(
                 output_path=artifacts.perception_model_funasr_raw_response_path,

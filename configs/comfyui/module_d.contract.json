@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "name": "module_d_tooncrafter_interpolation_video",
+  "workflow_api_file": "configs/comfyui/workflows/module_d.workflow_api.json",
+  "output_node_id": "99",
+  "output_kind": "image_sequence",
+  "bindings": {
+    "checkpoint_name": {"node_id": "1", "input_name": "model"},
+    "start_image": {"node_id": "10", "input_name": "image"},
+    "end_image": {"node_id": "11", "input_name": "image"},
+    "positive_prompt": {"node_id": "20", "input_name": "text"},
+    "negative_prompt": {"node_id": "21", "input_name": "text"},
+    "steps": {"node_id": "30", "input_name": "steps"},
+    "cfg": {"node_id": "30", "input_name": "cfg"},
+    "eta": {"node_id": "30", "input_name": "eta"},
+    "frames": {"node_id": "30", "input_name": "frames"},
+    "seed": {"node_id": "30", "input_name": "seed"},
+    "fs": {"node_id": "30", "input_name": "fs"},
+    "vae_dtype": {"node_id": "30", "input_name": "vae_dtype"},
+    "image_embed_ratio": {"node_id": "30", "input_name": "image_embed_ratio"},
+    "augmentation_level": {"node_id": "30", "input_name": "augmentation_level"},
+    "filename_prefix": {"node_id": "99", "input_name": "filename_prefix"}
+  }
+}

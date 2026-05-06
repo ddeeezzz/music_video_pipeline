@@ -20,10 +20,6 @@ EPSILON_SECONDS = 1e-6
 
 # 常量：tiny并段默认阈值（小节）
 DEFAULT_TINY_MERGE_BARS = 0.9
-# 常量：触发长窗口细分的最小时长（小节）
-LONG_WINDOW_SPLIT_MIN_BARS = 2.0
-# 常量：major切分滑动桶步长（小节）
-MAJOR_SPLIT_STEP_BARS = 3
 # 常量：major局部onset峰值能量窗口（小节）
 MAJOR_ONSET_ENERGY_WINDOW_BARS = 0.5
 # 常量：beat与最近onset的最远候选距离（小节），超过即剔除
@@ -48,15 +44,6 @@ ROLE_SCORE_WEIGHTS_CHANT = {
     "energy": 0.15,
     "f0_delta": 0.50,
 }
-# 常量：角色优先级（数值越小优先级越高）
-ROLE_PRIORITY = {
-    "lyric": 1,
-    "chant": 2,
-    "inst": 3,
-    "silence": 4,
-}
-
-
 def _safe_float(value: Any, default: float = 0.0) -> float:
     """
     功能说明：安全转换为浮点数。
@@ -743,6 +730,8 @@ def _split_long_other_windows_by_major(
     windows: list[dict[str, Any]],
     beats: list[dict[str, Any]],
     bar_length_seconds: float,
+    long_window_split_min_bars: float,
+    major_split_step_bars: float,
     onset_points: list[dict[str, Any]] | None = None,
     vocal_rms_times: list[float] | None = None,
     vocal_rms_values: list[float] | None = None,
@@ -758,6 +747,8 @@ def _split_long_other_windows_by_major(
     - windows: 已分类窗口列表。
     - beats: 节拍对象列表。
     - bar_length_seconds: 小节时长（秒）。
+    - long_window_split_min_bars: 触发 downbeat 细分的时长阈值（小节）。
+    - major_split_step_bars: downbeat 滑动桶步长（小节）。
     - onset_points: onset强度点列表（time+energy_raw）。
     - vocal_rms_times/vocal_rms_values: 人声 RMS 序列。
     - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列。
@@ -766,9 +757,11 @@ def _split_long_other_windows_by_major(
     返回值：
     - list[dict[str, Any]]: 切分后的窗口列表。
     异常说明：无。
-    边界条件：仅处理 role!=lyric 且时长超过2小节的窗口。
+    边界条件：仅处理 role!=lyric 且时长超过指定小节阈值的窗口。
     """
     safe_bar_seconds = max(0.2, float(bar_length_seconds))
+    safe_long_window_split_min_bars = max(EPSILON_SECONDS, float(long_window_split_min_bars))
+    safe_major_split_step_bars = max(EPSILON_SECONDS, float(major_split_step_bars))
     beat_rows = _collect_beat_rows(beats=beats)
     if not beat_rows:
         return windows
@@ -787,7 +780,7 @@ def _split_long_other_windows_by_major(
         start_time = _safe_float(item.get("start_time", 0.0), 0.0)
         end_time = _safe_float(item.get("end_time", start_time), start_time)
         duration = max(0.0, end_time - start_time)
-        if duration <= LONG_WINDOW_SPLIT_MIN_BARS * safe_bar_seconds + EPSILON_SECONDS:
+        if duration <= safe_long_window_split_min_bars * safe_bar_seconds + EPSILON_SECONDS:
             output.append(dict(item))
             continue
 
@@ -801,7 +794,7 @@ def _split_long_other_windows_by_major(
             output.append(dict(item))
             continue
 
-        step_bars = max(1, int(MAJOR_SPLIT_STEP_BARS))
+        step_bars = float(safe_major_split_step_bars)
         bucket_window_seconds = float(step_bars) * safe_bar_seconds
         if bucket_window_seconds <= EPSILON_SECONDS:
             output.append(dict(item))
@@ -903,7 +896,7 @@ def _split_long_other_windows_by_major(
             split_item["end_time"] = split_end
             split_item["duration"] = _round_time(split_end - split_start)
             split_item["split_source_window_id"] = source_window_id
-            split_item["split_step_bars"] = step_bars
+            split_item["split_step_bars"] = round(float(step_bars), 3)
             split_item["split_basis"] = "major"
             split_item["window_type"] = f"{str(item.get('window_type', 'window'))}_major_split"
             split_item["merge_action"] = "split_by_major"
@@ -971,10 +964,27 @@ def _pick_merge_target_index(windows: list[dict[str, Any]], source_index: int) -
     right_start = _safe_float(windows[right_index].get("start_time", source_end), source_end)
     left_gap_seconds = max(0.0, source_start - left_end)
     right_gap_seconds = max(0.0, right_start - source_end)
+    source_role = str(windows[source_index].get("role", "silence")).lower().strip()
     left_role = str(windows[left_index].get("role", "silence")).lower().strip()
     right_role = str(windows[right_index].get("role", "silence")).lower().strip()
 
-    # 规则1：左右都是 lyric 时，按“有效边界间隔更短”并入；平局固定并左。
+    # 规则1：微静音段默认并左；只有“右静音且左非静音”时改并右。
+    if source_role == "silence":
+        if right_role == "silence" and left_role != "silence":
+            return right_index, "tiny_silence_follow_right_silence"
+        return left_index, "tiny_silence_default_left"
+
+    # 规则2：微吟唱段默认并左，优先保持人声侧的听感连续。
+    if source_role == "chant":
+        return left_index, "tiny_chant_default_left"
+
+    # 规则3：微器乐段默认并左；只有“右侧是 inst 且左侧是 lyric/chant”时并右。
+    if source_role == "inst":
+        if right_role == "inst" and left_role in {"lyric", "chant"}:
+            return right_index, "tiny_inst_follow_right_inst"
+        return left_index, "tiny_inst_default_left"
+
+    # 规则4：微歌词段按歌词连续性处理；两侧都为歌词时按更短 gap 选择。
     if left_role == "lyric" and right_role == "lyric":
         return _pick_by_gap(
             left_index=left_index,
@@ -986,65 +996,11 @@ def _pick_merge_target_index(windows: list[dict[str, Any]], source_index: int) -
             tie_reason="both_lyric_equal_gap_left",
         )
 
-    # 规则2：一侧 lyric 一侧其他，优先并入 lyric。
     if left_role == "lyric":
         return left_index, "neighbor_lyric_left"
     if right_role == "lyric":
         return right_index, "neighbor_lyric_right"
-
-    # 规则3：无 lyric 且左右都是 chant，优先并右（偏向承接未识别尾音）。
-    if left_role == "chant" and right_role == "chant":
-        return right_index, "both_chant_prefer_right"
-
-    # 规则4：无 lyric 且一侧 chant、一侧 inst/silence，优先并入 chant。
-    if left_role == "chant" and right_role in {"inst", "silence"}:
-        return left_index, "chant_vs_instsilence_left"
-    if right_role == "chant" and left_role in {"inst", "silence"}:
-        return right_index, "chant_vs_instsilence_right"
-
-    # 规则5：无 lyric/chant 时优先并入 inst。
-    if left_role == "inst" and right_role != "inst":
-        return left_index, "inst_prefer_left"
-    if right_role == "inst" and left_role != "inst":
-        return right_index, "inst_prefer_right"
-
-    if left_role == "inst" and right_role == "inst":
-        return _pick_by_gap(
-            left_index=left_index,
-            right_index=right_index,
-            left_gap_seconds=left_gap_seconds,
-            right_gap_seconds=right_gap_seconds,
-            left_reason="both_inst_shorter_gap_left",
-            right_reason="both_inst_shorter_gap_right",
-            tie_reason="both_inst_equal_gap_left",
-        )
-    if left_role == "silence" and right_role == "silence":
-        return _pick_by_gap(
-            left_index=left_index,
-            right_index=right_index,
-            left_gap_seconds=left_gap_seconds,
-            right_gap_seconds=right_gap_seconds,
-            left_reason="both_silence_shorter_gap_left",
-            right_reason="both_silence_shorter_gap_right",
-            tie_reason="both_silence_equal_gap_left",
-        )
-
-    if left_role == right_role:
-        return left_index, "same_role_left"
-
-    # 兜底：角色优先级 + 时长稳定决策，保证未知角色也可并段。
-    left_priority = ROLE_PRIORITY.get(left_role, 99)
-    right_priority = ROLE_PRIORITY.get(right_role, 99)
-    if left_priority < right_priority:
-        return left_index, "priority_left"
-    if right_priority < left_priority:
-        return right_index, "priority_right"
-
-    left_duration = _window_duration(windows[left_index])
-    right_duration = _window_duration(windows[right_index])
-    if right_duration > left_duration + EPSILON_SECONDS:
-        return right_index, "same_priority_longer_right"
-    return left_index, "same_priority_longer_or_equal_left"
+    return left_index, "tiny_default_left"
 
 
 def _merge_one_window(
@@ -1184,6 +1140,8 @@ def merge_windows_by_rules(
     bar_length_seconds: float,
     beats: list[dict[str, Any]],
     duration_seconds: float,
+    long_window_split_min_bars: float = 1.0,
+    major_split_step_bars: float = 2.5,
     onset_points: list[dict[str, Any]] | None = None,
     vocal_rms_times: list[float] | None = None,
     vocal_rms_values: list[float] | None = None,
@@ -1201,6 +1159,8 @@ def merge_windows_by_rules(
     - bar_length_seconds: 一小节时长（秒）。
     - beats: 结构化节拍列表（用于重拍切分）。
     - duration_seconds: 音频总时长（秒）。
+    - long_window_split_min_bars: 触发 downbeat 细分的时长阈值（小节）。
+    - major_split_step_bars: downbeat 滑动桶步长（小节）。
     - onset_points: onset强度点列表（time+energy_raw）。
     - vocal_rms_times/vocal_rms_values: 人声 RMS 序列。
     - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列。
@@ -1216,6 +1176,8 @@ def merge_windows_by_rules(
         windows=windows,
         beats=beats,
         bar_length_seconds=bar_length_seconds,
+        long_window_split_min_bars=long_window_split_min_bars,
+        major_split_step_bars=major_split_step_bars,
         onset_points=onset_points,
         vocal_rms_times=vocal_rms_times,
         vocal_rms_values=vocal_rms_values,

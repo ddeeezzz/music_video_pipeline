@@ -79,13 +79,24 @@
 安装依赖：
 
 ```bash
-uv sync
+uv sync                # 安装核心依赖
+uv sync --extra test   # 含测试依赖
 ```
 
-安装测试依赖：
+## CLI 命令
+
+四个入口：
+
+| 命令 | 说明 |
+|------|------|
+| `mvpl` / `music-video-pipeline` | 主流水线 |
+| `model_assets` | bypy 模型下载管理（交互式） |
+| `eval` | CLIP Score 评估 |
+
+### 全链路执行
 
 ```bash
-uv sync --extra test
+uv run --no-sync mvpl run --task-id demo --config configs/music_yby/default.json
 ```
 
 ## 快速开始
@@ -101,7 +112,7 @@ uv run --no-sync mvpl
 如果你不在项目根目录，可以显式指定项目路径：
 
 ```bash
-uv run --project /path/to/music_video_pipeline --no-sync mvpl
+uv run --project /path/to/t1 --no-sync mvpl
 ```
 
 交互模式里可以直接完成这些操作：
@@ -191,7 +202,6 @@ uv run --no-sync model_assets
 
 ## 相关文档
 
-- `docs/5分钟跑通指南.md`
 - `docs/cli/项目CLI命令大全.md`
 - `docs/cli/命令组合与作用速查.md`
 - `docs/module_a_v2/模块A_V2_总链.mmd`

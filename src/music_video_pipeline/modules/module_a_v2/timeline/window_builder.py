@@ -20,8 +20,6 @@ EPSILON_SECONDS = 1e-6
 
 # 常量：句间分窗阈值默认值（秒），回退 funasr_lyrics 默认阈值
 DEFAULT_DYNAMIC_GAP_SECONDS = 0.35
-# 常量：长歌词窗口触发重切阈值（小节）
-LONG_LYRIC_RESPLIT_MAX_BARS = 3.0
 # 常量：动态阈值下限（秒），防止误切到极小间隔
 MIN_DYNAMIC_GAP_SECONDS = 0.04
 # 常量：MAD 离群阈值（Modified Z-Score）
@@ -947,6 +945,7 @@ def resplit_long_lyric_windows(
     duration_seconds: float,
     dynamic_gap_threshold_seconds: float,
     tiny_merge_bars: float,
+    long_lyric_resplit_max_bars: float,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     功能说明：对超长 lyric 窗口执行递进重切（先标点动态阈值，再 token gap 排名兜底）。
@@ -957,6 +956,7 @@ def resplit_long_lyric_windows(
     - duration_seconds: 音频总时长（秒）。
     - dynamic_gap_threshold_seconds: 全局动态 gap 阈值（秒）。
     - tiny_merge_bars: tiny 并段阈值（小节），用于长句内部并段。
+    - long_lyric_resplit_max_bars: 超长歌词句重切上限（小节）。
     返回值：
     - tuple[list[dict[str, Any]], dict[str, Any]]: (重切后窗口, 统计信息)。
     异常说明：无。
@@ -968,7 +968,8 @@ def resplit_long_lyric_windows(
     safe_duration = max(0.0, float(duration_seconds))
     normalized_windows = _normalize_windows_continuity(windows=windows_raw, duration_seconds=safe_duration)
     bar_length_seconds = max(0.2, float(estimate_bar_length_seconds(beats=beats, beat_candidates=beat_candidates)))
-    max_lyric_window_seconds = float(bar_length_seconds) * float(LONG_LYRIC_RESPLIT_MAX_BARS)
+    safe_long_lyric_resplit_max_bars = max(EPSILON_SECONDS, float(long_lyric_resplit_max_bars))
+    max_lyric_window_seconds = float(bar_length_seconds) * safe_long_lyric_resplit_max_bars
     safe_tiny_merge_bars = _safe_float(tiny_merge_bars, 0.9)
     if safe_tiny_merge_bars <= 0.0:
         safe_tiny_merge_bars = 0.9
@@ -1019,13 +1020,13 @@ def resplit_long_lyric_windows(
         output_windows.extend(split_result_windows)
 
     normalized_output_windows = _normalize_windows_continuity(windows=output_windows, duration_seconds=safe_duration)
-    remaining_over3_count = 0
+    remaining_over_limit_count = 0
     for item in normalized_output_windows:
         role_hint = str(item.get("window_role_hint", "")).lower().strip()
         if role_hint != "lyric":
             continue
         if _window_duration(item) > max_lyric_window_seconds + EPSILON_SECONDS:
-            remaining_over3_count += 1
+            remaining_over_limit_count += 1
 
     stats = {
         "bar_length_seconds": _round_time(bar_length_seconds),
@@ -1033,7 +1034,7 @@ def resplit_long_lyric_windows(
         "long_lyric_resplit_events": resplit_events,
         "long_lyric_inner_tiny_merge_seconds": _round_time(long_lyric_inner_tiny_merge_seconds),
         "long_lyric_inner_tiny_merge_events": long_lyric_inner_tiny_merge_events,
-        "long_lyric_remaining_over3_count": int(remaining_over3_count),
+        "long_lyric_remaining_over_limit_count": int(remaining_over_limit_count),
     }
     return normalized_output_windows, stats
 

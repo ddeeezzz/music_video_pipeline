@@ -164,3 +164,48 @@
     - `seg_0001 0.00->5.94 role=silence`
     - `seg_0060 246.34->252.17 role=silence`
 - `chant` 子类型分段：共 9 段，集中在 `seg_0023~seg_0028` 与 `seg_0053/seg_0057/seg_0058`。
+
+---
+
+## 增量会话记录（2026-04-25）
+
+### 1. 用户本轮新增要求（与模块C相关）
+- 用户要求将模块 C 的第二关键帧从“第二次纯文生图”改为“真实图文联合生图”。
+- 用户要求明确双关键帧语义：第一张为纯文生图（start），第二张为基于第一张图像条件的 img2img（end）。
+- 用户要求同步推进 B/D prompt 契约为 `start/end + 中英分离`，并更新校验与回归测试。
+- 用户后续明确：需补齐本会话到 C/D 会话记录文档。
+
+### 2. 本轮模块C代码变更事实（仅事实）
+- 已新增模块 C img2img 运行时依赖：
+  - `src/music_video_pipeline/diffusers_runtime.py` 增加 `StableDiffusionImg2ImgPipeline` 导入与缓存。
+- 已改造模块 C 扩散生成路径：
+  - `src/music_video_pipeline/generators/frame_generator.py` 中 `DiffusionFrameGenerator.generate_one()` 现为：
+    - start 帧：`txt2img`；
+    - end 帧：`img2img`（输入 start 帧图像 + `keyframe_prompt_end_en`）。
+- 已新增第二关键帧 img2img 强度常量：
+  - `MODULE_C_SECOND_FRAME_IMG2IMG_STRENGTH = 0.55`。
+- 已将模块 C 运行时初始化为“双 pipeline 结构”：
+  - 同底模分别初始化 `txt2img` 与 `img2img` pipeline；
+  - 两者均加载同一 LoRA 与 scheduler 策略。
+- 已统一 frame_item 的双轨提示词回填：
+  - 输出中包含 `keyframe_prompt_start/end_zh/en` 与 `video_prompt_start/end_zh/en`；
+  - 兼容别名字段 `keyframe_prompt/video_prompt` 仍保留并映射到 start 英文轨。
+- `MockFrameGenerator` 也已同步产出双轨字段，确保 mock/diffusion 契约一致。
+
+### 3. 与模块C输入契约联动的本轮事实
+- `src/music_video_pipeline/types.py` 的 `validate_module_b_output()` 已升级为强校验双轨字段（非空）并校验别名一致性。
+- `src/music_video_pipeline/modules/module_b/llm_parser.py` 已由“五字段解析”升级为“九字段解析”。
+- `configs/prompts/module_b_prompt.v1.md` 已同步改为“九字段 JSON 输出约束”。
+- `src/music_video_pipeline/modules/module_c/orchestrator.py` 的契约错误提示已更新为“需包含 start/end 双轨中英字段”。
+
+### 4. 本轮验证事实（仅事实）
+- 已通过与本轮变更直接相关的测试：
+  - `tests/test_frame_generator.py`
+  - `tests/test_diffusers_runtime.py`
+  - `tests/test_module_c_unit_retry_parallel.py`
+  - `tests/test_pipeline_module_c_cli.py`
+  - `tests/test_contracts.py`
+  - `tests/test_module_b_llm_parser.py`
+  - `tests/test_module_b_llm_generator.py`
+- 已执行语法编译检查：
+  - `python -m compileall src/music_video_pipeline` 通过。

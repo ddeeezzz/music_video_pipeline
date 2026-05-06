@@ -13,15 +13,12 @@ import time
 from typing import Any
 
 from music_video_pipeline.context import RuntimeContext
-from music_video_pipeline.generators import build_frame_generator, build_script_generator
+from music_video_pipeline.generators import build_keyframe_generator, build_script_generator
 from music_video_pipeline.modules.cross_bcd import scheduler_adaptive, scheduler_allocators, scheduler_tasks
 from music_video_pipeline.modules.cross_bcd.models import CrossChainUnit
 from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
 from music_video_pipeline.modules.module_d.executor import resolve_render_profile
 from music_video_pipeline.modules.module_d.unit_models import ModuleDUnitBlueprint
-
-# 常量：仅当 C 未完成单元数严格大于该阈值时才触发 D runtime 异步预热。
-_D_RUNTIME_PREWARM_MIN_C_NOT_DONE = 10
 
 
 @dataclass
@@ -41,8 +38,6 @@ class _LoopState:
     c_window_direction_history: list[int] = field(default_factory=list)
     d_window_direction_history: list[int] = field(default_factory=list)
     probe_failure_count: int = 0
-    d_runtime_warmed_devices: set[str] = field(default_factory=set)
-    d_runtime_prewarm_requested_devices: set[str] = field(default_factory=set)
     d_unit_executed: bool = False
     single_gpu_mode: bool = False
     oom_fallback_locked_c_then_d: bool = False
@@ -117,7 +112,11 @@ def execute_cross_bcd_wavefront(
         adaptive_window_runtime=adaptive_window_runtime,
     )
     c_generator_pool = [
-        build_frame_generator(mode=context.config.mode.frame_generator, logger=c_context.logger)
+        build_keyframe_generator(
+            mode=context.config.module_c.render_backend,
+            logger=c_context.logger,
+            app_config=context.config,
+        )
         for _ in range(c_generator_pool_size)
     ]
     c_generator_cursor = 0
@@ -131,22 +130,13 @@ def execute_cross_bcd_wavefront(
         selected_indexes=selected_index_set,
         failed_chain_indexes=failed_chain_indexes,
     )
-    c_not_done_before_d_phase = _count_selected_not_done_units(
-        selected_indexes=selected_index_set,
-        failed_chain_indexes=failed_chain_indexes,
-        unit_by_index=initial_snapshot_state.c_by_index,
-    )
-
     d_device_pool_all = scheduler_allocators._build_d_device_pool(
         c_gpu_index=int(adaptive_window_runtime["c_gpu_index"]),
         d_gpu_index=int(adaptive_window_runtime["d_gpu_index"]),
     )
-    c_gpu_device = f"cuda:{int(adaptive_window_runtime['c_gpu_index'])}"
     d_gpu_device = f"cuda:{int(adaptive_window_runtime['d_gpu_index'])}"
     single_gpu_mode = bool(adaptive_window_runtime.get("single_gpu_mode", False))
-    bc_allow_d_dispatch = not (render_backend == "animatediff" and c_gpu_device == d_gpu_device)
-    if single_gpu_mode:
-        bc_allow_d_dispatch = True
+    bc_allow_d_dispatch = not single_gpu_mode
     loop_state = _LoopState(
         current_phase="bc",
         d_dispatch_enabled=bc_allow_d_dispatch,
@@ -161,9 +151,9 @@ def execute_cross_bcd_wavefront(
         oom_fallback_locked_c_then_d=bool(adaptive_window_runtime.get("oom_fallback_locked_c_then_d", False)),
     )
     if loop_state.single_gpu_mode:
-        loop_state.c_dynamic_limit = 1
+        loop_state.c_dynamic_limit = max(1, min(3, int(context.config.module_c.render_workers)))
         loop_state.d_dynamic_limit = 1
-        adaptive_window_runtime["c_dynamic_limit"] = 1
+        adaptive_window_runtime["c_dynamic_limit"] = loop_state.c_dynamic_limit
         adaptive_window_runtime["d_dynamic_limit"] = 1
         adaptive_window_runtime["oom_fallback_locked_c_then_d"] = bool(loop_state.oom_fallback_locked_c_then_d)
         context.logger.info(
@@ -176,8 +166,7 @@ def execute_cross_bcd_wavefront(
             "on" if loop_state.d_dispatch_enabled else "off",
         )
 
-    prewarm_worker_budget = 2 if render_backend == "animatediff" else 0
-    max_workers = max(2, b_worker_limit + int(adaptive_window_runtime["max_render_workers"]) + prewarm_worker_budget)
+    max_workers = max(2, b_worker_limit + int(adaptive_window_runtime["max_render_workers"]))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while True:
             scheduler_tasks._drain_finished_tasks(
@@ -185,7 +174,6 @@ def execute_cross_bcd_wavefront(
                 active_tasks=active_tasks,
                 failed_chain_indexes=failed_chain_indexes,
                 failed_errors=failed_errors,
-                d_runtime_warmed_devices=loop_state.d_runtime_warmed_devices,
             )
 
             snapshot_state = _refresh_state_snapshot(
@@ -228,23 +216,6 @@ def execute_cross_bcd_wavefront(
                     len(selected_index_set),
                     loop_state.d_device_pool,
                 )
-                if render_backend == "animatediff" and c_not_done_before_d_phase > _D_RUNTIME_PREWARM_MIN_C_NOT_DONE:
-                    scheduler_tasks._submit_d_runtime_prewarm_tasks(
-                        context=context,
-                        executor=executor,
-                        active_tasks=active_tasks,
-                        d_context=d_context,
-                        d_device_pool=loop_state.d_device_pool,
-                        warmed_devices=loop_state.d_runtime_warmed_devices,
-                        prewarm_requested_devices=loop_state.d_runtime_prewarm_requested_devices,
-                    )
-                elif render_backend == "animatediff":
-                    context.logger.info(
-                        "模块D runtime 异步预热已跳过，task_id=%s，c_not_done_before_d_phase=%s，阈值条件=>%s",
-                        context.task_id,
-                        c_not_done_before_d_phase,
-                        _D_RUNTIME_PREWARM_MIN_C_NOT_DONE,
-                    )
 
             _apply_adaptive_tick(
                 context=context,
@@ -264,49 +235,93 @@ def execute_cross_bcd_wavefront(
             )
             loop_state.last_d_device_inflight = dict(dispatch_state.d_device_inflight)
 
-            bc_dispatched_count, c_generator_cursor = _dispatch_bc_units(
-                executor=executor,
-                loop_state=loop_state,
-                adaptive_enabled=adaptive_enabled,
-                b_worker_limit=b_worker_limit,
-                render_limit=render_limit,
-                selected_indexes=selected_index_set,
-                failed_chain_indexes=failed_chain_indexes,
-                b_by_index=snapshot_state.b_by_index,
-                c_by_index=snapshot_state.c_by_index,
-                chain_by_index=chain_by_index,
-                b_units_by_segment_id=b_units_by_segment_id,
-                b_context=b_context,
-                c_context=c_context,
-                script_generator=script_generator,
-                module_a_output=module_a_output,
-                unit_outputs_dir=unit_outputs_dir,
-                c_generator_pool=c_generator_pool,
-                c_generator_cursor=c_generator_cursor,
-                c_generator_pool_size=c_generator_pool_size,
-                frames_dir=frames_dir,
-                active_tasks=active_tasks,
-                dispatch_state=dispatch_state,
-            )
+            if loop_state.current_phase == "bc" and loop_state.d_dispatch_enabled:
+                d_dispatched_count = _dispatch_d_units(
+                    executor=executor,
+                    loop_state=loop_state,
+                    adaptive_enabled=adaptive_enabled,
+                    render_limit=render_limit,
+                    render_backend=render_backend,
+                    selected_indexes=selected_index_set,
+                    failed_chain_indexes=failed_chain_indexes,
+                    b_by_index=snapshot_state.b_by_index,
+                    c_by_index=snapshot_state.c_by_index,
+                    d_by_index=snapshot_state.d_by_index,
+                    d_blueprints_by_index=d_blueprints_by_index,
+                    d_context=d_context,
+                    d_profile=d_profile,
+                    active_tasks=active_tasks,
+                    dispatch_state=dispatch_state,
+                    d_done_count=snapshot_state.d_done_count,
+                )
+                bc_dispatched_count, c_generator_cursor = _dispatch_bc_units(
+                    executor=executor,
+                    loop_state=loop_state,
+                    adaptive_enabled=adaptive_enabled,
+                    b_worker_limit=b_worker_limit,
+                    render_limit=render_limit,
+                    selected_indexes=selected_index_set,
+                    failed_chain_indexes=failed_chain_indexes,
+                    b_by_index=snapshot_state.b_by_index,
+                    c_by_index=snapshot_state.c_by_index,
+                    chain_by_index=chain_by_index,
+                    b_units_by_segment_id=b_units_by_segment_id,
+                    b_context=b_context,
+                    c_context=c_context,
+                    script_generator=script_generator,
+                    module_a_output=module_a_output,
+                    unit_outputs_dir=unit_outputs_dir,
+                    c_generator_pool=c_generator_pool,
+                    c_generator_cursor=c_generator_cursor,
+                    c_generator_pool_size=c_generator_pool_size,
+                    frames_dir=frames_dir,
+                    active_tasks=active_tasks,
+                    dispatch_state=dispatch_state,
+                )
+            else:
+                bc_dispatched_count, c_generator_cursor = _dispatch_bc_units(
+                    executor=executor,
+                    loop_state=loop_state,
+                    adaptive_enabled=adaptive_enabled,
+                    b_worker_limit=b_worker_limit,
+                    render_limit=render_limit,
+                    selected_indexes=selected_index_set,
+                    failed_chain_indexes=failed_chain_indexes,
+                    b_by_index=snapshot_state.b_by_index,
+                    c_by_index=snapshot_state.c_by_index,
+                    chain_by_index=chain_by_index,
+                    b_units_by_segment_id=b_units_by_segment_id,
+                    b_context=b_context,
+                    c_context=c_context,
+                    script_generator=script_generator,
+                    module_a_output=module_a_output,
+                    unit_outputs_dir=unit_outputs_dir,
+                    c_generator_pool=c_generator_pool,
+                    c_generator_cursor=c_generator_cursor,
+                    c_generator_pool_size=c_generator_pool_size,
+                    frames_dir=frames_dir,
+                    active_tasks=active_tasks,
+                    dispatch_state=dispatch_state,
+                )
 
-            d_dispatched_count = _dispatch_d_units(
-                executor=executor,
-                loop_state=loop_state,
-                adaptive_enabled=adaptive_enabled,
-                render_limit=render_limit,
-                render_backend=render_backend,
-                selected_indexes=selected_index_set,
-                failed_chain_indexes=failed_chain_indexes,
-                b_by_index=snapshot_state.b_by_index,
-                c_by_index=snapshot_state.c_by_index,
-                d_by_index=snapshot_state.d_by_index,
-                d_blueprints_by_index=d_blueprints_by_index,
-                d_context=d_context,
-                d_profile=d_profile,
-                active_tasks=active_tasks,
-                dispatch_state=dispatch_state,
-                d_done_count=snapshot_state.d_done_count,
-            )
+                d_dispatched_count = _dispatch_d_units(
+                    executor=executor,
+                    loop_state=loop_state,
+                    adaptive_enabled=adaptive_enabled,
+                    render_limit=render_limit,
+                    render_backend=render_backend,
+                    selected_indexes=selected_index_set,
+                    failed_chain_indexes=failed_chain_indexes,
+                    b_by_index=snapshot_state.b_by_index,
+                    c_by_index=snapshot_state.c_by_index,
+                    d_by_index=snapshot_state.d_by_index,
+                    d_blueprints_by_index=d_blueprints_by_index,
+                    d_context=d_context,
+                    d_profile=d_profile,
+                    active_tasks=active_tasks,
+                    dispatch_state=dispatch_state,
+                    d_done_count=snapshot_state.d_done_count,
+                )
             dispatched_count = bc_dispatched_count + d_dispatched_count
 
             if _should_exit_loop(
@@ -385,16 +400,11 @@ def _apply_adaptive_tick(
     if now_mono < loop_state.next_probe_at:
         return
     if loop_state.single_gpu_mode:
-        loop_state.c_dynamic_limit = 1
+        loop_state.c_dynamic_limit = max(1, min(3, int(context.config.module_c.render_workers)))
         loop_state.d_dynamic_limit = 1
-        adaptive_window_runtime["c_dynamic_limit"] = 1
+        adaptive_window_runtime["c_dynamic_limit"] = loop_state.c_dynamic_limit
         adaptive_window_runtime["d_dynamic_limit"] = 1
         loop_state.next_probe_at = now_mono + max(loop_state.probe_interval_seconds, 0.5)
-        return
-
-    active_d_probe_count = sum(1 for stage, _, _ in active_tasks.values() if stage == "D")
-    if loop_state.current_phase == "d" and render_backend == "animatediff" and active_d_probe_count > 0:
-        loop_state.next_probe_at = now_mono + max(loop_state.probe_interval_seconds, 2.0)
         return
 
     probe_rows, probe_error = scheduler_adaptive._run_gpu_probe_script(
@@ -690,15 +700,13 @@ def _dispatch_d_units(
         return 0
     dispatched_count = 0
     d_stage_limit = loop_state.d_dynamic_limit if (adaptive_enabled or loop_state.single_gpu_mode) else render_limit
-    animatediff_per_device_limit = (
-        max(1, int(loop_state.d_dynamic_limit))
-        if (adaptive_enabled or loop_state.single_gpu_mode)
-        else max(1, int(render_limit))
-    )
 
     for unit_index in sorted(selected_indexes):
         if dispatch_state.active_d_count >= d_stage_limit:
             break
+        if (not adaptive_enabled) and (not loop_state.single_gpu_mode):
+            if dispatch_state.active_render_count >= render_limit:
+                break
         if unit_index in failed_chain_indexes or unit_index in dispatch_state.in_flight_d:
             continue
         b_row = b_by_index.get(unit_index)
@@ -716,15 +724,6 @@ def _dispatch_d_units(
         if not blueprint:
             continue
         device_override: str | None = None
-        if render_backend == "animatediff":
-            device_override, loop_state.d_device_cursor = scheduler_allocators._pick_next_available_d_device(
-                d_device_pool=loop_state.d_device_pool,
-                d_device_inflight=dispatch_state.d_device_inflight,
-                start_cursor=loop_state.d_device_cursor,
-                per_device_limit=animatediff_per_device_limit,
-            )
-            if device_override is None:
-                break
         future = executor.submit(
             scheduler_tasks._run_d_chain_unit,
             d_context,
@@ -741,8 +740,6 @@ def _dispatch_d_units(
         loop_state.d_unit_executed = True
         if device_override:
             dispatch_state.d_device_inflight[device_override] = int(dispatch_state.d_device_inflight.get(device_override, 0)) + 1
-            if loop_state.current_phase == "bc" and render_backend == "animatediff":
-                loop_state.d_runtime_warmed_devices.add(device_override)
     loop_state.last_d_device_inflight = dict(dispatch_state.d_device_inflight)
     return dispatched_count
 

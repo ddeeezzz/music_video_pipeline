@@ -149,7 +149,7 @@ def _build_test_config(runs_dir: str) -> AppConfig:
     边界条件：module_a.funasr_language 必填，固定为 auto。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=runs_dir, default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

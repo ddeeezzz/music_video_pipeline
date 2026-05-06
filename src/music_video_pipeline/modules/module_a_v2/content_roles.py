@@ -12,8 +12,10 @@ from typing import Any
 # 项目内模块：时间轴子模块入口
 from music_video_pipeline.modules.module_a_v2.timeline import (
     build_windows_from_sentences,
+    build_dual_track_activity_windows,
     classify_window_roles,
     estimate_bar_length_seconds,
+    inject_boundary_points_into_windows,
     merge_windows_by_rules,
     resplit_long_lyric_windows,
     resolve_big_timestamps_and_segments,
@@ -26,6 +28,10 @@ DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS = 0.9
 
 # 常量：近锚点冲突默认阈值（秒）
 DEFAULT_LYRIC_BOUNDARY_NEAR_ANCHOR_SECONDS = 1.5
+
+
+# 常量：浮点比较容差
+EPSILON_SECONDS = 1e-6
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -77,14 +83,21 @@ def apply_content_role_pipeline(
     vocal_rms_values: list[float],
     accompaniment_rms_times: list[float],
     accompaniment_rms_values: list[float],
-    tiny_merge_bars: float,
-    lyric_head_offset_seconds: float,
-    near_anchor_seconds: float,
-    duration_seconds: float,
+    vocal_energy_enter_quantile: float = 0.70,
+    vocal_energy_exit_quantile: float = 0.45,
+    vocal_mid_segment_min_duration_seconds: float = 0.8,
+    short_vocal_non_lyric_merge_seconds: float = 1.2,
+    tiny_merge_bars: float = DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS,
+    visual_lead_seconds: float = 0.06,
+    near_anchor_seconds: float = DEFAULT_LYRIC_BOUNDARY_NEAR_ANCHOR_SECONDS,
+    duration_seconds: float = 0.0,
     onset_points: list[dict[str, Any]] | None = None,
     accompaniment_chroma_points: list[dict[str, Any]] | None = None,
     vocal_f0_points: list[dict[str, Any]] | None = None,
     accompaniment_f0_points: list[dict[str, Any]] | None = None,
+    long_lyric_resplit_max_bars: float = 3.0,
+    long_other_split_min_bars: float = 1.0,
+    major_split_step_bars: float = 2.5,
 ) -> dict[str, Any]:
     """
     功能说明：统一执行模块A V2窗口化与时间轴求解流程。
@@ -95,14 +108,20 @@ def apply_content_role_pipeline(
     - beat_candidates/beats: 节拍候选与结构化节拍。
     - vocal_rms_times/vocal_rms_values: 人声RMS序列。
     - accompaniment_rms_times/accompaniment_rms_values: 伴奏RMS序列。
+    - vocal_energy_enter_quantile/vocal_energy_exit_quantile: 人声活动窗进入/退出阈值分位点。
+    - vocal_mid_segment_min_duration_seconds: 人声活动窗最小保留时长（秒）。
+    - short_vocal_non_lyric_merge_seconds: 人声活动窗短间隙闭合阈值（秒）。
     - onset_points: 伴奏onset强度点（time+energy_raw）。
     - accompaniment_chroma_points: 伴奏 chroma 点（time+12维向量）。
     - vocal_f0_points: 人声 F0 点（time+f0_hz+voiced）。
     - accompaniment_f0_points: 伴奏 F0 点（time+f0_hz+voiced）。
     - tiny_merge_bars: tiny并段阈值（小节）。
-    - lyric_head_offset_seconds: 句首锚点后移秒数。
+    - visual_lead_seconds: 小段左边界统一前移量（秒）。
     - near_anchor_seconds: 近锚点冲突阈值。
     - duration_seconds: 音频总时长。
+    - long_lyric_resplit_max_bars: 超长歌词句重切上限（小节）。
+    - long_other_split_min_bars: 非歌词长窗触发 downbeat 细分的阈值（小节）。
+    - major_split_step_bars: 非歌词长窗 downbeat 滑动桶步长（小节）。
     返回值：
     - dict[str, Any]: 全量中间产物与最终产物。
     异常说明：异常由调用方或上层流程统一处理。
@@ -131,6 +150,7 @@ def apply_content_role_pipeline(
         duration_seconds=duration_seconds,
         dynamic_gap_threshold_seconds=dynamic_gap_threshold_seconds,
         tiny_merge_bars=safe_tiny_merge_bars,
+        long_lyric_resplit_max_bars=long_lyric_resplit_max_bars,
     )
     bar_length_seconds = _safe_float(
         long_lyric_resplit_stats.get("bar_length_seconds", 0.0),
@@ -138,12 +158,39 @@ def apply_content_role_pipeline(
     )
     if bar_length_seconds <= 0.0:
         bar_length_seconds = estimate_bar_length_seconds(beats=beats, beat_candidates=beat_candidates)
-    windows_classified = classify_window_roles(
-        windows=windows_raw,
+    activity_windows = build_dual_track_activity_windows(
         vocal_rms_times=vocal_rms_times,
         vocal_rms_values=vocal_rms_values,
         accompaniment_rms_times=accompaniment_rms_times,
         accompaniment_rms_values=accompaniment_rms_values,
+        duration_seconds=duration_seconds,
+        vocal_enter_quantile=vocal_energy_enter_quantile,
+        vocal_exit_quantile=vocal_energy_exit_quantile,
+        vocal_min_interval_seconds=vocal_mid_segment_min_duration_seconds,
+        vocal_merge_gap_seconds=short_vocal_non_lyric_merge_seconds,
+    )
+    activity_boundary_points = sorted(
+        {
+            _safe_float(item.get(boundary_key, 0.0), 0.0)
+            for interval_list in [
+                list(activity_windows.get("vocal", {}).get("intervals", [])),
+                list(activity_windows.get("accompaniment", {}).get("intervals", [])),
+            ]
+            for item in interval_list
+            for boundary_key in ["start_time", "end_time"]
+            if EPSILON_SECONDS < _safe_float(item.get(boundary_key, 0.0), 0.0) < float(duration_seconds) - EPSILON_SECONDS
+        }
+    )
+    windows_for_classification = inject_boundary_points_into_windows(
+        windows=windows_raw,
+        boundary_points=activity_boundary_points,
+        duration_seconds=duration_seconds,
+        target_window_role_hint="other",
+    )
+    windows_classified = classify_window_roles(
+        windows=windows_for_classification,
+        vocal_activity_intervals=list(activity_windows.get("vocal", {}).get("intervals", [])),
+        accompaniment_activity_intervals=list(activity_windows.get("accompaniment", {}).get("intervals", [])),
     )
     windows_merged, merge_events = merge_windows_by_rules(
         windows_classified=windows_classified,
@@ -151,6 +198,8 @@ def apply_content_role_pipeline(
         bar_length_seconds=bar_length_seconds,
         beats=beats,
         duration_seconds=duration_seconds,
+        long_window_split_min_bars=long_other_split_min_bars,
+        major_split_step_bars=major_split_step_bars,
         onset_points=list(onset_points or []),
         vocal_rms_times=list(vocal_rms_times or []),
         vocal_rms_values=list(vocal_rms_values or []),
@@ -171,7 +220,7 @@ def apply_content_role_pipeline(
         windows_merged=windows_merged,
         sentence_units=sentence_units,
         duration_seconds=duration_seconds,
-        head_offset_seconds=lyric_head_offset_seconds,
+        visual_lead_seconds=visual_lead_seconds,
         near_anchor_seconds=safe_near_anchor_seconds,
         vocal_rms_times=vocal_rms_times,
         vocal_rms_values=vocal_rms_values,
@@ -186,10 +235,11 @@ def apply_content_role_pipeline(
             long_lyric_resplit_stats.get("long_lyric_inner_tiny_merge_seconds", 0.0), 0.0
         ),
         "long_lyric_inner_tiny_merge_events": list(long_lyric_resplit_stats.get("long_lyric_inner_tiny_merge_events", [])),
-        "long_lyric_remaining_over3_count": int(
-            _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over3_count", 0), 0)
+        "long_lyric_remaining_over_limit_count": int(
+            _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over_limit_count", 0), 0)
         ),
         "windows_raw": windows_raw,
+        "activity_windows": activity_windows,
         "windows_classified": windows_classified,
         "windows_merged": windows_merged,
         "window_merge_events": merge_events,
@@ -210,8 +260,8 @@ def apply_content_role_pipeline(
             "long_lyric_inner_tiny_merge_events": list(
                 long_lyric_resplit_stats.get("long_lyric_inner_tiny_merge_events", [])
             ),
-            "long_lyric_remaining_over3_count": int(
-                _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over3_count", 0), 0)
+            "long_lyric_remaining_over_limit_count": int(
+                _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over_limit_count", 0), 0)
             ),
         },
     }

@@ -115,15 +115,30 @@ def test_retry_module_c_shot_should_only_rerun_target_unit_then_run_module_d(tmp
         )
         for record in pending_records:
             unit_id = str(record["unit_id"])
-            frame_path = context.artifacts_dir / "frames" / f"retry_{unit_id}.png"
-            frame_path.parent.mkdir(parents=True, exist_ok=True)
-            frame_path.write_bytes(b"fake-frame")
+            frame_path_start = context.artifacts_dir / "frames" / f"retry_{unit_id}.png"
+            frame_path_end = context.artifacts_dir / "frames" / f"retry_{unit_id}_end.png"
+            frame_path_start.parent.mkdir(parents=True, exist_ok=True)
+            frame_path_start.write_bytes(b"fake-frame-start")
+            frame_path_end.write_bytes(b"fake-frame-end")
+            write_json(
+                context.artifacts_dir / "module_c_units" / f"{unit_id}.json",
+                {
+                    "shot_id": unit_id,
+                    "frame_path": str(frame_path_start),
+                    "frame_path_start": str(frame_path_start),
+                    "frame_path_end": str(frame_path_end),
+                    "control_frame_paths": [str(frame_path_start), str(frame_path_end)],
+                    "start_time": float(record.get("start_time", 0.0)),
+                    "end_time": float(record.get("end_time", 0.0)),
+                    "duration": float(record.get("duration", 0.0)),
+                },
+            )
             context.state_store.set_module_unit_status(
                 task_id=context.task_id,
                 module_name="C",
                 unit_id=unit_id,
                 status="done",
-                artifact_path=str(frame_path),
+                artifact_path=str(frame_path_start),
                 error_message="",
             )
         output_path = context.artifacts_dir / "module_c_output.json"
@@ -247,7 +262,7 @@ def _build_runner(tmp_path: Path, logger_name: str) -> tuple[PipelineRunner, Pat
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -295,12 +310,54 @@ def _init_done_task_with_c_units(runner: PipelineRunner, task_id: str, audio_pat
             {"unit_id": "shot_002", "unit_index": 1, "start_time": 1.0, "end_time": 2.0, "duration": 1.0},
         ],
     )
+    artifacts_dir = runner.runs_dir / task_id / "artifacts"
+    frames_dir = artifacts_dir / "frames"
+    payload_dir = artifacts_dir / "module_c_units"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    payload_dir.mkdir(parents=True, exist_ok=True)
+
+    shot_001_start = frames_dir / "original_shot_001.png"
+    shot_001_end = frames_dir / "original_shot_001_end.png"
+    shot_001_start.write_bytes(b"original-shot-001-start")
+    shot_001_end.write_bytes(b"original-shot-001-end")
+    write_json(
+        payload_dir / "shot_001.json",
+        {
+            "shot_id": "shot_001",
+            "frame_path": str(shot_001_start),
+            "frame_path_start": str(shot_001_start),
+            "frame_path_end": str(shot_001_end),
+            "control_frame_paths": [str(shot_001_start), str(shot_001_end)],
+            "start_time": 0.0,
+            "end_time": 1.0,
+            "duration": 1.0,
+        },
+    )
+
+    shot_002_start = frames_dir / "original_shot_002.png"
+    shot_002_end = frames_dir / "original_shot_002_end.png"
+    shot_002_start.write_bytes(b"original-shot-002-start")
+    shot_002_end.write_bytes(b"original-shot-002-end")
+    write_json(
+        payload_dir / "shot_002.json",
+        {
+            "shot_id": "shot_002",
+            "frame_path": str(shot_002_start),
+            "frame_path_start": str(shot_002_start),
+            "frame_path_end": str(shot_002_end),
+            "control_frame_paths": [str(shot_002_start), str(shot_002_end)],
+            "start_time": 1.0,
+            "end_time": 2.0,
+            "duration": 1.0,
+        },
+    )
+
     runner.state_store.set_module_unit_status(
         task_id=task_id,
         module_name="C",
         unit_id="shot_001",
         status="done",
-        artifact_path=str(runner.runs_dir / task_id / "artifacts" / "frames" / "original_shot_001.png"),
+        artifact_path=str(shot_001_start),
         error_message="",
     )
     runner.state_store.set_module_unit_status(
@@ -308,6 +365,6 @@ def _init_done_task_with_c_units(runner: PipelineRunner, task_id: str, audio_pat
         module_name="C",
         unit_id="shot_002",
         status="done",
-        artifact_path=str(runner.runs_dir / task_id / "artifacts" / "frames" / "original_shot_002.png"),
+        artifact_path=str(shot_002_start),
         error_message="",
     )

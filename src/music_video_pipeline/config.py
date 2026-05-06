@@ -29,14 +29,12 @@ class ModeConfig:
     功能说明：定义模块 B/C 的生成器模式。
     参数说明：
     - script_generator: 分镜生成模式（mock/llm）。
-    - frame_generator: 关键帧生成模式（mock/diffusion）。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：未知模式在工厂层做降级处理。
+    边界条件：模块 C 后端不再由 mode 配置驱动。
     """
 
     script_generator: str
-    frame_generator: str
 
 
 @dataclass(frozen=True)
@@ -142,7 +140,7 @@ class RenderConfig:
     - video_height: 输出画面高度。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：当前 diffusion 路径要求宽高可被 8 整除。
+    边界条件：当前 ComfyUI 的 SD1.5 工作流要求宽高可被 8 整除。
     """
 
     video_width: int = 848
@@ -162,7 +160,8 @@ class ModuleBLlmConfig:
     - user_custom_prompt: 用户自定义提示词（仅用于 user prompt，默认空字符串）。
     - timeout_seconds: 单次请求超时（秒）。
     - request_retry_times: HTTP 请求重试次数。
-    - json_retry_times: JSON 解析失败后的补救重试次数。
+    - output_retry_times: 输出不符合约束时的补救重试次数。
+    - json_retry_times: 旧配置兼容字段，仅用于迁移历史 JSON 输出链路配置。
     - temperature: 采样温度。
     - top_p: 采样 top_p。
     - max_tokens: 单次输出 token 上限。
@@ -183,7 +182,8 @@ class ModuleBLlmConfig:
     user_custom_prompt: str = ""
     timeout_seconds: float = 60.0
     request_retry_times: int = 2
-    json_retry_times: int = 2
+    output_retry_times: int = 2
+    json_retry_times: int | None = None
     temperature: float = 0.30
     top_p: float = 0.90
     max_tokens: int = 350
@@ -191,6 +191,20 @@ class ModuleBLlmConfig:
     scene_desc_max_chars: int = 120
     keyframe_prompt_max_chars: int = 400
     video_prompt_max_chars: int = 500
+
+    def get_output_retry_times(self) -> int:
+        """
+        功能说明：统一解析输出重试次数，兼容历史 JSON 配置字段。
+        参数说明：无。
+        返回值：
+        - int: 非负整数重试次数。
+        异常说明：无。
+        边界条件：旧字段存在时优先取旧字段，便于老配置平滑迁移。
+        """
+        legacy_retry_times = self.json_retry_times
+        if legacy_retry_times is not None:
+            return max(0, int(legacy_retry_times))
+        return max(0, int(self.output_retry_times))
 
 
 @dataclass(frozen=True)
@@ -200,6 +214,7 @@ class ModuleBConfig:
     参数说明：
     - script_workers: 分镜最小单元并行生成 worker 数量。
     - unit_retry_times: 单元失败后的重试次数。
+    - storyboard_template_file: 模块B v2 编排模板文件路径。
     - llm: 模块 B 真实 LLM 分镜参数。
     返回值：不适用。
     异常说明：不适用。
@@ -208,6 +223,7 @@ class ModuleBConfig:
 
     script_workers: int = 3
     unit_retry_times: int = 1
+    storyboard_template_file: str = "configs/storyboard_templates/storyboard_template.v1.md"
     llm: ModuleBLlmConfig = field(default_factory=ModuleBLlmConfig)
 
 
@@ -216,15 +232,56 @@ class ModuleCConfig:
     """
     功能说明：定义模块 C 的并行与重试参数。
     参数说明：
+    - render_backend: 模块 C 渲染后端（当前固定 comfyui）。
     - render_workers: 最小视觉单元并行生成 worker 数量。
     - unit_retry_times: 单元失败后的重试次数。
+    - comfyui: 模块 C 的 ComfyUI 工作流配置。
     返回值：不适用。
     异常说明：不适用。
     边界条件：非法值由模块 C 执行层归一化兜底。
     """
 
+    @dataclass(frozen=True)
+    class ComfyUIConfig:
+        """
+        功能说明：定义模块 C 的 ComfyUI 关键帧工作流参数。
+        参数说明：
+        - contract_start_file: 首关键帧 txt2img 契约文件。
+        - contract_end_file: 末关键帧 img2img 契约文件。
+        - checkpoint_file: 单文件 checkpoint 路径（相对项目根）。
+        - scene_lora_file: 环境 LoRA 文件路径（相对项目根）。
+        - scene_lora_strength: 环境 LoRA 强度。
+        - char_lora_file: 角色 LoRA 文件路径（相对项目根）。
+        - char_lora_strength: 角色 LoRA 强度。
+        - negative_prompt: 负向提示词。
+        - steps: 采样步数。
+        - guidance_scale: CFG 引导系数。
+        - sampler_name: 采样器名。
+        - scheduler: 调度器名。
+        - end_denoise: 第二关键帧 img2img 强度。
+        返回值：不适用。
+        异常说明：不适用。
+        边界条件：checkpoint_file/scene_lora_file/char_lora_file 必须指向现有模型资产。
+        """
+
+        contract_start_file: str = "configs/comfyui/module_c_start.contract.json"
+        contract_end_file: str = "configs/comfyui/module_c_end.contract.json"
+        checkpoint_file: str = "models/base_model/15/single/anything-v5.safetensors"
+        scene_lora_file: str = "models/lora/15/akebi/AkebiScene-000012.safetensors"
+        scene_lora_strength: float = 1.0
+        char_lora_file: str = "models/lora/15/akebi/AkebiChar-000008.safetensors"
+        char_lora_strength: float = 1.0
+        negative_prompt: str = "lowres, blurry, bad anatomy"
+        steps: int = 24
+        guidance_scale: float = 7.0
+        sampler_name: str = "euler_ancestral"
+        scheduler: str = "normal"
+        end_denoise: float = 0.55
+
+    render_backend: str = "comfyui"
     render_workers: int = 3
     unit_retry_times: int = 1
+    comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
 
 
 @dataclass(frozen=True)
@@ -232,64 +289,82 @@ class ModuleDConfig:
     """
     功能说明：定义模块 D 的并行与重试参数。
     参数说明：
-    - render_backend: 渲染后端（ffmpeg/animatediff）。
+    - render_backend: 渲染后端（当前固定 comfyui）。
     - segment_workers: 片段最小单元并行渲染 worker 数量。
     - unit_retry_times: 单元失败后的重试次数。
-    - animatediff: AnimateDiff 渲染参数。
+    - comfyui: 模块 D 的 ComfyUI 视频工作流配置。
     返回值：不适用。
     异常说明：不适用。
     边界条件：非法值由模块 D 执行层归一化兜底。
     """
 
     @dataclass(frozen=True)
-    class AnimateDiffConfig:
+    class ComfyUIConfig:
         """
-        功能说明：定义模块 D 的 AnimateDiff 渲染参数。
+        功能说明：定义模块 D 的 ComfyUI 视频工作流参数。
         参数说明：
-        - binding_name: LoRA 绑定名（来自 lora_bindings.json）。
-        - model_series: 底模系列（15/xl）。
-        - lora_scale: LoRA 缩放权重。
+        - contract_file: 模块 D 工作流契约文件。
+        - checkpoint_name: ToonCrafter 主模型文件名。
+        - sketch_encoder_name: ToonCrafter 草图编码器文件名（v1 仅用于资产准备，不接入正式 workflow）。
+        - generation_width: ToonCrafter 固定生成宽度。
+        - generation_height: ToonCrafter 固定生成高度。
+        - generation_frames: ToonCrafter 固定原生帧数。
+        - generation_fps: ToonCrafter 固定原生采样 fps。
         - steps: 推理步数。
-        - guidance_scale: CFG 引导系数。
+        - cfg: CFG 引导系数。
+        - eta: DDIM eta 参数。
+        - vae_dtype: ToonCrafter VAE 精度。
+        - image_embed_ratio: 双关键帧图像嵌入混合比例。
+        - augmentation_level: 双关键帧增强噪声强度。
+        - use_video_prompt_as_positive: 是否将 video_prompt_en 直接作为正向提示词。
         - negative_prompt: 负向提示词。
-        - device: 推理设备（auto/cpu/cuda/cuda:N）。
-        - torch_dtype: 推理精度（auto/float16/float32/bfloat16）。
-        - num_frames: 生成帧数默认值（执行层可按时间轴覆写）。
-        - seed_mode: 随机种子策略（shot_index/none）。
-        - motion_adapter_repo_id: Motion Adapter HF 仓库。
-        - motion_adapter_revision: Motion Adapter 版本。
-        - motion_adapter_local_dir: Motion Adapter 本地缓存目录（相对项目根）。
-        - controlnet_local_dir: ControlNet 本地目录（相对项目根，当前用于 SD1.5 canny 控制）。
-        - controlnet_conditioning_scale: ControlNet 约束强度。
-        - hf_endpoint: HF 镜像地址（空字符串表示使用环境变量/默认）。
-        - fallback_to_ffmpeg: AnimateDiff 失败时是否回退 ffmpeg。
         返回值：不适用。
         异常说明：不适用。
-        边界条件：series=15 时默认 Motion Adapter 为 guoyww 官方 1.5 适配器。
+        边界条件：实际工作流 JSON 需与 contract_file 中的 bindings 保持一致。
         """
 
-        binding_name: str = "xiantiao_style"
-        model_series: str = "15"
-        lora_scale: float = 0.8
-        steps: int = 24
-        guidance_scale: float = 10.0
+        contract_file: str = "configs/comfyui/module_d.contract.json"
+        checkpoint_name: str = "tooncrafter_512_interp-pruned-fp16.safetensors"
+        sketch_encoder_name: str = "sketch_encoder-fp16.safetensors"
+        generation_width: int = 512
+        generation_height: int = 320
+        generation_frames: int = 32
+        generation_fps: int = 16
+        steps: int = 30
+        cfg: float = 3.0
+        eta: float = 1.0
+        vae_dtype: str = "fp16"
+        image_embed_ratio: float = 1.0
+        augmentation_level: float = 0.0
+        use_video_prompt_as_positive: bool = True
         negative_prompt: str = "lowres, blurry, bad anatomy"
-        device: str = "auto"
-        torch_dtype: str = "float16"
-        num_frames: int = 16
-        seed_mode: str = "shot_index"
-        motion_adapter_repo_id: str = "guoyww/animatediff-motion-adapter-v1-5-2"
-        motion_adapter_revision: str = "main"
-        motion_adapter_local_dir: str = "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2"
-        controlnet_local_dir: str = "models/controlnet/15/controlnet-canny-sd15"
-        controlnet_conditioning_scale: float = 0.8
-        hf_endpoint: str = "https://hf-mirror.com"
-        fallback_to_ffmpeg: bool = False
 
-    render_backend: str = "ffmpeg"
+    render_backend: str = "comfyui"
     segment_workers: int = 3
     unit_retry_times: int = 1
-    animatediff: AnimateDiffConfig = field(default_factory=AnimateDiffConfig)
+    comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
+
+
+@dataclass(frozen=True)
+class ComfyUIServiceConfig:
+    """
+    功能说明：定义全局 ComfyUI 服务访问参数。
+    参数说明：
+    - root_dir: ComfyUI 根目录（相对项目根或绝对路径）。
+    - server_url: ComfyUI API 地址。
+    - request_timeout_seconds: 单次 HTTP 请求超时。
+    - poll_interval_seconds: 轮询 history 间隔。
+    - execution_timeout_seconds: 单个 workflow 最长等待时间。
+    返回值：不适用。
+    异常说明：不适用。
+    边界条件：本配置只负责“访问已启动服务”，不负责管理 ComfyUI 进程生命周期。
+    """
+
+    root_dir: str = "ComfyUI"
+    server_url: str = "http://127.0.0.1:8188"
+    request_timeout_seconds: float = 30.0
+    poll_interval_seconds: float = 1.0
+    execution_timeout_seconds: float = 600.0
 
 
 @dataclass(frozen=True)
@@ -412,10 +487,13 @@ class ModuleAConfig:
     - vocal_skip_peak_rms_threshold: “极低人声”判定的峰值 RMS 阈值。
     - vocal_skip_active_ratio_threshold: “极低人声”判定的活跃帧占比阈值。
     - implementation: 模块A实现版本（v1/v2），用于迁移期开关切换。
-    - lyric_head_offset_seconds: 歌词句首小时间戳固定后移量（秒，v2歌词主链使用）。
+    - visual_lead_seconds: 小段左边界统一前移量（秒，v2视觉提前策略使用）。
     - long_instrumental_gap_seconds: 人声段内长器乐补检触发阈值（秒，v2歌词主链使用）。
     - lyric_boundary_near_anchor_seconds: 大段边界后“近锚点冲突”判定阈值（秒，v2歌词主链使用）。
     - content_role_tiny_merge_bars: 内容角色tiny并段阈值（小节，v2四分类清理使用）。
+    - long_lyric_resplit_max_bars: 超长歌词句重切上限（小节，v2歌词主链使用）。
+    - long_other_split_min_bars: 非歌词长窗触发 downbeat 细分的阈值（小节，v2非人声主链使用）。
+    - major_split_step_bars: 非歌词长窗 downbeat 滑动桶步长（小节，v2非人声主链使用）。
     返回值：不适用。
     异常说明：不适用。
     边界条件：阈值建议大于等于 0。
@@ -444,10 +522,13 @@ class ModuleAConfig:
     vocal_skip_peak_rms_threshold: float = 0.010
     vocal_skip_active_ratio_threshold: float = 0.020
     implementation: str = "v1"
-    lyric_head_offset_seconds: float = 0.02
+    visual_lead_seconds: float = 0.06
     long_instrumental_gap_seconds: float = 5.0
     lyric_boundary_near_anchor_seconds: float = 1.5
     content_role_tiny_merge_bars: float = 0.9
+    long_lyric_resplit_max_bars: float = 3.0
+    long_other_split_min_bars: float = 1.0
+    major_split_step_bars: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -482,6 +563,7 @@ class AppConfig:
     module_b: ModuleBConfig = field(default_factory=ModuleBConfig)
     module_c: ModuleCConfig = field(default_factory=ModuleCConfig)
     module_d: ModuleDConfig = field(default_factory=ModuleDConfig)
+    comfyui: ComfyUIServiceConfig = field(default_factory=ComfyUIServiceConfig)
     cross_module: CrossModuleConfig = field(default_factory=CrossModuleConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     bypy_upload: BypyUploadConfig = field(default_factory=BypyUploadConfig)
@@ -515,7 +597,7 @@ def _merge_defaults(raw_data: dict) -> dict:
     边界条件：调用方需保证 raw_data 为字典。
     """
     default_data = {
-        "mode": {"script_generator": "mock", "frame_generator": "mock"},
+        "mode": {"script_generator": "mock"},
         "paths": {"runs_dir": "runs", "default_audio_path": "resources/juebieshu20s.mp3"},
         "ffmpeg": {
             "ffmpeg_bin": "ffmpeg",
@@ -524,7 +606,7 @@ def _merge_defaults(raw_data: dict) -> dict:
             "audio_codec": "aac",
             "fps": 24,
             "video_preset": "veryfast",
-            "video_crf": 30,
+            "video_crf": 24,
             "render_batch_size": 1,
             "render_workers": 3,
             "video_accel_mode": "auto",
@@ -542,6 +624,7 @@ def _merge_defaults(raw_data: dict) -> dict:
         "module_b": {
             "script_workers": 3,
             "unit_retry_times": 1,
+            "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md",
             "llm": {
                 "provider": "siliconflow",
                 "base_url": "https://api.siliconflow.cn/v1",
@@ -551,7 +634,7 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "user_custom_prompt": "",
                 "timeout_seconds": 60.0,
                 "request_retry_times": 2,
-                "json_retry_times": 2,
+                "output_retry_times": 2,
                 "temperature": 0.30,
                 "top_p": 0.90,
                 "max_tokens": 350,
@@ -562,32 +645,53 @@ def _merge_defaults(raw_data: dict) -> dict:
             },
         },
         "module_c": {
+            "render_backend": "comfyui",
             "render_workers": 3,
             "unit_retry_times": 1,
+            "comfyui": {
+                "contract_start_file": "configs/comfyui/module_c_start.contract.json",
+                "contract_end_file": "configs/comfyui/module_c_end.contract.json",
+                "checkpoint_file": "models/base_model/15/single/anything-v5.safetensors",
+                "scene_lora_file": "models/lora/15/akebi/AkebiScene-000012.safetensors",
+                "scene_lora_strength": 1.0,
+                "char_lora_file": "models/lora/15/akebi/AkebiChar-000008.safetensors",
+                "char_lora_strength": 1.0,
+                "negative_prompt": "lowres, blurry, bad anatomy",
+                "steps": 24,
+                "guidance_scale": 7.0,
+                "sampler_name": "euler_ancestral",
+                "scheduler": "normal",
+                "end_denoise": 0.55,
+            },
         },
         "module_d": {
-            "render_backend": "ffmpeg",
+            "render_backend": "comfyui",
             "segment_workers": 3,
             "unit_retry_times": 1,
-            "animatediff": {
-                "binding_name": "xiantiao_style",
-                "model_series": "15",
-                "lora_scale": 0.8,
-                "steps": 24,
-                "guidance_scale": 10.0,
+            "comfyui": {
+                "contract_file": "configs/comfyui/module_d.contract.json",
+                "checkpoint_name": "tooncrafter_512_interp-pruned-fp16.safetensors",
+                "sketch_encoder_name": "sketch_encoder-fp16.safetensors",
+                "generation_width": 512,
+                "generation_height": 320,
+                "generation_frames": 32,
+                "generation_fps": 16,
+                "steps": 30,
+                "cfg": 3.0,
+                "eta": 1.0,
+                "vae_dtype": "fp16",
+                "image_embed_ratio": 1.0,
+                "augmentation_level": 0.0,
+                "use_video_prompt_as_positive": True,
                 "negative_prompt": "lowres, blurry, bad anatomy",
-                "device": "auto",
-                "torch_dtype": "float16",
-                "num_frames": 16,
-                "seed_mode": "shot_index",
-                "motion_adapter_repo_id": "guoyww/animatediff-motion-adapter-v1-5-2",
-                "motion_adapter_revision": "main",
-                "motion_adapter_local_dir": "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2",
-                "controlnet_local_dir": "models/controlnet/15/controlnet-canny-sd15",
-                "controlnet_conditioning_scale": 0.8,
-                "hf_endpoint": "https://hf-mirror.com",
-                "fallback_to_ffmpeg": False,
             },
+        },
+        "comfyui": {
+            "root_dir": "ComfyUI",
+            "server_url": "http://127.0.0.1:8188",
+            "request_timeout_seconds": 30.0,
+            "poll_interval_seconds": 1.0,
+            "execution_timeout_seconds": 600.0,
         },
         "cross_module": {
             "global_render_limit": 3,
@@ -643,10 +747,13 @@ def _merge_defaults(raw_data: dict) -> dict:
             "vocal_skip_peak_rms_threshold": 0.010,
             "vocal_skip_active_ratio_threshold": 0.020,
             "implementation": "v1",
-            "lyric_head_offset_seconds": 0.02,
+            "visual_lead_seconds": 0.06,
             "long_instrumental_gap_seconds": 5.0,
             "lyric_boundary_near_anchor_seconds": 1.5,
             "content_role_tiny_merge_bars": 0.9,
+            "long_lyric_resplit_max_bars": 3.0,
+            "long_other_split_min_bars": 1.0,
+            "major_split_step_bars": 2.5,
         },
     }
 
@@ -659,12 +766,19 @@ def _merge_defaults(raw_data: dict) -> dict:
             if isinstance(default_llm, dict) and isinstance(override_llm, dict):
                 merged_module_b["llm"] = {**default_llm, **override_llm}
             merged[top_key] = merged_module_b
+        elif top_key == "module_c" and isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
+            merged_module_c = {**merged[top_key], **top_value}
+            default_comfyui = merged[top_key].get("comfyui", {})
+            override_comfyui = top_value.get("comfyui", {})
+            if isinstance(default_comfyui, dict) and isinstance(override_comfyui, dict):
+                merged_module_c["comfyui"] = {**default_comfyui, **override_comfyui}
+            merged[top_key] = merged_module_c
         elif top_key == "module_d" and isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
             merged_module_d = {**merged[top_key], **top_value}
-            default_animatediff = merged[top_key].get("animatediff", {})
-            override_animatediff = top_value.get("animatediff", {})
-            if isinstance(default_animatediff, dict) and isinstance(override_animatediff, dict):
-                merged_module_d["animatediff"] = {**default_animatediff, **override_animatediff}
+            default_comfyui = merged[top_key].get("comfyui", {})
+            override_comfyui = top_value.get("comfyui", {})
+            if isinstance(default_comfyui, dict) and isinstance(override_comfyui, dict):
+                merged_module_d["comfyui"] = {**default_comfyui, **override_comfyui}
             merged[top_key] = merged_module_d
         elif isinstance(top_value, dict) and isinstance(merged.get(top_key), dict):
             merged[top_key] = {**merged[top_key], **top_value}
@@ -713,12 +827,21 @@ def load_config(config_path: Path) -> AppConfig:
                 f"配置错误：{config_path} 包含已下线队列字段（{field_list_text}），"
                 "请手工清理后重试。"
             )
+    raw_mode_data = raw_data.get("mode", {})
+    if raw_mode_data is not None and not isinstance(raw_mode_data, dict):
+        raise TypeError("配置错误：mode 必须是对象。")
+    if isinstance(raw_mode_data, dict) and "frame_generator" in raw_mode_data:
+        raise TypeError("配置错误：mode.frame_generator 已删除；模块C当前固定走 comfyui 常驻服务。")
     merged = _merge_defaults(raw_data)
     module_b_data = dict(merged["module_b"])
     module_b_llm_data = module_b_data.pop("llm", {})
     if not isinstance(module_b_llm_data, dict):
         raise TypeError("配置错误：module_b.llm 必须是对象。")
     script_generator_mode = str(merged.get("mode", {}).get("script_generator", "mock")).strip().lower()
+    storyboard_template_file = str(module_b_data.get("storyboard_template_file", "")).strip()
+    if not storyboard_template_file:
+        storyboard_template_file = "configs/storyboard_templates/storyboard_template.v1.md"
+    module_b_data["storyboard_template_file"] = storyboard_template_file
     prompt_template_file = str(module_b_llm_data.get("prompt_template_file", "")).strip()
     if script_generator_mode == "llm" and not prompt_template_file:
         raise TypeError("配置错误：mode.script_generator=llm 时，module_b.llm.prompt_template_file 不能为空。")
@@ -729,47 +852,34 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(user_custom_prompt, str):
         user_custom_prompt = str(user_custom_prompt)
     module_b_llm_data["user_custom_prompt"] = user_custom_prompt
+    if "json_retry_times" in module_b_llm_data and "output_retry_times" not in module_b_llm_data:
+        module_b_llm_data["output_retry_times"] = module_b_llm_data.get("json_retry_times", 2)
+        LOGGER.warning("检测到旧配置键 module_b.llm.json_retry_times，已兼容映射到 module_b.llm.output_retry_times，建议迁移配置。")
+    module_c_data = dict(merged["module_c"])
+    module_c_comfyui_data = module_c_data.pop("comfyui", {})
+    if not isinstance(module_c_comfyui_data, dict):
+        raise TypeError("配置错误：module_c.comfyui 必须是对象。")
+    module_c_render_backend = str(module_c_data.get("render_backend", "comfyui")).strip().lower()
+    if module_c_render_backend != "comfyui":
+        raise TypeError("配置错误：module_c.render_backend 当前仅支持 comfyui。")
+    module_c_data["render_backend"] = module_c_render_backend
     module_d_data = dict(merged["module_d"])
-    module_d_animatediff_data = module_d_data.pop("animatediff", {})
-    if not isinstance(module_d_animatediff_data, dict):
-        raise TypeError("配置错误：module_d.animatediff 必须是对象。")
-    module_d_render_backend = str(module_d_data.get("render_backend", "ffmpeg")).strip().lower()
-    if module_d_render_backend not in {"ffmpeg", "animatediff"}:
-        raise TypeError("配置错误：module_d.render_backend 仅支持 ffmpeg 或 animatediff。")
+    module_d_comfyui_data = module_d_data.pop("comfyui", {})
+    if not isinstance(module_d_comfyui_data, dict):
+        raise TypeError("配置错误：module_d.comfyui 必须是对象。")
+    module_d_render_backend = str(module_d_data.get("render_backend", "comfyui")).strip().lower()
+    if module_d_render_backend != "comfyui":
+        raise TypeError("配置错误：module_d.render_backend 当前仅支持 comfyui。")
     module_d_data["render_backend"] = module_d_render_backend
-
-    module_d_model_series = str(module_d_animatediff_data.get("model_series", "15")).strip().lower()
-    if module_d_model_series not in {"15", "xl"}:
-        raise TypeError("配置错误：module_d.animatediff.model_series 仅支持 15 或 xl。")
-    module_d_animatediff_data["model_series"] = module_d_model_series
-
-    module_d_seed_mode = str(module_d_animatediff_data.get("seed_mode", "shot_index")).strip().lower()
-    if module_d_seed_mode not in {"shot_index", "none"}:
-        raise TypeError("配置错误：module_d.animatediff.seed_mode 仅支持 shot_index 或 none。")
-    module_d_animatediff_data["seed_mode"] = module_d_seed_mode
-
-    module_d_torch_dtype = str(module_d_animatediff_data.get("torch_dtype", "float16")).strip().lower()
-    if module_d_torch_dtype not in {"auto", "float16", "float32", "bfloat16"}:
-        raise TypeError("配置错误：module_d.animatediff.torch_dtype 非法。")
-    module_d_animatediff_data["torch_dtype"] = module_d_torch_dtype
-
-    module_d_device = str(module_d_animatediff_data.get("device", "auto")).strip().lower()
-    if not _is_valid_device_spec(module_d_device):
-        raise TypeError("配置错误：module_d.animatediff.device 非法，支持 auto/cpu/cuda/cuda:N。")
-    module_d_animatediff_data["device"] = module_d_device
-    controlnet_local_dir = str(
-        module_d_animatediff_data.get("controlnet_local_dir", "models/controlnet/15/controlnet-canny-sd15")
-    ).strip()
-    if not controlnet_local_dir:
-        raise TypeError("配置错误：module_d.animatediff.controlnet_local_dir 不能为空。")
-    module_d_animatediff_data["controlnet_local_dir"] = controlnet_local_dir
-    try:
-        controlnet_scale = float(module_d_animatediff_data.get("controlnet_conditioning_scale", 0.8))
-    except (TypeError, ValueError) as error:
-        raise TypeError("配置错误：module_d.animatediff.controlnet_conditioning_scale 必须是数字。") from error
-    if controlnet_scale <= 0:
-        raise TypeError("配置错误：module_d.animatediff.controlnet_conditioning_scale 必须大于 0。")
-    module_d_animatediff_data["controlnet_conditioning_scale"] = controlnet_scale
+    comfyui_data = dict(merged["comfyui"])
+    comfyui_root_dir = str(comfyui_data.get("root_dir", "ComfyUI")).strip()
+    if not comfyui_root_dir:
+        raise TypeError("配置错误：comfyui.root_dir 不能为空。")
+    comfyui_data["root_dir"] = comfyui_root_dir
+    comfyui_server_url = str(comfyui_data.get("server_url", "http://127.0.0.1:8188")).strip()
+    if not comfyui_server_url:
+        raise TypeError("配置错误：comfyui.server_url 不能为空。")
+    comfyui_data["server_url"] = comfyui_server_url
     bypy_upload_data = merged.get("bypy_upload", {})
     if not isinstance(bypy_upload_data, dict):
         raise TypeError("配置错误：bypy_upload 必须是对象。")
@@ -795,13 +905,6 @@ def load_config(config_path: Path) -> AppConfig:
     if "lyric_segment_policy" in module_a_data:
         LOGGER.warning("配置键 module_a.lyric_segment_policy 已移除并忽略，请删除该配置项。")
         module_a_data.pop("lyric_segment_policy", None)
-    # 兼容说明：历史配置使用 content_role_tiny_merge_seconds，现统一为按小节阈值。
-    if (
-        "content_role_tiny_merge_bars" not in raw_module_a_data
-        and "content_role_tiny_merge_seconds" in raw_module_a_data
-    ):
-        module_a_data["content_role_tiny_merge_bars"] = raw_module_a_data.get("content_role_tiny_merge_seconds")
-    module_a_data.pop("content_role_tiny_merge_seconds", None)
     if "english_head_pullback_window_seconds" in module_a_data:
         LOGGER.warning("配置键 module_a.english_head_pullback_window_seconds 已移除并忽略，请删除该配置项。")
         module_a_data.pop("english_head_pullback_window_seconds", None)
@@ -814,11 +917,9 @@ def load_config(config_path: Path) -> AppConfig:
         mock=MockConfig(**merged["mock"]),
         render=RenderConfig(**render_data),
         module_b=ModuleBConfig(llm=ModuleBLlmConfig(**module_b_llm_data), **module_b_data),
-        module_c=ModuleCConfig(**merged["module_c"]),
-        module_d=ModuleDConfig(
-            animatediff=ModuleDConfig.AnimateDiffConfig(**module_d_animatediff_data),
-            **module_d_data,
-        ),
+        module_c=ModuleCConfig(comfyui=ModuleCConfig.ComfyUIConfig(**module_c_comfyui_data), **module_c_data),
+        module_d=ModuleDConfig(comfyui=ModuleDConfig.ComfyUIConfig(**module_d_comfyui_data), **module_d_data),
+        comfyui=ComfyUIServiceConfig(**comfyui_data),
         cross_module=CrossModuleConfig(
             adaptive_window=CrossModuleAdaptiveWindowConfig(**cross_module_adaptive_window_data),
             **cross_module_data,

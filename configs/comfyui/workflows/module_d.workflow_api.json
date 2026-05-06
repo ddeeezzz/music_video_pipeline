@@ -1,0 +1,128 @@
+{
+  "1": {
+    "inputs": {
+      "model": "tooncrafter_512_interp-pruned-fp16.safetensors",
+      "dtype": "auto",
+      "fp8_unet": false
+    },
+    "class_type": "DownloadAndLoadDynamiCrafterModel"
+  },
+  "2": {
+    "inputs": {
+      "model": "stable-diffusion-2-1-clip-fp16.safetensors"
+    },
+    "class_type": "DownloadAndLoadCLIPModel"
+  },
+  "3": {
+    "inputs": {
+      "model": "CLIP-ViT-H-fp16.safetensors"
+    },
+    "class_type": "DownloadAndLoadCLIPVisionModel"
+  },
+  "10": {
+    "inputs": {
+      "image": "mvpl/example_start.png",
+      "upload": "image"
+    },
+    "class_type": "LoadImage"
+  },
+  "11": {
+    "inputs": {
+      "image": "mvpl/example_end.png",
+      "upload": "image"
+    },
+    "class_type": "LoadImage"
+  },
+  "12": {
+    "inputs": {
+      "image1": [
+        "10",
+        0
+      ],
+      "image2": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "ImageBatch"
+  },
+  "20": {
+    "inputs": {
+      "text": "anime scene",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "21": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "30": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip_vision": [
+        "3",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "images": [
+        "12",
+        0
+      ],
+      "steps": 30,
+      "cfg": 3.0,
+      "eta": 1.0,
+      "frames": 32,
+      "seed": 1,
+      "fs": 16,
+      "vae_dtype": "fp16",
+      "image_embed_ratio": 1.0,
+      "augmentation_level": 0.0
+    },
+    "class_type": "ToonCrafterInterpolation"
+  },
+  "40": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "latent": [
+        "30",
+        0
+      ],
+      "vae_dtype": "fp16",
+      "prune_last_frame": false
+    },
+    "class_type": "ToonCrafterDecode"
+  },
+  "99": {
+    "inputs": {
+      "filename_prefix": "mvpl/module_d/tooncrafter",
+      "images": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "SaveImage"
+  }
+}

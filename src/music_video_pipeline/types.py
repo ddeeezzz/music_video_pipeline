@@ -9,6 +9,9 @@
 # 标准库：用于声明结构化类型
 from typing import Any, Literal, NotRequired, TypedDict
 
+# 项目内模块：复用模块B v2 的 plan 校验器。
+from music_video_pipeline.modules.module_b_v2.parser import validate_camera_plan, validate_transition_plan
+
 
 TaskState = Literal["pending", "running", "done", "failed"]
 
@@ -126,14 +129,18 @@ class ModuleBOutputItem(TypedDict):
     start_time: float
     end_time: float
     scene_desc: str
-    keyframe_prompt_zh: NotRequired[str]
-    keyframe_prompt_en: NotRequired[str]
-    keyframe_prompt: str
-    video_prompt_zh: NotRequired[str]
-    video_prompt_en: NotRequired[str]
-    video_prompt: str
-    camera_motion: str
-    transition: str
+    keyframe_prompt_start_zh: str
+    keyframe_prompt_start_en: str
+    keyframe_negative_prompt_start_zh: NotRequired[str]
+    keyframe_negative_prompt_start_en: NotRequired[str]
+    keyframe_prompt_end_zh: str
+    keyframe_prompt_end_en: str
+    keyframe_negative_prompt_end_zh: NotRequired[str]
+    keyframe_negative_prompt_end_en: NotRequired[str]
+    video_prompt_zh: str
+    video_prompt_en: str
+    camera_plan: dict[str, Any]
+    transition_plan: dict[str, Any]
     constraints: dict[str, bool]
     lyric_text: NotRequired[str]
     lyric_units: NotRequired[list[dict]]
@@ -332,13 +339,37 @@ def validate_module_b_output(data: list[dict]) -> None:
     异常说明：
     - ValueError: 输出不是列表或列表为空。
     - KeyError: 任一分镜缺失必填字段。
-    边界条件：兼容旧产物，歌词扩展字段允许缺失。
+    边界条件：要求双关键帧与单视频轨提示词字段完整。
     """
     if not isinstance(data, list) or not data:
         raise ValueError("ModuleBOutput 必须是非空 list")
 
-    required_keys = {"shot_id", "start_time", "end_time", "scene_desc", "keyframe_prompt", "video_prompt", "camera_motion", "transition"}
-    valid_camera_motion = {"slow_pan", "zoom_in", "shake", "push_pull", "none"}
+    required_keys = {
+        "shot_id",
+        "start_time",
+        "end_time",
+        "scene_desc",
+        "keyframe_prompt_start_zh",
+        "keyframe_prompt_start_en",
+        "keyframe_prompt_end_zh",
+        "keyframe_prompt_end_en",
+        "video_prompt_zh",
+        "video_prompt_en",
+        "camera_plan",
+        "transition_plan",
+    }
+    forbidden_keys = {
+        "camera_motion",
+        "transition",
+        "video_prompt_start_zh",
+        "video_prompt_start_en",
+        "video_prompt_end_zh",
+        "video_prompt_end_en",
+        "keyframe_prompt_zh",
+        "keyframe_prompt_en",
+        "keyframe_prompt",
+        "video_prompt",
+    }
     valid_audio_role = {"instrumental", "vocal"}
     valid_segment_role = {"lyric", "chant", "inst", "silence"}
 
@@ -346,25 +377,36 @@ def validate_module_b_output(data: list[dict]) -> None:
         missing_keys = required_keys.difference(item.keys())
         if missing_keys:
             raise KeyError(f"ModuleBOutput[{index}] 缺失字段: {sorted(missing_keys)}")
+        legacy_keys = sorted(forbidden_keys.intersection(item.keys()))
+        if legacy_keys:
+            raise KeyError(f"ModuleBOutput[{index}] 含已废弃字段: {legacy_keys}")
 
-        camera_motion = str(item["camera_motion"])
-        if camera_motion not in valid_camera_motion:
-            raise ValueError(
-                f"ModuleBOutput[{index}].camera_motion 非法: {camera_motion}，"
-                f"合法值: {sorted(valid_camera_motion)}"
-            )
+        if not isinstance(item["camera_plan"], dict):
+            raise TypeError(f"ModuleBOutput[{index}].camera_plan 必须是 dict")
+        if not isinstance(item["transition_plan"], dict):
+            raise TypeError(f"ModuleBOutput[{index}].transition_plan 必须是 dict")
+        validate_camera_plan(item["camera_plan"])
+        validate_transition_plan(item["transition_plan"])
 
-        for prompt_key in ["scene_desc", "keyframe_prompt", "video_prompt"]:
+        for prompt_key in [
+            "scene_desc",
+            "keyframe_prompt_start_zh",
+            "keyframe_prompt_start_en",
+            "keyframe_prompt_end_zh",
+            "keyframe_prompt_end_en",
+            "video_prompt_zh",
+            "video_prompt_en",
+        ]:
             if not isinstance(item[prompt_key], str):
                 raise TypeError(f"ModuleBOutput[{index}].{prompt_key} 必须是 str")
             if not str(item[prompt_key]).strip():
                 raise ValueError(f"ModuleBOutput[{index}].{prompt_key} 不能为空字符串")
 
         for optional_prompt_key in [
-            "keyframe_prompt_zh",
-            "keyframe_prompt_en",
-            "video_prompt_zh",
-            "video_prompt_en",
+            "keyframe_negative_prompt_start_zh",
+            "keyframe_negative_prompt_start_en",
+            "keyframe_negative_prompt_end_zh",
+            "keyframe_negative_prompt_end_en",
         ]:
             if optional_prompt_key in item:
                 if not isinstance(item[optional_prompt_key], str):

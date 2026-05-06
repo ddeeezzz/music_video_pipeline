@@ -1,7 +1,6 @@
 {
   "mode": {
-    "script_generator": "llm",
-    "frame_generator": "diffusion"
+    "script_generator": "multi_role_llm_v2"
   },
   "paths": {
     "runs_dir": "/root/data/runs",
@@ -14,7 +13,7 @@
     "audio_codec": "aac",
     "fps": 24,
     "video_preset": "veryfast",
-    "video_crf": 30,
+    "video_crf": 24,
     "render_batch_size": 1,
     "video_accel_mode": "cpu_only"
   },
@@ -41,43 +40,25 @@
       "json_retry_times": 2,
       "temperature": 0.3,
       "top_p": 0.9,
-      "max_tokens": 350,
+      "max_tokens": 0,
       "use_response_format_json_object": true,
-      "scene_desc_max_chars": 200,
-      "keyframe_prompt_max_chars": 400,
-      "video_prompt_max_chars": 500,
-      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
+      "scene_desc_max_chars": 0,
+      "keyframe_prompt_max_chars": 0,
+      "video_prompt_max_chars": 0,
+      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"
+    }
   },
   "module_c": {
-    "render_workers": 1,
+    "render_workers": 3,
     "unit_retry_times": 1
   },
   "module_d": {
     "segment_workers": 1,
     "unit_retry_times": 1,
-    "render_backend": "animatediff",
-    "animatediff": {
-      "binding_name": "xiantiao_style",
-      "model_series": "15",
-      "lora_scale": 0.8,
-      "steps": 18,
-      "guidance_scale": 10.0,
-      "negative_prompt": "lowres, blurry, bad anatomy",
-      "device": "auto",
-      "torch_dtype": "float16",
-      "num_frames": 16,
-      "seed_mode": "shot_index",
-      "motion_adapter_repo_id": "guoyww/animatediff-motion-adapter-v1-5-2",
-      "motion_adapter_revision": "main",
-      "motion_adapter_local_dir": "models/motion_adapter/15/diffusers/guoyww_animatediff_motion_adapter_v1_5_2",
-      "controlnet_local_dir": "models/controlnet/15/controlnet-canny-sd15",
-      "controlnet_conditioning_scale": 0.8,
-      "hf_endpoint": "https://hf-mirror.com",
-      "fallback_to_ffmpeg": false
-    }
+    "render_backend": "comfyui"
   },
   "cross_module": {
-    "global_render_limit": 1,
+    "global_render_limit": 3,
     "scheduler_tick_ms": 50
   },
   "monitoring": {
@@ -111,6 +92,10 @@
     "merge_gap_seconds": 0.25,
     "max_visual_unit_seconds": 6.0,
     "content_role_tiny_merge_bars": 0.9,
+    "long_lyric_resplit_max_bars": 2.0,
+    "long_other_split_min_bars": 1.0,
+    "major_split_step_bars": 2.5,
+    "visual_lead_seconds": 0.06,
     "implementation": "v2"
   }
 }

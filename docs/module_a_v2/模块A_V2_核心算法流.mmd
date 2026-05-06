@@ -33,9 +33,10 @@ flowchart TD
     SS -->|2) 提供dynamic_gap_threshold_seconds<br/>目的: 由分句统计驱动窗口切分| WinRaw
     A0 -->|2) inject_boundary_points_into_windows(仅other窗口注入A0边界)<br/>目的: 后续并段与A0边界可对齐| WinRaw
 
-    WinRaw -->|3) classify_window_roles<br/>目的: 产出lyric/chant/inst/silence四分类| WinClass
-    VR -->|3) 人声RMS判定chant/silence| WinClass
-    AR -->|3) 伴奏RMS判定inst| WinClass
+    WinRaw -->|3) inject_boundary_points_into_windows(仅other窗口注入活动窗边界)<br/>目的: 先切出无歌词人声窗/器乐窗/静音窗| WinClass
+    VR -->|3) build_dual_track_activity_windows<br/>目的: 提取vocal activity intervals| WinClass
+    AR -->|3) build_dual_track_activity_windows<br/>目的: 提取accompaniment activity intervals| WinClass
+    WinClass -->|3) classify_window_roles<br/>目的: 按 lyric > vocal_active > accompaniment_active 产出四分类| WinClass
 
     WinClass -->|4) merge_windows_by_rules<br/>目的: tiny并段 + 短于1小节并段| WinMerged
     BR -->|4) estimate_bar_length_seconds<br/>目的: 给“短于1小节并段”提供时长基准| WinMerged

@@ -1,12 +1,13 @@
 """
 文件用途：提供模块A V2的 Librosa 声学候选提取能力。
-核心流程：提取 beat/onset/RMS，并归一化候选时间轴。
+核心流程：提取 RMS/beat/onset 等特征，并在需要时尽早回调 RMS 结果。
 输入输出：输入音频路径与参数，输出候选时间戳与能量序列。
 依赖说明：依赖 librosa、numpy 与 v2 时间工具。
 维护说明：本文件仅负责信号提取，不承担后续分段决策。
 """
 
 # 标准库：用于类型提示
+from collections.abc import Callable
 from typing import Any
 
 # 项目内模块：时间取整
@@ -31,6 +32,7 @@ def extract_acoustic_candidates_with_librosa(
     with_onset_points: bool = False,
     with_chroma_points: bool = False,
     with_f0_points: bool = False,
+    on_rms_ready: Callable[[list[float], list[float]], None] | None = None,
 ) -> tuple[Any, ...]:
     """
     功能说明：调用 Librosa 提取 beat/onset/RMS 候选池。
@@ -43,6 +45,7 @@ def extract_acoustic_candidates_with_librosa(
     - with_onset_points: 是否追加输出 onset 强度点（time+energy_raw）。
     - with_chroma_points: 是否追加输出 chroma 点（time+12维向量）。
     - with_f0_points: 是否追加输出 f0 点（time+f0_hz+voiced+confidence）。
+    - on_rms_ready: 可选，在 RMS 序列就绪后立即回调，用于上层提早做预检决策。
     返回值：
     - tuple[Any, ...]:
       前4项固定为节拍候选、起音候选、RMS时间轴、RMS值序列；
@@ -61,7 +64,7 @@ def extract_acoustic_candidates_with_librosa(
     logger.debug(
         (
             "模块A V2-Librosa底层提取开始，输入=%s，extract_beat=%s，extract_onset=%s，"
-            "with_onset_points=%s，with_chroma_points=%s，with_f0_points=%s（RMS固定提取）"
+            "with_onset_points=%s，with_chroma_points=%s，with_f0_points=%s，on_rms_ready=%s（RMS固定提取）"
         ),
         audio_path,
         bool(extract_beat),
@@ -69,8 +72,25 @@ def extract_acoustic_candidates_with_librosa(
         bool(with_onset_points),
         bool(with_chroma_points),
         bool(with_f0_points),
+        bool(on_rms_ready),
     )
     y_native, sample_rate_native = librosa.load(str(audio_path), sr=None, mono=True)
+
+    rms_values_np = librosa.feature.rms(y=y_native, hop_length=BASE_HOP_LENGTH)[0]
+    rms_times = librosa.frames_to_time(
+        np.arange(len(rms_values_np)),
+        sr=sample_rate_native,
+        hop_length=BASE_HOP_LENGTH,
+    ).tolist()
+    rms_values = [float(value) for value in rms_values_np.tolist()]
+    if not rms_times:
+        rms_times = [0.0, round_time(duration_seconds)]
+        rms_values = [1.0, 1.0]
+    if on_rms_ready is not None:
+        try:
+            on_rms_ready(list(rms_times), list(rms_values))
+        except Exception as error:  # noqa: BLE001
+            logger.warning("模块A V2-Librosa RMS早期回调失败，输入=%s，错误=%s", audio_path, error)
 
     beat_times: list[float] = []
     if bool(extract_beat):
@@ -183,14 +203,6 @@ def extract_acoustic_candidates_with_librosa(
             logger.warning("模块A V2-Librosa提取F0失败，回退空列表，输入=%s，错误=%s", audio_path, error)
             f0_points = []
 
-    rms_values_np = librosa.feature.rms(y=y_native, hop_length=BASE_HOP_LENGTH)[0]
-    rms_times = librosa.frames_to_time(
-        np.arange(len(rms_values_np)),
-        sr=sample_rate_native,
-        hop_length=BASE_HOP_LENGTH,
-    ).tolist()
-    rms_values = [float(value) for value in rms_values_np.tolist()]
-
     beat_times = _normalize_timestamp_list(beat_times + [0.0, duration_seconds], duration_seconds)
     onset_times = _normalize_timestamp_list(onset_times + [0.0, duration_seconds], duration_seconds)
     if bool(with_onset_points):
@@ -208,10 +220,6 @@ def extract_acoustic_candidates_with_librosa(
             }
             for onset_time in onset_times
         ]
-    if not rms_times:
-        rms_times = [0.0, round_time(duration_seconds)]
-        rms_values = [1.0, 1.0]
-
     output_items: list[Any] = [beat_times, onset_times, rms_times, rms_values]
     if bool(with_onset_points):
         output_items.append(onset_points)

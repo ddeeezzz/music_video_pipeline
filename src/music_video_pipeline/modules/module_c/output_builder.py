@@ -11,6 +11,9 @@ from pathlib import Path
 # 标准库：用于类型提示
 from typing import Any
 
+# 常量：模块C聚合输出的当前契约版本号，用于约束下游模块D读取行为。
+MODULE_C_OUTPUT_CONTRACT_VERSION = 2
+
 
 def build_module_c_output(task_id: str, frames_dir: Path, frame_items: list[dict[str, Any]]) -> dict[str, Any]:
     """
@@ -26,6 +29,7 @@ def build_module_c_output(task_id: str, frames_dir: Path, frame_items: list[dict
     """
     return {
         "task_id": task_id,
+        "contract_version": MODULE_C_OUTPUT_CONTRACT_VERSION,
         "frames_dir": str(frames_dir),
         "frame_items": frame_items,
     }

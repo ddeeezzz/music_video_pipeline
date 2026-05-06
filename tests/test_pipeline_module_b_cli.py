@@ -22,6 +22,27 @@ from music_video_pipeline.io_utils import read_json, write_json
 from music_video_pipeline.pipeline import PipelineRunner
 
 
+def _build_prompt_fields(prompt_en: str) -> dict[str, str]:
+    """
+    功能说明：构造模块B提示词字段（测试辅助）。
+    参数说明：
+    - prompt_en: 起始态英文提示词。
+    返回值：
+    - dict[str, str]: 可合并到 shot 的字段字典。
+    异常说明：无。
+    边界条件：视频提示词为单轨字段（video_prompt_zh/video_prompt_en）。
+    """
+    normalized_prompt = str(prompt_en).strip()
+    return {
+        "keyframe_prompt_start_zh": f"关键帧起始：{normalized_prompt}",
+        "keyframe_prompt_start_en": normalized_prompt,
+        "keyframe_prompt_end_zh": f"关键帧结束：{normalized_prompt}",
+        "keyframe_prompt_end_en": normalized_prompt,
+        "video_prompt_zh": f"视频提示词：{normalized_prompt}",
+        "video_prompt_en": normalized_prompt,
+    }
+
+
 def test_get_module_b_status_summary_should_return_counts_and_problem_units(tmp_path: Path) -> None:
     """
     功能说明：验证模块B状态摘要接口能返回任务与单元状态聚合信息。
@@ -124,7 +145,7 @@ def test_retry_module_b_segment_should_only_rerun_target_unit_and_mark_c_d_pendi
                     "start_time": float(record["start_time"]),
                     "end_time": float(record["end_time"]),
                     "scene_desc": f"scene-{unit_id}",
-                    "keyframe_prompt": f"prompt-{unit_id}", "video_prompt": f"prompt-{unit_id}",
+                    **_build_prompt_fields(prompt_en=f"prompt-{unit_id}"),
                     "camera_motion": "zoom_in",
                     "transition": "crossfade",
                     "constraints": {"must_keep_style": True, "must_align_to_beat": True},
@@ -140,7 +161,22 @@ def test_retry_module_b_segment_should_only_rerun_target_unit_and_mark_c_d_pendi
             )
             shots.append(read_json(shot_path))
         output_path = context.artifacts_dir / "module_b_output.json"
-        write_json(output_path, shots or [{"shot_id": "shot_001", "start_time": 0.0, "end_time": 1.0, "scene_desc": "s", "keyframe_prompt": "p", "video_prompt": "p", "camera_motion": "none", "transition": "crossfade", "constraints": {"must_keep_style": True, "must_align_to_beat": True}}])
+        write_json(
+            output_path,
+            shots
+            or [
+                {
+                    "shot_id": "shot_001",
+                    "start_time": 0.0,
+                    "end_time": 1.0,
+                    "scene_desc": "s",
+                    **_build_prompt_fields(prompt_en="p"),
+                    "camera_motion": "none",
+                    "transition": "crossfade",
+                    "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+                }
+            ],
+        )
         return output_path
 
     def _fake_run_module_c(_context) -> Path:
@@ -253,7 +289,7 @@ def _build_runner(tmp_path: Path, logger_name: str) -> tuple[PipelineRunner, Pat
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock", frame_generator="mock"),
+        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",

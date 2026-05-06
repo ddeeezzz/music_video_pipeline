@@ -6,7 +6,7 @@
 维护说明：本模块不负责调度策略与并发窗口调参。
 """
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 import logging
 from pathlib import Path
 from typing import Any
@@ -18,14 +18,8 @@ from music_video_pipeline.modules.module_b.executor import execute_one_unit_with
 from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
 from music_video_pipeline.modules.module_c.executor import execute_one_unit_with_retry as execute_one_c_unit
 from music_video_pipeline.modules.module_c.unit_models import ModuleCUnit
-from music_video_pipeline.modules.module_d.executor import (
-    execute_one_unit_with_retry as execute_one_d_unit,
-    prewarm_animatediff_runtime,
-)
+from music_video_pipeline.modules.module_d.executor import execute_one_unit_with_retry as execute_one_d_unit
 from music_video_pipeline.modules.module_d.unit_models import ModuleDUnitBlueprint, materialize_module_d_unit
-
-# 常量：D 阶段 runtime 异步预热任务 stage 标识。
-D_RUNTIME_PREWARM_STAGE = "D_PREWARM"
 
 
 def _drain_finished_tasks(
@@ -33,7 +27,6 @@ def _drain_finished_tasks(
     active_tasks: dict[Future, tuple[str, int, str | None]],
     failed_chain_indexes: set[int],
     failed_errors: dict[int, str],
-    d_runtime_warmed_devices: set[str] | None = None,
 ) -> None:
     """
     功能说明：处理已完成 future 的结果，并写入链路失败隔离。
@@ -49,27 +42,6 @@ def _drain_finished_tasks(
     finished_futures = [future for future in active_tasks if future.done()]
     for future in finished_futures:
         stage, unit_index, metadata = active_tasks.pop(future)
-        if stage == D_RUNTIME_PREWARM_STAGE:
-            prewarm_device = str(metadata or "").strip()
-            try:
-                result = future.result()
-                if isinstance(result, str) and result.strip():
-                    prewarm_device = result.strip()
-                if d_runtime_warmed_devices is not None and prewarm_device:
-                    d_runtime_warmed_devices.add(prewarm_device)
-                logging.getLogger("D").info(
-                    "模块D runtime 异步预热完成，task_id=%s，device=%s",
-                    context.task_id,
-                    prewarm_device,
-                )
-            except Exception as error:  # noqa: BLE001
-                logging.getLogger("D").warning(
-                    "模块D runtime 异步预热失败，已忽略并继续调度，task_id=%s，device=%s，错误=%s",
-                    context.task_id,
-                    prewarm_device,
-                    error,
-                )
-            continue
         try:
             future.result()
         except Exception as error:  # noqa: BLE001
@@ -162,6 +134,104 @@ def _run_c_chain_unit(
     )
 
 
+def _resolve_module_c_sidecar_path(artifact_path: str, unit_id: str) -> Path:
+    """
+    功能说明：根据模块C单元 artifact_path 解析对应 sidecar JSON 路径。
+    参数说明：
+    - artifact_path: module_unit_runs 中记录的模块C产物路径。
+    - unit_id: 模块C单元ID（shot_id）。
+    返回值：
+    - Path: sidecar JSON 路径。
+    异常说明：
+    - RuntimeError: 路径非法或无法定位 artifacts 根目录时抛出。
+    边界条件：兼容相对/绝对路径，但必须包含 artifacts 目录层级。
+    """
+    normalized_artifact_path = str(artifact_path).strip()
+    normalized_unit_id = str(unit_id).strip()
+    if not normalized_artifact_path:
+        raise RuntimeError("跨模块调度失败：模块C单元产物路径为空。")
+    if not normalized_unit_id:
+        raise RuntimeError("跨模块调度失败：模块C单元ID为空，无法解析双关键帧 sidecar。")
+    artifact_obj = Path(normalized_artifact_path)
+    path_parts = artifact_obj.parts
+    if "artifacts" not in path_parts:
+        raise RuntimeError(
+            "跨模块调度失败：模块C产物路径不在 artifacts 目录下，"
+            f"artifact_path={normalized_artifact_path}。"
+        )
+    artifacts_index = max(index for index, part_text in enumerate(path_parts) if part_text == "artifacts")
+    artifacts_dir = Path(*path_parts[: artifacts_index + 1])
+    return artifacts_dir / "module_c_units" / f"{normalized_unit_id}.json"
+
+
+def _load_strict_dual_frame_item_for_d(
+    *,
+    blueprint: ModuleDUnitBlueprint,
+    c_row: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    功能说明：从模块C sidecar 读取并校验双关键帧契约，构建模块D输入 frame_item。
+    参数说明：
+    - blueprint: 模块D单元蓝图。
+    - c_row: 状态库中的模块C单元记录。
+    返回值：
+    - dict[str, Any]: 可直接用于 materialize_module_d_unit 的 frame_item。
+    异常说明：
+    - RuntimeError: sidecar 缺失、结构非法或双关键帧字段不完整时抛出。
+    边界条件：不再接受仅 frame_path 的单帧输入。
+    """
+    unit_id = str(c_row.get("unit_id", "")).strip() or str(blueprint.unit_id)
+    artifact_path = str(c_row.get("artifact_path", "")).strip()
+    sidecar_path = _resolve_module_c_sidecar_path(artifact_path=artifact_path, unit_id=unit_id)
+    if not sidecar_path.exists():
+        raise RuntimeError(
+            "跨模块调度失败：缺失模块C双关键帧 sidecar，"
+            f"unit_id={unit_id}，sidecar={sidecar_path}。"
+        )
+    payload = read_json(sidecar_path)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"跨模块调度失败：模块C sidecar 结构非法，sidecar={sidecar_path}")
+
+    frame_path_start = str(payload.get("frame_path_start", "")).strip()
+    frame_path_end = str(payload.get("frame_path_end", "")).strip()
+    if (not frame_path_start) or (not frame_path_end):
+        raise RuntimeError(
+            "跨模块调度失败：模块C sidecar 缺失双关键帧字段，"
+            f"unit_id={unit_id}，sidecar={sidecar_path}。"
+        )
+    control_frame_paths_payload = payload.get("control_frame_paths")
+    if isinstance(control_frame_paths_payload, list):
+        normalized_control_frame_paths = [str(item).strip() for item in control_frame_paths_payload if str(item).strip()]
+    else:
+        normalized_control_frame_paths = []
+    if len(normalized_control_frame_paths) < 2:
+        raise RuntimeError(
+            "跨模块调度失败：模块C sidecar 缺失 control_frame_paths 双锚点，"
+            f"unit_id={unit_id}，sidecar={sidecar_path}。"
+        )
+    if (
+        str(normalized_control_frame_paths[0]) != frame_path_start
+        or str(normalized_control_frame_paths[-1]) != frame_path_end
+    ):
+        raise RuntimeError(
+            "跨模块调度失败：模块C sidecar 双关键帧字段不一致，"
+            f"unit_id={unit_id}，frame_path_start={frame_path_start}，"
+            f"frame_path_end={frame_path_end}，control_frame_paths={normalized_control_frame_paths}。"
+        )
+
+    return {
+        **payload,
+        "shot_id": str(blueprint.unit_id),
+        "frame_path": str(payload.get("frame_path", "")).strip() or frame_path_start,
+        "frame_path_start": frame_path_start,
+        "frame_path_end": frame_path_end,
+        "control_frame_paths": [str(normalized_control_frame_paths[0]), str(normalized_control_frame_paths[-1])],
+        "start_time": float(payload.get("start_time", c_row.get("start_time", blueprint.start_time))),
+        "end_time": float(payload.get("end_time", c_row.get("end_time", blueprint.end_time))),
+        "duration": float(payload.get("duration", c_row.get("duration", blueprint.duration))),
+    }
+
+
 def _run_d_chain_unit(
     context: RuntimeContext,
     blueprint: ModuleDUnitBlueprint,
@@ -172,16 +242,7 @@ def _run_d_chain_unit(
     """
     功能说明：执行单条链路的模块 D 单元。
     """
-    frame_path = str(c_row.get("artifact_path", "")).strip()
-    if not frame_path:
-        raise RuntimeError(f"跨模块调度失败：模块C单元产物缺失，unit_index={blueprint.unit_index}")
-    frame_item = {
-        "shot_id": blueprint.unit_id,
-        "frame_path": frame_path,
-        "start_time": float(c_row.get("start_time", blueprint.start_time)),
-        "end_time": float(c_row.get("end_time", blueprint.end_time)),
-        "duration": float(c_row.get("duration", blueprint.duration)),
-    }
+    frame_item = _load_strict_dual_frame_item_for_d(blueprint=blueprint, c_row=c_row)
     unit = materialize_module_d_unit(blueprint=blueprint, frame_item=frame_item)
     segment_path = execute_one_d_unit(
         context=context,
@@ -190,64 +251,6 @@ def _run_d_chain_unit(
         device_override=device_override,
     )
     return str(segment_path)
-
-
-def _run_d_runtime_prewarm(context: RuntimeContext, device_override: str) -> str:
-    """
-    功能说明：异步预热指定设备的 AnimateDiff runtime。
-    参数说明：
-    - context: 运行上下文对象。
-    - device_override: 目标设备字符串（如 cuda:0/cuda:1）。
-    返回值：
-    - str: 预热设备标识。
-    异常说明：预热失败时抛 RuntimeError（由调度层记录 warning 后忽略）。
-    边界条件：仅执行模型加载缓存，不触发推理。
-    """
-    prewarm_animatediff_runtime(context=context, device_override=device_override)
-    return str(device_override)
-
-
-def _submit_d_runtime_prewarm_tasks(
-    context: RuntimeContext,
-    executor: ThreadPoolExecutor,
-    active_tasks: dict[Future, tuple[str, int, str | None]],
-    d_context: RuntimeContext,
-    d_device_pool: list[str],
-    warmed_devices: set[str],
-    prewarm_requested_devices: set[str],
-) -> None:
-    """
-    功能说明：向线程池提交 D 阶段 runtime 预热任务（设备去重、异步不阻塞）。
-    参数说明：
-    - context: 主运行上下文（用于日志）。
-    - executor: 调度线程池。
-    - active_tasks: 活跃任务映射（会被原位追加）。
-    - d_context: 模块 D 运行上下文（用于预热日志归属）。
-    - d_device_pool: D 阶段目标设备池。
-    - warmed_devices: 已确认热启动设备集合。
-    - prewarm_requested_devices: 已提交过预热请求的设备集合。
-    返回值：无。
-    异常说明：无（失败由 _drain_finished_tasks 内统一记录 warning）。
-    边界条件：同设备最多提交一次预热任务，BC 阶段已热设备直接跳过。
-    """
-    for device in d_device_pool:
-        normalized_device = str(device).strip()
-        if not normalized_device:
-            continue
-        if normalized_device in warmed_devices:
-            continue
-        if normalized_device in prewarm_requested_devices:
-            continue
-        future = executor.submit(_run_d_runtime_prewarm, d_context, normalized_device)
-        active_tasks[future] = (D_RUNTIME_PREWARM_STAGE, -1, normalized_device)
-        prewarm_requested_devices.add(normalized_device)
-        context.logger.info(
-            "模块D runtime 异步预热已提交，task_id=%s，device=%s",
-            context.task_id,
-            normalized_device,
-        )
-
-
 def _split_failed_stage_and_message(error_text: str) -> tuple[str, str]:
     """
     功能说明：解析失败文本中的阶段前缀与错误正文。

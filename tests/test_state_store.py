@@ -8,6 +8,8 @@
 
 # 标准库：用于路径处理
 from pathlib import Path
+# 标准库：用于JSON写入
+import json
 
 # 第三方库：用于测试断言
 import pytest
@@ -93,6 +95,70 @@ def test_state_store_should_list_task_module_status_map(tmp_path: Path) -> None:
     assert summary["task_map_001"]["C"] == "pending"
     assert summary["task_map_001"]["D"] == "pending"
     assert summary["task_map_002"] == {"A": "pending", "B": "pending", "C": "pending", "D": "pending"}
+
+
+def test_state_store_should_rename_task_and_rewrite_task_dir_paths(tmp_path: Path) -> None:
+    """
+    功能说明：验证任务改名会同步更新关联表中的 task_id，并重写任务目录前缀路径。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅替换命中旧任务目录前缀的路径字段。
+    """
+    store = StateStore(db_path=tmp_path / "pipeline_state.sqlite3")
+    old_task_id = "task_old_001"
+    new_task_id = "task_new_001"
+    old_task_dir = tmp_path / old_task_id
+    old_task_dir.mkdir(parents=True, exist_ok=True)
+    output_video_path = old_task_dir / "final_output.mp4"
+    module_artifact_path = old_task_dir / "artifacts" / "module_a_output.json"
+    unit_artifact_path = old_task_dir / "artifacts" / "module_c_units" / "shot_001.json"
+    output_video_path.parent.mkdir(parents=True, exist_ok=True)
+    module_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+
+    store.init_task(task_id=old_task_id, audio_path="/data/audio.mp3", config_path=str(old_task_dir / "config.json"))
+    store.update_task_status(task_id=old_task_id, status="done", output_video_path=str(output_video_path))
+    store.set_module_status(
+        task_id=old_task_id,
+        module_name="A",
+        status="done",
+        artifact_path=str(module_artifact_path),
+    )
+    store.sync_module_units(
+        task_id=old_task_id,
+        module_name="C",
+        units=[{"unit_id": "shot_001", "unit_index": 0, "start_time": 0.0, "end_time": 1.0, "duration": 1.0}],
+    )
+    store.set_module_unit_status(
+        task_id=old_task_id,
+        module_name="C",
+        unit_id="shot_001",
+        status="done",
+        artifact_path=str(unit_artifact_path),
+    )
+
+    store.rename_task(old_task_id=old_task_id, new_task_id=new_task_id)
+
+    assert store.task_exists(task_id=old_task_id) is False
+    assert store.task_exists(task_id=new_task_id) is True
+
+    task_record = store.get_task(task_id=new_task_id)
+    assert task_record is not None
+    assert task_record["config_path"] == str(tmp_path / new_task_id / "config.json")
+    assert task_record["output_video_path"] == str(tmp_path / new_task_id / "final_output.mp4")
+
+    module_record = store.get_module_record(task_id=new_task_id, module_name="A")
+    assert module_record is not None
+    assert module_record["artifact_path"] == str(tmp_path / new_task_id / "artifacts" / "module_a_output.json")
+
+    unit_record = store.get_module_unit_record(task_id=new_task_id, module_name="C", unit_id="shot_001")
+    assert unit_record is not None
+    assert unit_record["artifact_path"] == str(tmp_path / new_task_id / "artifacts" / "module_c_units" / "shot_001.json")
+
+    with pytest.raises(RuntimeError):
+        store.rename_task(old_task_id="missing_task", new_task_id="another_task")
 
 
 def test_state_store_should_block_downstream_when_upstream_not_done(tmp_path: Path) -> None:
@@ -227,6 +293,31 @@ def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None
             {"unit_id": "shot_002", "unit_index": 1, "start_time": 1.0, "end_time": 2.0, "duration": 1.0},
         ],
     )
+    artifacts_dir = tmp_path / "runs" / "task_units_001" / "artifacts"
+    frames_dir = artifacts_dir / "frames"
+    payload_dir = artifacts_dir / "module_c_units"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    frame_start_path = frames_dir / "frame_001.png"
+    frame_end_path = frames_dir / "frame_001_end.png"
+    frame_start_path.write_bytes(b"start")
+    frame_end_path.write_bytes(b"end")
+    (payload_dir / "shot_001.json").write_text(
+        json.dumps(
+            {
+                "shot_id": "shot_001",
+                "frame_path": str(frame_start_path),
+                "frame_path_start": str(frame_start_path),
+                "frame_path_end": str(frame_end_path),
+                "control_frame_paths": [str(frame_start_path), str(frame_end_path)],
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "duration": 1.0,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     pending_units = store.list_module_units_by_status(
         task_id="task_units_001",
         module_name="C",
@@ -239,7 +330,7 @@ def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None
         module_name="C",
         unit_id="shot_001",
         status="done",
-        artifact_path="/tmp/frame_001.png",
+        artifact_path=str(frame_start_path),
         error_message="",
     )
     store.set_module_unit_status(
@@ -254,7 +345,10 @@ def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None
     done_frame_items = store.list_module_c_done_frame_items(task_id="task_units_001")
     assert len(done_frame_items) == 1
     assert done_frame_items[0]["shot_id"] == "shot_001"
-    assert done_frame_items[0]["frame_path"] == "/tmp/frame_001.png"
+    assert done_frame_items[0]["frame_path"] == str(frame_start_path)
+    assert done_frame_items[0]["frame_path_start"] == str(frame_start_path)
+    assert done_frame_items[0]["frame_path_end"] == str(frame_end_path)
+    assert done_frame_items[0]["control_frame_paths"] == [str(frame_start_path), str(frame_end_path)]
 
     failed_units = store.list_module_units_by_status(
         task_id="task_units_001",
@@ -300,6 +394,74 @@ def test_state_store_should_clear_module_c_units_when_reset_from_upstream(tmp_pa
         statuses=["pending", "running", "done", "failed"],
     )
     assert units_after_reset_c == []
+
+
+def test_state_store_should_restore_module_c_dual_frame_fields_from_sidecar(tmp_path: Path) -> None:
+    """
+    功能说明：验证模块C done 单元可从 sidecar 读取双关键帧字段并透传。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：DB artifact_path 仍保持起始帧路径，不依赖 schema 变更。
+    """
+    store = StateStore(db_path=tmp_path / "state.sqlite3")
+    store.init_task(task_id="task_units_sidecar_001", audio_path="a.mp3", config_path="c.json")
+    store.sync_module_units(
+        task_id="task_units_sidecar_001",
+        module_name="C",
+        units=[{"unit_id": "shot_001", "unit_index": 0, "start_time": 0.0, "end_time": 1.0, "duration": 1.0}],
+    )
+
+    artifacts_dir = tmp_path / "runs" / "task_units_sidecar_001" / "artifacts"
+    frames_dir = artifacts_dir / "frames"
+    payload_dir = artifacts_dir / "module_c_units"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    payload_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_start_path = frames_dir / "frame_001.png"
+    frame_end_path = frames_dir / "frame_001_end.png"
+    frame_start_path.write_bytes(b"start")
+    frame_end_path.write_bytes(b"end")
+    payload_path = payload_dir / "shot_001.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "shot_id": "shot_001",
+                "frame_path": str(frame_start_path),
+                "frame_path_start": str(frame_start_path),
+                "frame_path_end": str(frame_end_path),
+                "control_frame_paths": [str(frame_start_path), str(frame_end_path)],
+                "start_time": 0.0,
+                "end_time": 1.0,
+                "duration": 1.0,
+                "keyframe_prompt_en": "prompt-a",
+                "keyframe_prompt_start_en": "prompt-start",
+                "keyframe_prompt_end_en": "prompt-end",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store.set_module_unit_status(
+        task_id="task_units_sidecar_001",
+        module_name="C",
+        unit_id="shot_001",
+        status="done",
+        artifact_path=str(frame_start_path),
+        error_message="",
+    )
+
+    done_frame_items = store.list_module_c_done_frame_items(task_id="task_units_sidecar_001")
+    assert len(done_frame_items) == 1
+    assert done_frame_items[0]["shot_id"] == "shot_001"
+    assert done_frame_items[0]["frame_path"] == str(frame_start_path)
+    assert done_frame_items[0]["frame_path_start"] == str(frame_start_path)
+    assert done_frame_items[0]["frame_path_end"] == str(frame_end_path)
+    assert done_frame_items[0]["control_frame_paths"] == [str(frame_start_path), str(frame_end_path)]
+    assert done_frame_items[0]["keyframe_prompt_start_en"] == "prompt-start"
+    assert done_frame_items[0]["keyframe_prompt_end_en"] == "prompt-end"
 
 
 def test_state_store_should_build_module_unit_status_summary(tmp_path: Path) -> None:

@@ -119,21 +119,43 @@ def sync_base_model_item(
     model_format = str(option.get("format", "")).strip()
     model_name = str(option.get("name", "")).strip()
     remote_dir = str(option.get("remote_dir", "")).strip()
+    remote_file = str(option.get("remote_file", "")).strip()
+    remote_kind = str(option.get("remote_kind", "directory")).strip() or "directory"
 
-    if (not model_series) or (not model_format) or (not model_name) or (not remote_dir):
+    if (not model_series) or (not model_format) or (not model_name):
         raise RuntimeError(f"BaseModel 菜单项字段不完整：{option}")
     if model_format not in VALID_BASE_MODEL_FORMATS:
         raise RuntimeError(f"BaseModel 格式非法：{model_format}，仅支持 single/diffusers")
+    if remote_kind not in {"directory", "file"}:
+        raise RuntimeError(f"BaseModel 远端类型非法：{remote_kind}")
+    if remote_kind == "directory" and (not remote_dir):
+        raise RuntimeError(f"BaseModel 目录型菜单项缺少 remote_dir：{option}")
+    if remote_kind == "file" and (not remote_file):
+        raise RuntimeError(f"BaseModel 文件型菜单项缺少 remote_file：{option}")
 
-    local_dir = (project_root / "models" / "base_model" / model_series / model_format / model_name).resolve()
-    if local_dir.exists():
-        logger.warning("BaseModel 目标目录已存在，执行覆盖删除：%s", local_dir)
-        shutil.rmtree(local_dir)
+    local_root = (project_root / "models" / "base_model" / model_series / model_format).resolve()
+    local_target = (local_root / model_name).resolve()
+    if local_target.exists():
+        logger.warning("BaseModel 目标路径已存在，执行覆盖删除：%s", local_target)
+        if local_target.is_dir():
+            shutil.rmtree(local_target)
+        else:
+            local_target.unlink()
 
-    client.downdir(remote_dir=remote_dir, local_dir=local_dir)
-
-    if not has_any_file(local_dir):
-        raise RuntimeError(f"下载完成但目录内无文件，已拒绝写入注册表：{local_dir}")
+    if remote_kind == "file":
+        client.downfile(remote_file=remote_file, local_path=local_target)
+        if (not local_target.exists()) or (not local_target.is_file()) or local_target.stat().st_size <= 0:
+            raise RuntimeError(f"下载完成但本地文件无效，已拒绝写入注册表：{local_target}")
+        record_path = local_target
+        record_type = "file"
+        remote_path = remote_file
+    else:
+        client.downdir(remote_dir=remote_dir, local_dir=local_target)
+        if not has_any_file(local_target):
+            raise RuntimeError(f"下载完成但目录内无文件，已拒绝写入注册表：{local_target}")
+        record_path = local_target
+        record_type = "directory"
+        remote_path = remote_dir
 
     key_text = build_base_model_key(model_series=model_series, model_format=model_format, model_name=model_name)
     registry_data = load_or_init_base_registry(path=base_registry_path, project_root=project_root)
@@ -141,10 +163,10 @@ def sync_base_model_item(
         "key": key_text,
         "series": model_series,
         "format": model_format,
-        "path": to_project_relative_path(path=local_dir, project_root=project_root),
-        "type": "directory",
+        "path": to_project_relative_path(path=record_path, project_root=project_root),
+        "type": record_type,
         "enabled": True,
-        "description": f"Bypy 同步基础模型目录：{model_format}/{model_name}",
+        "description": f"Bypy 同步基础模型{record_type}：{model_format}/{model_name}",
     }
 
     action = upsert_base_model(registry_data=registry_data, new_record=record)
@@ -156,8 +178,8 @@ def sync_base_model_item(
         "model_series": model_series,
         "model_format": model_format,
         "name": model_name,
-        "remote_dir": remote_dir,
-        "local_dir": str(local_dir),
+        "remote_dir": remote_path,
+        "local_dir": str(record_path),
         "key": key_text,
         "action": action,
     }
