@@ -81,11 +81,22 @@
 - 推荐 Linux / WSL2；当前依赖和现成配置档主要围绕 Linux x86_64 环境组织
 - 真实 AnimateDiff 链路建议显存 24G
 
-安装依赖：
+### 依赖安装
 
+**Linux / WSL 环境（全链路执行，推荐）**：
 ```bash
-uv sync                # 安装核心依赖
+uv sync                # 生成跨平台锁文件并安装核心依赖
 uv sync --extra test   # 含测试依赖
+```
+
+**Windows 环境（仅执行模块 B/C/D 或局部开发）**：
+`uv sync` 默认会跨平台统一解析依赖。在 Windows 下，它依然会去拉取 `FunASR` 等 Linux 专属依赖的元数据以生成完整的 `uv.lock`。若遇到网络超时，您可以彻底绕过跨平台锁定机制，仅针对当前系统极速安装：
+
+```powershell
+uv venv
+.venv\Scripts\activate
+# 跳过跨平台解析，直接安装当前环境所需依赖（可添加国内镜像源加速）
+uv pip install -e . --index-url https://mirrors.aliyun.com/pypi/simple/
 ```
 
 ### natten 安装说明
@@ -117,7 +128,6 @@ uv sync --extra test   # 含测试依赖
 | 命令 | 说明 |
 |------|------|
 | `mvpl` / `music-video-pipeline` | 主流水线 |
-| `model_assets` | bypy 模型下载管理 |
 | `eval` | CLIP Score 评估 |
 
 ### 全链路执行
@@ -195,6 +205,36 @@ uv run --no-sync mvpl bcd-retry-segment --task-id demo_20s --segment-id <segment
 
 状态数据库默认位于 `<runs_dir>/pipeline_state.sqlite3`，其中会同时记录任务级、模块级、单元级状态。
 
+## 模型资产与路径说明
+
+模块 C（图像生成）和模块 D（视频生成）重度依赖于本地存储的图像/视频生成模型。项目默认会在根目录下的 `models/` 文件夹中寻找这些模型文件。
+建议的目录结构及配置文件映射如下：
+
+```text
+models/
+├── audio/                    # 音频分析模型缓存目录（通过劫持环境变量实现自闭环）
+│   ├── hf_cache/             # HuggingFace 缓存目录
+│   ├── modelscope/           # ModelScope 缓存目录（如 FunASR, VAD 模型）
+│   └── torch/                # Torch Hub 缓存目录（如 Demucs 的 htdemucs 模型）
+├── base_model/               # 基础大模型，按架构版本分类
+│   ├── 15/                   # SD 1.5 模型
+│   │   ├── diffusers/        # Diffusers 格式目录 (如 revAnimated_v122)
+│   │   └── single/           # 单文件格式 (如 anything-v5.safetensors)
+│   ├── xl/                   # SDXL 模型 (如 stable-diffusion-xl-base-1.0)
+│   └── fl/                   # Flux 模型
+├── lora/                     # 风格或角色的 LoRA 模型
+│   ├── 15/                   # 对应 SD 1.5 的 LoRA (如 xiantiao_style)
+│   └── fl/                   # 对应 Flux 的 LoRA
+└── tooncrafter/              # 视频动态化所需的检查点
+    └── checkpoints/          # ComfyUI/ToonCrafter 后端调用的模型存放处
+```
+
+> **相关配置说明**：
+> - 模型与架构的注册表详见 `configs/base_model_registry.json`
+> - 风格与角色的 LoRA 绑定信息详见 `configs/lora_bindings.json`
+> - 模块 A 所需的音频模型（如 FunASR、VAD、Demucs 等）由于在代码中强行设置了离线模式（`OFFLINE="1"`），框架将拒绝进行网络下载。因此模型资产的本地化存放是**强制要求**。
+> - **必须执行的模型迁移**：如果您之前在全局环境中已经下载过这些模型，**必须手动将系统默认缓存的内容剪切/复制至本项目的 `models/audio/` 目录下**（否则运行时会因离线模式找不到模型而崩溃报错）。请执行迁移：将 `~/.cache/modelscope/hub/` 移动至 `models/audio/modelscope/hub/`；将 `~/.cache/torch/hub/` 移动至 `models/audio/torch/hub/`。如果此前未下载过，请先临时关闭 `__init__.py` 中的 `OFFLINE` 变量完成首次自动下载。
+
 ## 关键配置
 
 重点关注这些字段：
@@ -222,7 +262,7 @@ uv run --no-sync pytest
 uv run --no-sync eval
 ```
 
-模型资源管理入口：
+模型资源管理入口（个人网盘）：
 
 ```bash
 uv run --no-sync model_assets

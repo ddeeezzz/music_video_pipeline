@@ -35,8 +35,8 @@ MAD_EPSILON = 1e-6
 DEFAULT_NO_SPEECH_PROB = 0.35
 # 常量：FunASR置信度默认值
 DEFAULT_CONFIDENCE = 0.65
-# 常量：项目内 FunASR 模型根目录
-MODELSCOPE_MODELS_DIR = Path(__file__).resolve().parents[4] / "models" / "funasr"
+# 常量：项目内 ModelScope 模型缓存目录
+MODELSCOPE_MODELS_DIR = Path(__file__).resolve().parents[4] / "models" / "audio" / "modelscope" / "hub" / "models"
 # 常量：FunASR使用的VAD模型别名到仓库ID映射
 FUNASR_VAD_MODEL_ALIAS_MAP = {
     "fsmn-vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",

@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "music-video-pipeline"
 version = "0.1.0"
 description = "基于音频结构驱动的多模态音画同步流水线"
-readme = "docs/README.md"
+readme = "README.md"
 requires-python = ">=3.11, <3.12"
 dependencies = [
   "Pillow>=10.0.0",
@@ -84,6 +84,8 @@ explicit = true
 torch = { index = "pytorch-cu121" }
 torchvision = { index = "pytorch-cu121" }
 torchaudio = { index = "pytorch-cu121" }
+# 注意：若有同步的本地 whl，仍需在 sources 指定。
+# 虽然 Windows 下不安装，但在 lock 或 resolve 阶段如果遇到相对路径，需要文件至少占位存在
 natten = { path = ".cache/wheels/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl" }
 madmom = { git = "https://github.com/CPJKU//madmom.git", rev = "27f032e" }
 funasr = { git = "https://github.com/modelscope/FunASR.git", rev = "b842ff8107e1da950947ada0d11ae3c008baeb54" }
