@@ -52,7 +52,7 @@ def test_render_single_segment_worker_should_commit_atomically_on_success(tmp_pa
     - monkeypatch: pytest 提供的补丁工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：通过 mock ffmpeg 写出临时文件。
+    边界条件：通过 stub ffmpeg 写出临时文件。
     """
     frame_path = tmp_path / "frame_success.png"
     frame_path.write_bytes(b"fake-image")
@@ -104,7 +104,7 @@ def test_render_single_segment_worker_should_cleanup_temp_file_on_failure(tmp_pa
         output_path = Path(command[-1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"fake-video")
-        raise RuntimeError("mock ffmpeg failed")
+        raise RuntimeError("ffmpeg failure")
 
     monkeypatch.setattr(module_d_executor, "_run_ffmpeg_command", _fake_run_ffmpeg_command)
 
@@ -158,7 +158,7 @@ def test_concat_segment_videos_should_fallback_to_reencode_when_copy_failed(tmp_
         commands.append(command)
         if "（copy）" in command_name:
             call_count["copy"] += 1
-            raise RuntimeError("mock copy failed")
+            raise RuntimeError("copy failure")
         output_video_path.write_bytes(b"fake-video")
 
     monkeypatch.setattr(module_d_finalizer, "_run_ffmpeg_command", _fake_run_ffmpeg_command)

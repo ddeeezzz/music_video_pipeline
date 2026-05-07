@@ -77,7 +77,7 @@ def test_gpu_probe_run_should_return_structured_error_when_exec_failed(monkeypat
     module = _load_gpu_probe_module()
 
     def _raise_exec_error(*args, **kwargs):
-        raise RuntimeError("mock exec failed")
+        raise RuntimeError("exec failure")
 
     monkeypatch.setattr(module.subprocess, "run", _raise_exec_error)
     payload = module._run_probe(timeout_seconds=2.0)

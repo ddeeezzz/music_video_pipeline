@@ -538,22 +538,6 @@ def _normalize_limit_range(limit_min: int, limit_max: int, fallback_min: int, fa
         normalized_min = normalized_max
     return normalized_min, normalized_max
 
-
-def _normalize_b_worker_limit(script_workers: int) -> int:
-    """
-    功能说明：归一化模块 B 并发上限。
-    """
-    try:
-        normalized = int(script_workers)
-    except (TypeError, ValueError):
-        return 3
-    if normalized < 1:
-        return 3
-    if normalized > 8:
-        return 8
-    return normalized
-
-
 def _normalize_global_render_limit(global_render_limit: int) -> int:
     """
     功能说明：归一化跨模块 C/D 共享并发上限。

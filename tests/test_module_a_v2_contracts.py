@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 # 项目内模块：配置对象
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 # 项目内模块：运行上下文
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：JSON读取
@@ -42,7 +42,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
     audio_path = tmp_path / "demo.wav"
     audio_path.write_bytes(b"fake-audio")
     app_config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.wav"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -54,7 +53,6 @@ def _build_context(tmp_path: Path) -> RuntimeContext:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
         module_a=ModuleAConfig(funasr_language="auto", implementation="v2"),
     )
     artifacts_dir = tmp_path / "runs" / "task_contract_v2" / "artifacts"

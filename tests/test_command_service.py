@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from music_video_pipeline.command_service import CommandRequest, MvplCommandService
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 
 
 class _FakeRunner:
@@ -141,7 +141,6 @@ def test_command_service_should_call_monitor_handler(tmp_path: Path) -> None:
 
 def _build_test_config(runs_dir: str, default_audio: str) -> AppConfig:
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=runs_dir, default_audio_path=default_audio),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -153,6 +152,5 @@ def _build_test_config(runs_dir: str, default_audio: str) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_a=ModuleAConfig(funasr_language="auto"),
     )

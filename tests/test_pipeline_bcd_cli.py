@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 # 项目内模块：流水线调度器
 from music_video_pipeline.pipeline import PipelineRunner
 
@@ -51,7 +51,7 @@ def test_get_bcd_status_summary_should_return_chain_aggregation(tmp_path: Path, 
     runner.state_store.set_module_unit_status(task_id=task_id, module_name="B", unit_id="seg_0002", status="done", artifact_path="/tmp/b2.json")
     runner.state_store.set_module_unit_status(task_id=task_id, module_name="C", unit_id="shot_002", status="running")
 
-    runner.state_store.set_module_unit_status(task_id=task_id, module_name="B", unit_id="seg_0003", status="failed", error_message="mock failed")
+    runner.state_store.set_module_unit_status(task_id=task_id, module_name="B", unit_id="seg_0003", status="failed", error_message="simulated failure")
     monkeypatch.setattr(
         "music_video_pipeline.pipeline.collect_adaptive_window_status_snapshot",
         lambda context: {"enabled": True, "c_dynamic_limit": 4, "d_dynamic_limit": 1},
@@ -175,7 +175,6 @@ def _build_runner(tmp_path: Path, logger_name: str) -> tuple[PipelineRunner, Pat
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -187,7 +186,6 @@ def _build_runner(tmp_path: Path, logger_name: str) -> tuple[PipelineRunner, Pat
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_a=ModuleAConfig(funasr_language="auto"),
     )
     logger = logging.getLogger(logger_name)

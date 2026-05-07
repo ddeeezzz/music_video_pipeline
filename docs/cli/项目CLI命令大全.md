@@ -40,7 +40,7 @@ echo "<your_siliconflow_api_key>" > .secrets/siliconflow_api_key.txt
 再执行：
 
 ```bash
-uv run --no-sync mvpl run --task-id demo_20s --config configs/module_b_llm_siliconflow.json
+uv run --no-sync mvpl run --task-id demo_20s --config configs/music_wsl/default.json
 ```
 
 ## 1. 统一执行入口
@@ -355,8 +355,7 @@ uv run python scripts/_module_a_v2_visualize.py \
 
 ```json
 "module_b": {
-  "script_workers": 3,
-  "unit_retry_times": 1
+  "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md"
 },
 "module_c": {
   "render_workers": 3,
@@ -375,8 +374,7 @@ uv run python scripts/_module_a_v2_visualize.py \
 }
 ```
 
-- `script_workers`：模块 B 单元并行数。
-- `module_b.unit_retry_times`：模块 B 单元失败重试次数。
+- `module_b.storyboard_template_file`：模块 B v2 多角色链路使用的分镜模板文件。
 - `render_workers`：模块 C 单元并行数。
 - `module_c.unit_retry_times`：模块 C 单元失败重试次数。
 - `segment_workers`：模块 D 单元并行渲染数。

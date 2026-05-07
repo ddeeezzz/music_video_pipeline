@@ -1,7 +1,4 @@
 {
-  "mode": {
-    "script_generator": "multi_role_llm_v2"
-  },
   "paths": {
     "runs_dir": "/mnt/c/Users/QWERT/Desktop/runs",
     "default_audio_path": "resources/Tale of The Shadow.m4a"
@@ -19,16 +16,11 @@
   "logging": {
     "level": "INFO"
   },
-  "mock": {
-    "beat_interval_seconds": 0.5
-  },
   "render": {
     "video_width": 848,
     "video_height": 480
   },
   "module_b": {
-    "script_workers": 3,
-    "unit_retry_times": 1,
     "llm": {
       "provider": "siliconflow",
       "base_url": "https://api.siliconflow.cn/v1",
@@ -43,8 +35,8 @@
       "use_response_format_json_object": true,
       "scene_desc_max_chars": 200,
       "keyframe_prompt_max_chars": 400,
-      "video_prompt_max_chars": 500,
-      "prompt_template_file": "configs/prompts/module_b_prompt.v1.md"}
+      "video_prompt_max_chars": 500
+    }
   },
   "module_c": {
     "render_workers": 3,

@@ -292,6 +292,10 @@ def _run_command_flow(
             request=request,
             workspace_root=workspace_root,
         )
+        request = _attach_user_custom_prompt_override_if_needed(
+            request=request,
+            workspace_root=workspace_root,
+        )
 
         _render_preview(action=action, request=request)
         confirmed = _prompt_yes_no("是否执行该命令", default_no=True)
@@ -486,15 +490,15 @@ def _request_uses_module_b_v2(*, request: CommandRequest) -> bool:
     参数说明：
     - request: 命令请求对象。
     返回值：
-    - bool: True 表示 script_generator 为 multi_role_llm_v2。
+    - bool: True 表示配置可用且模块B走唯一的 v2 链路。
     异常说明：无。
     边界条件：配置读取失败时回退为 False。
     """
     try:
-        config = load_config(config_path=request.config_path)
+        load_config(config_path=request.config_path)
     except Exception:  # noqa: BLE001
         return False
-    return str(config.mode.script_generator).strip().lower() == "multi_role_llm_v2"
+    return True
 
 
 def _request_retries_module_b_after_role1(*, request: CommandRequest) -> bool:
@@ -1446,6 +1450,161 @@ def _prompt_task_choice(
     if choice is _BACK:
         return None
     return task_rows[int(choice) - 1]
+
+
+def _discover_user_prompt_template_options(*, workspace_root: Path) -> list[dict[str, str]]:
+    """
+    功能说明：扫描可供模块B附加提示词参考的历史模板版本。
+    参数说明：
+    - workspace_root: 项目根目录。
+    返回值：
+    - list[dict[str, str]]: 含 version/content 的模板摘要列表。
+    异常说明：无。
+    边界条件：仅收集包含 user_prompt_template section 的 Markdown 文件。
+    """
+    prompt_dir = workspace_root / "configs" / "prompts"
+    if not prompt_dir.exists():
+        return []
+    options: list[dict[str, str]] = []
+    for prompt_path in sorted(prompt_dir.glob("module_b_prompt.v*.md")):
+        try:
+            markdown_text = prompt_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        content = _extract_markdown_section_text(markdown_text=markdown_text, heading="user_prompt_template")
+        if not content:
+            continue
+        options.append(
+            {
+                "version": prompt_path.stem,
+                "content": content,
+            }
+        )
+    return options
+
+
+def _extract_markdown_section_text(*, markdown_text: str, heading: str) -> str:
+    """
+    功能说明：从简单 Markdown 文本中提取指定二级标题下的正文。
+    参数说明：
+    - markdown_text: 原始 Markdown 文本。
+    - heading: 目标标题名（不含 `##`）。
+    返回值：
+    - str: 清洗后的 section 内容；未命中时返回空字符串。
+    异常说明：无。
+    边界条件：遇到下一个 `## ` 标题时停止提取。
+    """
+    heading_line = f"## {str(heading).strip()}".lower()
+    collecting = False
+    content_lines: list[str] = []
+    for line in markdown_text.splitlines():
+        stripped = str(line).strip()
+        if stripped.lower() == heading_line:
+            collecting = True
+            content_lines = []
+            continue
+        if collecting and stripped.startswith("## "):
+            break
+        if collecting:
+            content_lines.append(line.rstrip())
+    return "\n".join(content_lines).strip()
+
+
+def _prompt_user_custom_prompt_override(*, workspace_root: Path) -> str:
+    """
+    功能说明：采集模块B用户附加提示词。
+    参数说明：
+    - workspace_root: 项目根目录。
+    返回值：
+    - str: 用户输入文本；空字符串表示跳过。
+    异常说明：无。
+    边界条件：若存在历史模板版本，则先展示供参考。
+    """
+    options = _discover_user_prompt_template_options(workspace_root=workspace_root)
+    if options:
+        print("\n可参考的历史提示词版本：")
+        for index, item in enumerate(options, start=1):
+            version = str(item.get("version", "")).strip()
+            content = str(item.get("content", "")).strip().replace("\n", " ")
+            print(f"  [{index}] {version}: {content}")
+    answer = _prompt_optional_text("模块B附加提示词（回车跳过）", default_value="")
+    if answer is _BACK:
+        return ""
+    return str(answer)
+
+
+def _attach_user_custom_prompt_override_if_needed(
+    *,
+    request: CommandRequest,
+    workspace_root: Path,
+) -> CommandRequest:
+    """
+    功能说明：仅在命令会经过模块B且仍需执行模块B时补采附加提示词。
+    参数说明：
+    - request: 原始命令请求。
+    - workspace_root: 项目根目录。
+    返回值：
+    - CommandRequest: 可能带有 user_custom_prompt_override 的新请求。
+    异常说明：无。
+    边界条件：模块B已完成的 resume 场景会跳过提示词采集。
+    """
+    command = str(request.command).strip()
+    if command == "run":
+        if request.force_module is not None:
+            return request
+        if request.user_custom_prompt_override is not None:
+            return request
+        return replace(
+            request,
+            user_custom_prompt_override=_prompt_user_custom_prompt_override(workspace_root=workspace_root),
+        )
+    if command == "run-module":
+        if str(request.module or "").strip().upper() != "B":
+            return request
+        return replace(
+            request,
+            user_custom_prompt_override=_prompt_user_custom_prompt_override(workspace_root=workspace_root),
+        )
+    if command != "resume":
+        return request
+    if request.force_module is not None:
+        return request
+    if _resume_request_module_b_already_complete(request=request, workspace_root=workspace_root):
+        return request
+    return replace(
+        request,
+        user_custom_prompt_override=_prompt_user_custom_prompt_override(workspace_root=workspace_root),
+    )
+
+
+def _resume_request_module_b_already_complete(*, request: CommandRequest, workspace_root: Path) -> bool:
+    """
+    功能说明：判断 resume 请求对应任务的模块B是否已完成。
+    参数说明：
+    - request: resume 命令请求。
+    - workspace_root: 项目根目录。
+    返回值：
+    - bool: 模块B已完成则返回 True。
+    异常说明：无。
+    边界条件：状态库不可用时返回 False，按保守策略允许继续采集提示词。
+    """
+    task_id = str(request.task_id or "").strip()
+    if not task_id:
+        return False
+    db_path = _resolve_state_db_path_from_config(config_path=request.config_path, workspace_root=workspace_root)
+    if db_path is None or not db_path.exists():
+        return False
+    try:
+        store = StateStore(db_path=db_path)
+        module_b_record = store.get_module_record(task_id=task_id, module_name="B")
+        if module_b_record and str(module_b_record.get("status", "")).strip() == "done":
+            return True
+        b_summary = store.get_module_unit_status_summary(task_id=task_id, module_name="B")
+        total_units = int(b_summary.get("total_units", 0))
+        done_count = int(b_summary.get("status_counts", {}).get("done", 0))
+        return total_units > 0 and done_count == total_units
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _prompt_main_menu() -> str:

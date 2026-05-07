@@ -62,6 +62,9 @@ from music_video_pipeline.modules.module_b_v2.template_loader import (
 VALID_MODULE_B_V2_ROLE_NAMES = ("role1", "role2", "role3", "role4")
 
 
+ModuleBUnitCompletedCallback = Callable[[str, int, dict[str, Any], Path], None]
+
+
 class MultiRoleScriptGeneratorV2:
     """
     功能说明：为模块B v2 提供完整多角色编排能力。
@@ -489,6 +492,55 @@ def _write_role_shot_aggregate(
     )
 
 
+def _persist_role3_and_maybe_emit_unit(
+    *,
+    shot_item: dict[str, Any],
+    role3_shot_cache: dict[str, dict[str, Any]],
+    role3_shots_dir: Path,
+) -> None:
+    """
+    功能说明：持久化 role3 shot 并更新内存缓存。
+    参数说明：
+    - shot_item: role3 单镜头结果。
+    - role3_shot_cache: role3 shot 内存缓存。
+    - role3_shots_dir: role3 shot 落盘目录。
+    返回值：无。
+    异常说明：写文件失败时向上抛出。
+    边界条件：仅更新 role3 缓存，不直接判定单元完成。
+    """
+    shot_id = str(shot_item.get("shot_id", "")).strip()
+    if not shot_id:
+        return
+    role3_shot_cache[shot_id] = dict(shot_item)
+    write_json(role3_shots_dir / f"{shot_id}.json", shot_item)
+
+
+def _persist_role4_and_emit_unit_if_ready(
+    *,
+    shot_item: dict[str, Any],
+    role4_shot_cache: dict[str, dict[str, Any]],
+    role4_shots_dir: Path,
+    emit_completed_unit: Callable[[str], None],
+) -> None:
+    """
+    功能说明：持久化 role4 shot，并在成品条件满足时触发单元回调。
+    参数说明：
+    - shot_item: role4 单镜头结果。
+    - role4_shot_cache: role4 shot 内存缓存。
+    - role4_shots_dir: role4 shot 落盘目录。
+    - emit_completed_unit: 成品回调函数。
+    返回值：无。
+    异常说明：写文件失败时向上抛出。
+    边界条件：仅当 role3 与 role4 均齐备时才触发单元成品输出。
+    """
+    shot_id = str(shot_item.get("shot_id", "")).strip()
+    if not shot_id:
+        return
+    role4_shot_cache[shot_id] = dict(shot_item)
+    write_json(role4_shots_dir / f"{shot_id}.json", shot_item)
+    emit_completed_unit(shot_id)
+
+
 def invalidate_module_b_v2_role_outputs(*, task_dir: Path, role_name: str, logger: Any | None = None) -> dict[str, Any]:
     """
     功能说明：按角色级起点失效 module_b_v2 内部缓存，供断电恢复或定向重试复用。
@@ -676,6 +728,53 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
     边界条件：done 单元复用已有产物，仅对 pending/failed/running 单元重新写出。
     """
     context.logger.info("模块B v2 开始执行，task_id=%s，mode=multi_role_llm_v2", context.task_id)
+    return _run_module_b_v2_internal(context=context)
+
+
+def run_module_b_v2_incremental(
+    context: RuntimeContext,
+    *,
+    target_segment_ids: set[str] | None = None,
+    on_unit_completed: ModuleBUnitCompletedCallback | None = None,
+) -> Path:
+    """
+    功能说明：以增量方式执行模块B v2，并在单元完成时立刻回调成品产物。
+    参数说明：
+    - context: 运行上下文对象。
+    - target_segment_ids: 可选，仅处理这些 segment_id 对应的模块B单元。
+    - on_unit_completed: 可选，单元完成后的即时回调。
+    返回值：
+    - Path: module_b_output.json 路径。
+    异常说明：模板、规则、LLM、落盘或聚合校验失败时抛出异常。
+    边界条件：未命中的非目标单元不会被重置；已完成缓存会被直接复用并触发回调。
+    """
+    normalized_target_segment_ids = {
+        str(segment_id).strip() for segment_id in (target_segment_ids or set()) if str(segment_id).strip()
+    }
+    return _run_module_b_v2_internal(
+        context=context,
+        target_segment_ids=normalized_target_segment_ids or None,
+        on_unit_completed=on_unit_completed,
+    )
+
+
+def _run_module_b_v2_internal(
+    *,
+    context: RuntimeContext,
+    target_segment_ids: set[str] | None = None,
+    on_unit_completed: ModuleBUnitCompletedCallback | None = None,
+) -> Path:
+    """
+    功能说明：执行模块B v2 内部主流程，可选按目标单元增量产出并回调。
+    参数说明：
+    - context: 运行上下文对象。
+    - target_segment_ids: 可选，限制本轮处理的 segment_id 集合。
+    - on_unit_completed: 可选，单元完成后的即时回调。
+    返回值：
+    - Path: module_b_output.json 路径。
+    异常说明：模板、规则、LLM、落盘或聚合校验失败时抛出异常。
+    边界条件：当目标集合不为空时，仅为目标单元写 module_b_units 单元产物与状态。
+    """
     module_a_path = context.artifacts_dir / "module_a_output.json"
     module_a_output = read_json(module_a_path)
     validate_module_a_output(module_a_output)
@@ -697,6 +796,8 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
         for record in pending_records
         if str(record.get("unit_id", "")).strip()
     }
+    if target_segment_ids is not None:
+        pending_unit_ids = {unit_id for unit_id in pending_unit_ids if unit_id in target_segment_ids}
     all_shot_ids = [f"shot_{index + 1:03d}" for index in range(len(units))]
     target_shot_ids = [
         f"shot_{units_by_id[unit_id].unit_index + 1:03d}"
@@ -710,6 +811,23 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
         len(pending_unit_ids),
     )
     if not pending_unit_ids:
+        if target_segment_ids is not None:
+            done_unit_records = context.state_store.list_module_b_done_shot_items(task_id=context.task_id)
+            module_b_output = build_module_b_output(
+                done_unit_records=done_unit_records,
+                module_a_output=module_a_output,
+                instrumental_labels=context.config.module_a.instrumental_labels,
+            )
+            validate_module_b_output(module_b_output)
+            output_path = context.artifacts_dir / "module_b_output.json"
+            write_json(output_path, module_b_output)
+            context.logger.info(
+                "模块B v2 目标单元已全部完成，直接复用现有结果，task_id=%s，target_count=%s，输出=%s",
+                context.task_id,
+                len(target_segment_ids),
+                output_path,
+            )
+            return output_path
         done_unit_records = context.state_store.list_module_b_done_shot_items(task_id=context.task_id)
         if len(done_unit_records) != len(units):
             done_unit_ids = {str(item["unit_id"]) for item in done_unit_records}
@@ -819,6 +937,48 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
             shot_ids=[shot_id],
         )["shots"][0],
     )
+    completed_unit_ids: set[str] = set()
+
+    def _emit_completed_unit_if_ready(shot_id: str) -> None:
+        if shot_id not in role3_shot_cache or shot_id not in role4_shot_cache:
+            return
+        unit = shot_unit_map.get(shot_id)
+        if unit is None or unit.unit_id in completed_unit_ids:
+            return
+        shot_payload = _assemble_module_b_output_item(
+            segment=segment_by_shot_id[shot_id],
+            directing=role3_shot_cache[shot_id],
+            prompt_block=role4_shot_cache[shot_id],
+            shot_id=shot_id,
+        )
+        artifact_path = v2_dirs["unit_outputs_dir"] / f"{unit.unit_id}.json"
+        write_json(artifact_path, shot_payload)
+        context.state_store.set_module_unit_status(
+            task_id=context.task_id,
+            module_name="B",
+            unit_id=unit.unit_id,
+            status="done",
+            artifact_path=str(artifact_path),
+            error_message="",
+        )
+        completed_unit_ids.add(unit.unit_id)
+        if on_unit_completed is not None:
+            on_unit_completed(unit.unit_id, int(unit.unit_index), dict(shot_payload), artifact_path)
+
+    role3_shot_cache = dict(existing_role3_shots)
+    role4_shot_cache = dict(existing_role4_shots)
+    shot_unit_map = {
+        f"shot_{unit.unit_index + 1:03d}": unit
+        for unit_id, unit in units_by_id.items()
+        if unit_id in pending_unit_ids
+    }
+    segment_by_shot_id = {
+        f"shot_{index + 1:03d}": dict(segment)
+        for index, segment in enumerate(module_a_output.get("segments", []))
+        if isinstance(segment, dict) and f"shot_{index + 1:03d}" in shot_unit_map
+    }
+    for cached_shot_id in sorted(role4_shot_cache):
+        _emit_completed_unit_if_ready(cached_shot_id)
     generator = MultiRoleScriptGeneratorV2(
         logger=context.logger,
         module_b_config=context.config.module_b,
@@ -831,15 +991,18 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
         target_shot_ids=set(target_shot_ids),
         role1_output=reusable_role1_output,
         role2_output=reusable_role2_output,
-        existing_role3_shots=existing_role3_shots,
-        existing_role4_shots=existing_role4_shots,
-        on_role3_shot_completed=lambda shot_item: write_json(
-            v2_dirs["role3_shots_dir"] / f"{str(shot_item.get('shot_id', '')).strip()}.json",
-            shot_item,
+        existing_role3_shots=role3_shot_cache,
+        existing_role4_shots=role4_shot_cache,
+        on_role3_shot_completed=lambda shot_item: _persist_role3_and_maybe_emit_unit(
+            shot_item=shot_item,
+            role3_shot_cache=role3_shot_cache,
+            role3_shots_dir=v2_dirs["role3_shots_dir"],
         ),
-        on_role4_shot_completed=lambda shot_item: write_json(
-            v2_dirs["role4_shots_dir"] / f"{str(shot_item.get('shot_id', '')).strip()}.json",
-            shot_item,
+        on_role4_shot_completed=lambda shot_item: _persist_role4_and_emit_unit_if_ready(
+            shot_item=shot_item,
+            role4_shot_cache=role4_shot_cache,
+            role4_shots_dir=v2_dirs["role4_shots_dir"],
+            emit_completed_unit=_emit_completed_unit_if_ready,
         ),
     )
     write_json(v2_dirs["output_dir"] / "module_b_role1_visual_catalog.json", role_outputs["role1_output"])
@@ -905,6 +1068,11 @@ def run_module_b_v2(context: RuntimeContext) -> Path:
             artifact_path=str(artifact_path),
             error_message="",
         )
+        if unit_id in completed_unit_ids:
+            continue
+        completed_unit_ids.add(unit_id)
+        if on_unit_completed is not None:
+            on_unit_completed(unit_id, int(unit.unit_index), dict(shot_payload), artifact_path)
 
     done_unit_records = context.state_store.list_module_b_done_shot_items(task_id=context.task_id)
     if len(done_unit_records) != len(units):
@@ -952,67 +1120,86 @@ def _assemble_module_b_output(
             continue
         if not prompt_block:
             continue
-        shot_item = {
-            "shot_id": shot_id,
-            "start_time": float(segment.get("start_time", 0.0)),
-            "end_time": float(segment.get("end_time", segment.get("start_time", 0.0))),
-            "scene_desc": str(prompt_block.get("scene_desc", directing.get("scene_desc_zh", ""))).strip(),
-            "keyframe_prompt_start_zh": str(prompt_block.get("keyframe_prompt_start_zh", "")).strip(),
-            "keyframe_prompt_start_en": str(prompt_block.get("keyframe_prompt_start_en", "")).strip(),
-            "keyframe_negative_prompt_start_zh": str(
-                prompt_block.get("keyframe_negative_prompt_start_zh", "")
-            ).strip(),
-            "keyframe_negative_prompt_start_en": str(
-                prompt_block.get("keyframe_negative_prompt_start_en", "")
-            ).strip(),
-            "keyframe_prompt_end_zh": str(prompt_block.get("keyframe_prompt_end_zh", "")).strip(),
-            "keyframe_prompt_end_en": str(prompt_block.get("keyframe_prompt_end_en", "")).strip(),
-            "keyframe_negative_prompt_end_zh": str(
-                prompt_block.get("keyframe_negative_prompt_end_zh", "")
-            ).strip(),
-            "keyframe_negative_prompt_end_en": str(
-                prompt_block.get("keyframe_negative_prompt_end_en", "")
-            ).strip(),
-            "video_prompt_zh": str(prompt_block.get("video_prompt_zh", "")).strip(),
-            "video_prompt_en": str(prompt_block.get("video_prompt_en", "")).strip(),
-            "keyframe_prompt_start_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_zh", []) if isinstance(item, dict)],
-            "keyframe_prompt_start_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_en", []) if isinstance(item, dict)],
-            "keyframe_negative_prompt_start_tokens_zh_increment": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh_increment", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_start_tokens_en_increment": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en_increment", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_start_tokens_zh": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_start_tokens_en": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en", []) if isinstance(item, dict)
-            ],
-            "keyframe_prompt_end_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_zh", []) if isinstance(item, dict)],
-            "keyframe_prompt_end_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_en", []) if isinstance(item, dict)],
-            "keyframe_negative_prompt_end_tokens_zh_increment": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh_increment", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_end_tokens_en_increment": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en_increment", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_end_tokens_zh": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh", []) if isinstance(item, dict)
-            ],
-            "keyframe_negative_prompt_end_tokens_en": [
-                dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en", []) if isinstance(item, dict)
-            ],
-            "video_prompt_tokens_zh": [dict(item) for item in prompt_block.get("video_prompt_tokens_zh", []) if isinstance(item, dict)],
-            "video_prompt_tokens_en": [dict(item) for item in prompt_block.get("video_prompt_tokens_en", []) if isinstance(item, dict)],
-            "camera_plan_preset_id": str(directing.get("camera_plan_preset_id", "")).strip(),
-            "transition_plan_preset_id": str(directing.get("transition_plan_preset_id", "")).strip(),
-            "motion_delta_label": str(directing.get("motion_delta_label", "")).strip(),
-            "motion_speed_label": str(directing.get("motion_speed_label", "")).strip(),
-            "composition_stability": str(directing.get("composition_stability", "")).strip(),
-            "camera_plan": dict(directing.get("camera_plan", {})),
-            "transition_plan": dict(directing.get("transition_plan", {})),
-            "constraints": {"must_keep_style": True, "must_align_to_beat": True},
-        }
+        shot_item = _assemble_module_b_output_item(
+            segment=segment,
+            directing=directing,
+            prompt_block=prompt_block,
+            shot_id=shot_id,
+        )
         shots.append(shot_item)
     return shots
+
+
+def _assemble_module_b_output_item(
+    *,
+    segment: dict[str, Any],
+    directing: dict[str, Any],
+    prompt_block: dict[str, Any],
+    shot_id: str,
+) -> dict[str, Any]:
+    """
+    功能说明：将单个 role3/role4 shot 结果装配为标准模块B输出项。
+    参数说明：
+    - segment: 当前 segment 元信息。
+    - directing: role3 单镜头结果。
+    - prompt_block: role4 单镜头结果。
+    - shot_id: 标准 shot_id。
+    返回值：
+    - dict[str, Any]: 单个模块B输出项。
+    异常说明：无。
+    边界条件：scene_desc 优先取 role4 回填，缺失时退回 role3 中文描述。
+    """
+    return {
+        "shot_id": shot_id,
+        "start_time": float(segment.get("start_time", 0.0)),
+        "end_time": float(segment.get("end_time", segment.get("start_time", 0.0))),
+        "scene_desc": str(prompt_block.get("scene_desc", directing.get("scene_desc_zh", ""))).strip(),
+        "keyframe_prompt_start_zh": str(prompt_block.get("keyframe_prompt_start_zh", "")).strip(),
+        "keyframe_prompt_start_en": str(prompt_block.get("keyframe_prompt_start_en", "")).strip(),
+        "keyframe_negative_prompt_start_zh": str(prompt_block.get("keyframe_negative_prompt_start_zh", "")).strip(),
+        "keyframe_negative_prompt_start_en": str(prompt_block.get("keyframe_negative_prompt_start_en", "")).strip(),
+        "keyframe_prompt_end_zh": str(prompt_block.get("keyframe_prompt_end_zh", "")).strip(),
+        "keyframe_prompt_end_en": str(prompt_block.get("keyframe_prompt_end_en", "")).strip(),
+        "keyframe_negative_prompt_end_zh": str(prompt_block.get("keyframe_negative_prompt_end_zh", "")).strip(),
+        "keyframe_negative_prompt_end_en": str(prompt_block.get("keyframe_negative_prompt_end_en", "")).strip(),
+        "video_prompt_zh": str(prompt_block.get("video_prompt_zh", "")).strip(),
+        "video_prompt_en": str(prompt_block.get("video_prompt_en", "")).strip(),
+        "keyframe_prompt_start_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_zh", []) if isinstance(item, dict)],
+        "keyframe_prompt_start_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_start_tokens_en", []) if isinstance(item, dict)],
+        "keyframe_negative_prompt_start_tokens_zh_increment": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh_increment", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_start_tokens_en_increment": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en_increment", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_start_tokens_zh": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_zh", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_start_tokens_en": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_start_tokens_en", []) if isinstance(item, dict)
+        ],
+        "keyframe_prompt_end_tokens_zh": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_zh", []) if isinstance(item, dict)],
+        "keyframe_prompt_end_tokens_en": [dict(item) for item in prompt_block.get("keyframe_prompt_end_tokens_en", []) if isinstance(item, dict)],
+        "keyframe_negative_prompt_end_tokens_zh_increment": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh_increment", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_end_tokens_en_increment": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en_increment", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_end_tokens_zh": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_zh", []) if isinstance(item, dict)
+        ],
+        "keyframe_negative_prompt_end_tokens_en": [
+            dict(item) for item in prompt_block.get("keyframe_negative_prompt_end_tokens_en", []) if isinstance(item, dict)
+        ],
+        "video_prompt_tokens_zh": [dict(item) for item in prompt_block.get("video_prompt_tokens_zh", []) if isinstance(item, dict)],
+        "video_prompt_tokens_en": [dict(item) for item in prompt_block.get("video_prompt_tokens_en", []) if isinstance(item, dict)],
+        "camera_plan_preset_id": str(directing.get("camera_plan_preset_id", "")).strip(),
+        "transition_plan_preset_id": str(directing.get("transition_plan_preset_id", "")).strip(),
+        "motion_delta_label": str(directing.get("motion_delta_label", "")).strip(),
+        "motion_speed_label": str(directing.get("motion_speed_label", "")).strip(),
+        "composition_stability": str(directing.get("composition_stability", "")).strip(),
+        "camera_plan": dict(directing.get("camera_plan", {})),
+        "transition_plan": dict(directing.get("transition_plan", {})),
+        "constraints": {"must_keep_style": True, "must_align_to_beat": True},
+    }

@@ -17,7 +17,7 @@ import shutil
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, PathsConfig
 # 项目内模块：流水线调度器
 from music_video_pipeline.pipeline import PipelineRunner
 
@@ -41,7 +41,6 @@ def test_smoke_run_should_generate_playable_mp4(tmp_path: Path) -> None:
         pytest.skip(f"示例音频不存在，跳过 smoke 测试: {audio_path}")
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -53,7 +52,6 @@ def test_smoke_run_should_generate_playable_mp4(tmp_path: Path) -> None:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
     )
     logger = logging.getLogger("smoke_test")
     logger.setLevel(logging.INFO)

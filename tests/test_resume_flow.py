@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleCConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleCConfig, PathsConfig
 # 项目内模块：关键帧生成器抽象
 from music_video_pipeline.generators import FrameGenerator
 # 项目内模块：JSON写入工具
@@ -261,7 +261,6 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     边界条件：runs_dir 指向临时目录，避免污染仓库。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -273,7 +272,6 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
         module_c=ModuleCConfig(render_workers=2, unit_retry_times=1),
     )
 
@@ -318,7 +316,7 @@ class _ScriptedFrameGenerator(FrameGenerator):
         self.calls.append(shot_id)
         if self.fail_plan.get(shot_id, 0) > 0:
             self.fail_plan[shot_id] -= 1
-            raise RuntimeError(f"mock failure: {shot_id}")
+            raise RuntimeError(f"simulated failure: {shot_id}")
         output_dir.mkdir(parents=True, exist_ok=True)
         frame_path_start = output_dir / f"frame_{shot_index + 1:03d}.png"
         frame_path_end = output_dir / f"frame_{shot_index + 1:03d}_end.png"

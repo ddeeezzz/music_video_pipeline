@@ -3,7 +3,7 @@
 核心流程：构造最小配置对象，断言工厂拒绝旧模式并返回 ComfyUI 生成器。
 输入输出：输入最小配置对象，输出工厂行为断言。
 依赖说明：依赖 pytest 与项目内模块 C 关键帧生成器工厂。
-维护说明：本文件只覆盖当前真实路径，不再保留 mock/diffusion 旧测试。
+维护说明：本文件只覆盖当前真实路径，不再保留旧占位/diffusion 旧测试。
 """
 
 # 标准库：用于日志对象构建。
@@ -13,7 +13,7 @@ import logging
 import pytest
 
 # 项目内模块：配置数据类。
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, ModuleCConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, ModuleCConfig, PathsConfig
 # 项目内模块：关键帧生成器工厂。
 from music_video_pipeline.generators.frame_generator import build_keyframe_generator
 # 项目内模块：ComfyUI 关键帧生成器实现。
@@ -30,7 +30,7 @@ def test_build_keyframe_generator_should_reject_non_comfyui_mode() -> None:
     边界条件：旧模式名仅用于验证硬切行为。
     """
     with pytest.raises(RuntimeError, match="仅支持 comfyui"):
-        build_keyframe_generator(mode="mock", logger=logging.getLogger("test_frame_generator_reject"), app_config=_build_app_config())
+        build_keyframe_generator(mode="legacy_placeholder", logger=logging.getLogger("test_frame_generator_reject"), app_config=_build_app_config())
 
 
 
@@ -108,7 +108,6 @@ def _build_app_config() -> AppConfig:
     边界条件：不要求真实 ComfyUI 服务在线。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -120,7 +119,6 @@ def _build_app_config() -> AppConfig:
             video_crf=24,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=848, video_height=480),
         module_c=ModuleCConfig(),
         module_a=ModuleAConfig(funasr_language="auto"),
     )

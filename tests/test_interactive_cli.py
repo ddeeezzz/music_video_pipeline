@@ -157,7 +157,7 @@ def test_collect_run_force_should_pick_task_from_db_and_reuse_audio_config(tmp_p
     assert "配置文件路径（输入 q 返回上一步）" not in captured.out
 
 
-def test_prompt_task_choice_should_show_module_statuses(capsys: object) -> None:
+def test_prompt_task_choice_should_show_module_statuses(monkeypatch, capsys: object) -> None:
     task_rows = [
         {
             "task_id": "task_ui_001",
@@ -173,11 +173,8 @@ def test_prompt_task_choice_should_show_module_statuses(capsys: object) -> None:
             "D": "failed",
         }
     }
-    # 使用 monkeypatch 不方便时，直接验证渲染函数输出内容。
-    from unittest.mock import patch
-
-    with patch("builtins.input", return_value="1"):
-        selected = interactive_cli._prompt_task_choice(task_rows=task_rows, module_summary_map=module_summary_map)
+    monkeypatch.setattr("builtins.input", lambda _: "1")
+    selected = interactive_cli._prompt_task_choice(task_rows=task_rows, module_summary_map=module_summary_map)
     captured = capsys.readouterr()
     assert selected is not None
     assert "A:done" in captured.out

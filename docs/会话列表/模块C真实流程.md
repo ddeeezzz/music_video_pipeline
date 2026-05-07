@@ -190,7 +190,7 @@
 - 已统一 frame_item 的双轨提示词回填：
   - 输出中包含 `keyframe_prompt_start/end_zh/en` 与 `video_prompt_start/end_zh/en`；
   - 兼容别名字段 `keyframe_prompt/video_prompt` 仍保留并映射到 start 英文轨。
-- `MockFrameGenerator` 也已同步产出双轨字段，确保 mock/diffusion 契约一致。
+- `占位帧生成器` 也已同步产出双轨字段，确保占位/diffusion 契约一致。
 
 ### 3. 与模块C输入契约联动的本轮事实
 - `src/music_video_pipeline/types.py` 的 `validate_module_b_output()` 已升级为强校验双轨字段（非空）并校验别名一致性。

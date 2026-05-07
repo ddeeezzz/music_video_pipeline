@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类。
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, ModuleCConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, ModuleCConfig, PathsConfig
 # 项目内模块：运行上下文定义。
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：关键帧生成器抽象。
@@ -96,7 +96,7 @@ class _ScriptedFrameGenerator(FrameGenerator):
         remaining_failures = int(self.fail_plan.get(shot_id, 0))
         if remaining_failures > 0:
             self.fail_plan[shot_id] = remaining_failures - 1
-            raise RuntimeError(f"mock failure for {shot_id}")
+            raise RuntimeError(f"simulated failure for {shot_id}")
 
         output_dir.mkdir(parents=True, exist_ok=True)
         frame_path_start = output_dir / f"frame_{shot_index + 1:03d}.png"
@@ -129,7 +129,7 @@ class _PrewarmFailingFrameGenerator(_ScriptedFrameGenerator):
     """
 
     def prewarm(self) -> None:
-        raise RuntimeError("mock comfyui prewarm failed")
+        raise RuntimeError("comfyui prewarm failed")
 
 
 
@@ -282,7 +282,6 @@ def _build_context(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(runs_dir), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -294,7 +293,6 @@ def _build_context(
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_c=ModuleCConfig(render_workers=render_workers, unit_retry_times=unit_retry_times),
         module_a=ModuleAConfig(funasr_language="auto"),
     )

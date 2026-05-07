@@ -14,17 +14,39 @@ from typing import Any
 from music_video_pipeline.context import RuntimeContext
 from music_video_pipeline.io_utils import read_json
 from music_video_pipeline.modules.cross_bcd.models import CrossChainUnit
-from music_video_pipeline.modules.module_b.executor import execute_one_unit_with_retry as execute_one_b_unit
 from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
+from music_video_pipeline.modules.module_b_v2 import run_module_b_v2_incremental
 from music_video_pipeline.modules.module_c.executor import execute_one_unit_with_retry as execute_one_c_unit
 from music_video_pipeline.modules.module_c.unit_models import ModuleCUnit
 from music_video_pipeline.modules.module_d.executor import execute_one_unit_with_retry as execute_one_d_unit
 from music_video_pipeline.modules.module_d.unit_models import ModuleDUnitBlueprint, materialize_module_d_unit
 
 
+def _run_b_chain_unit(
+    context: RuntimeContext,
+    unit: ModuleBUnit,
+    generator: Any,
+    module_a_output: dict[str, Any],
+    unit_outputs_dir: Any,
+) -> str:
+    """
+    功能说明：旧模块B单元执行测试钩子占位；正式运行已改走模块B v2 批量生产器。
+    参数说明：保留旧签名，仅供测试 monkeypatch 复用。
+    返回值：
+    - str: 单元产物路径字符串。
+    异常说明：
+    - RuntimeError: 未被测试桩替换时调用即报错。
+    边界条件：生产代码不应再直接调用本函数。
+    """
+    raise RuntimeError("旧模块B单元执行入口已删除；请改走模块B v2 批量生产器。")
+
+
+_DEFAULT_LEGACY_B_CHAIN_UNIT = _run_b_chain_unit
+
+
 def _drain_finished_tasks(
     context: RuntimeContext,
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     failed_chain_indexes: set[int],
     failed_errors: dict[int, str],
 ) -> None:
@@ -43,7 +65,29 @@ def _drain_finished_tasks(
     for future in finished_futures:
         stage, unit_index, metadata = active_tasks.pop(future)
         try:
-            future.result()
+            result = future.result()
+            if stage == "B_BATCH":
+                failed_batch_indexes = [
+                    int(item)
+                    for item in ((result or {}).get("failed_indexes", []) if isinstance(result, dict) else [])
+                ]
+                error_text = str((result or {}).get("error", "")).strip() if isinstance(result, dict) else ""
+                for failed_index in failed_batch_indexes:
+                    failed_chain_indexes.add(failed_index)
+                    failed_errors[failed_index] = f"B:{error_text or '模块B v2 批量执行失败'}"
+                    context.state_store.mark_bcd_downstream_blocked(
+                        task_id=context.task_id,
+                        unit_index=failed_index,
+                        from_module="B",
+                        reason=f"upstream_blocked:B:{error_text or '模块B v2 批量执行失败'}",
+                    )
+                if failed_batch_indexes:
+                    logging.getLogger("B").error(
+                        "跨模块链路模块B批量执行存在失败，task_id=%s，failed_indexes=%s，错误=%s",
+                        context.task_id,
+                        failed_batch_indexes,
+                        error_text or "<unknown>",
+                    )
         except Exception as error:  # noqa: BLE001
             failed_chain_indexes.add(unit_index)
             failed_errors[unit_index] = f"{stage}:{error}"
@@ -71,24 +115,64 @@ def _drain_finished_tasks(
             )
 
 
-def _run_b_chain_unit(
+def _run_b_chain_batch(
     context: RuntimeContext,
-    unit: ModuleBUnit,
-    generator: Any,
-    module_a_output: dict[str, Any],
-    unit_outputs_dir: Any,
-) -> str:
+    target_segment_ids: set[str],
+    target_units: list[ModuleBUnit],
+) -> dict[str, Any]:
     """
-    功能说明：执行单条链路的模块 B 单元。
+    功能说明：以模块B v2 增量方式执行一批跨模块链路的模块 B 单元。
     """
-    shot_path = execute_one_b_unit(
-        context=context,
-        unit=unit,
-        generator=generator,
-        module_a_output=module_a_output,
-        unit_outputs_dir=unit_outputs_dir,
-    )
-    return str(shot_path)
+    legacy_b_chain_unit = globals().get("_run_b_chain_unit")
+    if legacy_b_chain_unit is not _DEFAULT_LEGACY_B_CHAIN_UNIT:
+        failed_indexes: list[int] = []
+        failed_errors: list[str] = []
+        unit_outputs_dir = context.artifacts_dir / "module_b_units"
+        unit_outputs_dir.mkdir(parents=True, exist_ok=True)
+        for target_unit in sorted(target_units, key=lambda item: int(item.unit_index)):
+            try:
+                legacy_b_chain_unit(
+                    context,
+                    target_unit,
+                    None,
+                    {},
+                    unit_outputs_dir,
+                )
+            except Exception as error:  # noqa: BLE001
+                failed_indexes.append(int(target_unit.unit_index))
+                failed_errors.append(str(error))
+        return {
+            "output_path": "",
+            "failed_indexes": failed_indexes,
+            "error": "; ".join(failed_errors),
+        }
+    try:
+        output_path = run_module_b_v2_incremental(
+            context=context,
+            target_segment_ids=target_segment_ids,
+        )
+        return {
+            "output_path": str(output_path),
+            "failed_indexes": [],
+            "error": "",
+        }
+    except Exception as error:  # noqa: BLE001
+        failed_indexes: list[int] = []
+        for target_unit in sorted(target_units, key=lambda item: int(item.unit_index)):
+            b_row = context.state_store.get_module_unit_record(
+                task_id=context.task_id,
+                module_name="B",
+                unit_id=str(target_unit.unit_id),
+            )
+            b_status = str((b_row or {}).get("status", "pending"))
+            if b_status == "done":
+                continue
+            failed_indexes.append(int(target_unit.unit_index))
+        return {
+            "output_path": "",
+            "failed_indexes": failed_indexes,
+            "error": str(error),
+        }
 
 
 def _run_c_chain_unit(
