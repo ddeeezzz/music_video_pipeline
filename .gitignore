@@ -8,7 +8,6 @@ __pycache__/
 models/
 log/
 .cache/
-docs/rsync/
 
 # ComfyUI 运行时目录与本地状态
 ComfyUI/

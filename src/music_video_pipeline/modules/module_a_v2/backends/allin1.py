@@ -602,7 +602,7 @@ def _import_allin1_backend() -> tuple[str, Any]:
     参数说明：无。
     返回值：
     - tuple[str, Any]: 后端模块名称与模块对象二元组。
-    异常说明：导入失败时抛 RuntimeError。
+    异常说明：导入失败时抛 RuntimeError；非 Linux 平台给出明确平台提示。
     边界条件：依次尝试 allin1 与 allin1fix。
     """
     import_errors: list[str] = []
@@ -612,6 +612,15 @@ def _import_allin1_backend() -> tuple[str, Any]:
             return module_name, module_obj
         except Exception as error:  # noqa: BLE001
             import_errors.append(f"{module_name}: {error}")
+
+    # 标准库：平台判断
+    import sys
+    if sys.platform != "linux":
+        raise RuntimeError(
+            "模块A仅支持在Linux环境运行。"
+            "当前平台未安装 allin1/natten 等Linux专用依赖。"
+            "请在Linux环境执行模块A，或复用已有的 module_a_output.json 产物继续执行B/C/D。"
+        )
     raise RuntimeError(f"allin1 导入失败，已尝试 allin1/allin1fix，错误详情：{' | '.join(import_errors)}")
 
 
