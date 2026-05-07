@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "music-video-pipeline"
 version = "0.1.0"
 description = "基于音频结构驱动的多模态音画同步流水线"
-readme = "docs/5分钟跑通指南.md"
+readme = "docs/README.md"
 requires-python = ">=3.11, <3.12"
 dependencies = [
   "Pillow>=10.0.0",
@@ -23,14 +23,14 @@ dependencies = [
   "torchvision==0.20.0",
   "torchaudio==2.5.0",
   "torchsde>=0.2.6",
-  "demucs>=4.0.1",
-  "funasr",
+  "demucs>=4.0.1; sys_platform == 'linux'",
+  "funasr; sys_platform == 'linux'",
   "transformers>=4.40.0",
   "kornia>=0.7.1",
   "sentencepiece>=0.2.0",
-  "natten",
-  "madmom",
-  "all-in-one-fix==2.0.4",
+  "natten; sys_platform == 'linux'",
+  "madmom; sys_platform == 'linux'",
+  "all-in-one-fix==2.0.4; sys_platform == 'linux'",
   "setuptools<81",
   "bypy>=1.8.9",
   "diffusers",
@@ -68,9 +68,7 @@ model_assets = "music_video_pipeline.model_assets_cli:main"
 eval = "music_video_pipeline.eval_cli:main"
 
 [tool.uv]
-override-dependencies = [
-  "natten @ file:///root/data/t1/.cache/wheels/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl"
-]
+override-dependencies = []
 
 [[tool.uv.index]]
 name = "tsinghua"

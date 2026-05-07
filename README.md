@@ -5,7 +5,7 @@
 ## 核心能力
 
 - 模块 A V2 会结合 Demucs、FunASR、all-in-one 特征与 librosa 特征，产出 `big_segments`、`segments`、`beats`、`lyric_units`、`energy_features` 等结构化结果。
-- 模块 B 负责把音频结构转成可执行的视觉脚本，按 segment 粒度生成 `scene_desc`、`keyframe_prompt`、`video_prompt`，并支持结构化解析、重试与自定义 prompt 覆盖。
+- 模块 B（现已升级为 V2 架构）负责把音频结构转成可执行的视觉脚本，通过“视觉总监 -> 大段落导演 -> 镜头分镜师 -> Prompt构建师”的多角色协作链路，支持结构化 Markdown 解析、增量重试与复杂的剧本拆解。
 - 模块 C 负责关键帧生成，并记录 LoRA / base model 绑定信息，便于追踪生成来源。
 - 模块 D 支持 `ffmpeg` 与 `animatediff` 两种后端、shot 级并行渲染、单元重试、终拼策略切换，以及 copy 失败后的回退重编码。
 - B/C/D 已经接入跨模块波前并行调度；在真实生成链路下，可以边出分镜、边出关键帧、边渲染视频片段，并根据 GPU 负载动态收缩/放宽并发窗口。
@@ -27,9 +27,9 @@
 
 ![模块 B 视觉策略转化链路](docs/images/architecture/p3.png)
 
-- 模块 B 以模块 A 的 JSON 契约为输入，再叠加系统提示词与用户提示词，形成 LLM 的视觉决策上下文。
-- 一次生成会拆成三类结果：关键帧提示词、视频动态提示词、场景描述。
-- 这些结果分别服务于模块 C、模块 D，以及人工审校 / 质检面板。
+- 模块 B（V2）以模块 A 的 JSON 契约为输入，采用多角色级联（Visual Director / Big Segment Director / Segment Director / Prompt Builder）进行结构化拆解。
+- 输出为规范的 Markdown 脚本，随后被解析为结构化的 `scene_desc`、`keyframe_prompt` 和 `video_prompt`。
+- 这些结果分别服务于模块 C（关键帧）、模块 D（视频生成），并支持通过大纲修订或微调方式进行干预。
 
 ## 项目结构
 
@@ -39,32 +39,37 @@
 │   ├── cli.py / interactive_cli.py / command_service.py
 │   ├── pipeline.py / state_store.py / monitoring/
 │   ├── generators/                     # 分镜与关键帧生成器工厂
+│   ├── comfyui/                        # ComfyUI 调度封装
 │   ├── modules/
 │   │   ├── module_a_v2/               # 音频理解、内容角色、可视化
-│   │   ├── module_b/                  # 分镜与 prompt 生成
+│   │   ├── module_b/                  # 早期分镜生成
+│   │   ├── module_b_v2/               # 基于新框架的结构化分镜生成
 │   │   ├── module_c/                  # 关键帧生成
 │   │   ├── module_d/                  # 片段渲染与终拼
 │   │   └── cross_bcd/                 # B/C/D 跨模块波前调度
 │   └── upload/                        # 百度网盘上传链路
 ├── configs/
-│   ├── music_wsl/                     # 本地 laptop(4060) 的 WSL 配置档
+│   ├── comfyui/                       # ComfyUI 工作流配置
+│   ├── music_wsl/                     # 本地 WSL 配置档
 │   ├── music_yby/                     # 云显卡服务器配置档
 │   ├── prompts/                       # 模块 B prompt 模板
-│   └── *.json                         # 模型绑定、模块默认配置
+│   ├── storyboard_templates/          # 分镜预设模板
+│   └── *.json                         # 模型绑定、默认配置
 ├── docs/
-│   ├── cli/
-│   ├── module_a_v2/
-│   ├── module_b/
-│   ├── module_d/
-│   ├── 环境/
-│   ├── 会话列表/
-│   └── images/architecture/           # 推荐放架构图
+│   ├── cli/                           # CLI 说明
+│   ├── module_a_v2/                   # 模块 A V2 文档
+│   ├── B模块升级/                     # 模块 B 升级架构文档
+│   ├── 环境/                          # 环境部署备忘
+│   ├── 会话列表/                      # AI Agent 对话历史与需求文档
+│   └── images/architecture/           # 架构图
 ├── scripts/
-│   ├── model_assets/                  # 模型资源下载、绑定、同步
-│   ├── clip_eval/                     # 自动评测与人工抽测
-│   └── _module_a_v2_visualize.py
+│   ├── model_assets/                  # 模型资源下载同步
+│   ├── clip_eval/                     # CLIP 评测脚本
+│   ├── comf                           # ComfyUI 环境管理小工具
+│   ├── check_bypy_whitelist_vs_remote.py
+│   └── _module_a_v2_visualize.py      # 模块 A 可视化
 ├── resources/
-├── tests/                             # 测试
+├── tests/                             # 测试用例
 └── README.md
 ```
 
@@ -83,6 +88,28 @@ uv sync                # 安装核心依赖
 uv sync --extra test   # 含测试依赖
 ```
 
+### natten 安装说明
+
+`natten` 是模块 A 依赖的 `all-in-one-fix` 所需的 Linux 专用包，没有 PyPI 上的通用 wheel。如果 `uv sync` 时 natten 下载失败或超时，可以先在浏览器手动下载 wheel 再本地导入：
+
+1. 在浏览器下载：[natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl](https://github.com/SHI-Labs/NATTEN/releases/download/v0.17.5/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl)
+2. 将下载的 `.whl` 文件放到项目目录 `.cache/wheels/` 下：
+   ```bash
+   mkdir -p .cache/wheels
+   mv ~/Downloads/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl .cache/wheels/
+   ```
+3. 再执行 `uv sync`，uv 会从本地 wheel 安装 natten
+
+### 跨平台使用说明
+
+模块 A 的核心依赖（`natten`、`all-in-one-fix`、`demucs`、`funasr`、`madmom`）仅在 Linux 上安装。Windows 上执行 `uv sync` 时会自动跳过这些包。
+
+如果需要在 Windows 上运行 B/C/D 模块：
+
+1. 先在 Linux 环境完成模块 A，产出 `module_a_output.json`
+2. 将任务目录（含产物和状态库）复制到 Windows
+3. 在 Windows 上使用 `uv run --no-sync` 继续执行 B/C/D
+
 ## CLI 命令
 
 四个入口：
@@ -90,7 +117,7 @@ uv sync --extra test   # 含测试依赖
 | 命令 | 说明 |
 |------|------|
 | `mvpl` / `music-video-pipeline` | 主流水线 |
-| `model_assets` | bypy 模型下载管理（交互式） |
+| `model_assets` | bypy 模型下载管理 |
 | `eval` | CLIP Score 评估 |
 
 ### 全链路执行
@@ -174,7 +201,8 @@ uv run --no-sync mvpl bcd-retry-segment --task-id demo_20s --segment-id <segment
 
 - `paths.runs_dir`: 运行输出根目录
 - `paths.default_audio_path`: 默认输入音频
-- `module_b.llm.prompt_template_file`: 模块 B prompt 模板
+- `module_b.storyboard_template_file`: 模块 B V2 分镜预设模板
+- `module_b.llm.prompt_template_file`: 模块 B 早期用的 prompt 模板
 - `module_b.llm.user_custom_prompt`: 交互式临时覆盖 prompt
 - `module_d.render_backend`: `ffmpeg` 或 `animatediff`
 - `cross_module.global_render_limit` / `cross_module.adaptive_window.*`: 跨模块并发与自适应窗口
@@ -202,9 +230,5 @@ uv run --no-sync model_assets
 
 ## 相关文档
 
-- `docs/cli/项目CLI命令大全.md`
-- `docs/cli/命令组合与作用速查.md`
-- `docs/module_a_v2/模块A_V2_总链.mmd`
-- `docs/module_b/模块B真实链接入说明.md`
-- `docs/module_d/模块D并行提速报告.md`
-- `AGENTS.md`
+- `docs/` 目录下的各细分设计方案与升级记录
+- `AGENTS.md` (AI Agent 开发与协同维护指南)
