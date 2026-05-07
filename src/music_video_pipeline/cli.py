@@ -46,16 +46,17 @@ def main() -> None:
     参数说明：无（读取命令行参数）。
     返回值：无。
     异常说明：发生异常时输出中文错误并以非零码退出。
-    边界条件：默认配置文件为 t1/configs/default.json。
+    边界条件：默认配置文件为 t1/configs/music_yby/default.json。
     """
     workspace_root = Path(__file__).resolve().parents[2]
-    parser = _build_parser(workspace_root=workspace_root)
+    default_config_path = workspace_root / "configs" / "music_yby" / "default.json"
+    parser = _build_parser(workspace_root=workspace_root, default_config_path=default_config_path)
     args = parser.parse_args()
 
     if _should_enter_interactive_mode(args=args):
         interactive_exit_code = run_interactive_cli(
             workspace_root=workspace_root,
-            default_config_path=(workspace_root / "configs" / "default.json"),
+            default_config_path=default_config_path,
             execute_request=lambda request: _execute_request_with_loaded_runtime(
                 workspace_root=workspace_root,
                 request=request,
@@ -116,7 +117,7 @@ def _should_enter_interactive_mode(args: argparse.Namespace) -> bool:
     return not command
 
 
-def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
+def _build_parser(workspace_root: Path, default_config_path: Path | None = None) -> argparse.ArgumentParser:
     """
     功能说明：构建并返回命令行参数解析器。
     参数说明：
@@ -124,9 +125,13 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
     返回值：
     - argparse.ArgumentParser: 配置完成的解析器。
     异常说明：无。
-    边界条件：子命令必须二选一或三选一，不允许缺失。
+    边界条件：默认配置固定为 configs/music_yby/default.json。
     """
-    default_config_path = workspace_root / "configs" / "default.json"
+    resolved_default_config_path = (
+        default_config_path
+        if default_config_path is not None
+        else workspace_root / "configs" / "music_yby" / "default.json"
+    )
     parser = argparse.ArgumentParser(description="MVP 音画同步流水线 CLI")
     parser.add_argument(
         "--interactive",
@@ -138,38 +143,38 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run", help="执行全链路运行")
     run_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     run_parser.add_argument("--audio-path", required=False, help="输入音频路径（默认读取配置）")
-    run_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    run_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
     run_parser.add_argument("--force-module", choices=["A", "B", "C", "D"], help="从指定模块强制重跑")
 
     resume_parser = subparsers.add_parser("resume", help="从断点恢复运行")
     resume_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    resume_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    resume_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
     resume_parser.add_argument("--force-module", choices=["A", "B", "C", "D"], help="从指定模块强制恢复")
 
     module_parser = subparsers.add_parser("run-module", help="执行单模块调试")
     module_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     module_parser.add_argument("--module", required=True, choices=["A", "B", "C", "D"], help="模块名")
     module_parser.add_argument("--audio-path", required=False, help="输入音频路径（首次任务初始化时需要）")
-    module_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    module_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
     module_parser.add_argument("--force", action="store_true", help="重置当前模块及其下游后再执行")
 
     c_status_parser = subparsers.add_parser("c-task-status", help="查看模块C单元状态摘要")
     c_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    c_status_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    c_status_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     c_retry_parser = subparsers.add_parser("c-retry-shot", help="按shot_id重试模块C单元，并在成功后重建视频")
     c_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     c_retry_parser.add_argument("--shot-id", required=True, help="模块C单元标识（等价shot_id）")
-    c_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    c_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     b_status_parser = subparsers.add_parser("b-task-status", help="查看模块B单元状态摘要")
     b_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    b_status_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    b_status_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     b_retry_parser = subparsers.add_parser("b-retry-segment", help="按segment_id重试模块B单元（不自动重建C/D）")
     b_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     b_retry_parser.add_argument("--segment-id", required=True, help="模块B单元标识（等价segment_id）")
-    b_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    b_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     b_role_retry_parser = subparsers.add_parser("b-retry-role", help="按 role 起点重试模块B v2（不自动重建C/D）")
     b_role_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
@@ -179,7 +184,7 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
         choices=["role1", "role2", "role3", "role4"],
         help="模块B v2 角色名",
     )
-    b_role_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    b_role_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     b_role_shot_retry_parser = subparsers.add_parser(
         "b-retry-role-shot",
@@ -193,29 +198,32 @@ def _build_parser(workspace_root: Path) -> argparse.ArgumentParser:
         help="模块B v2 角色名（仅支持 shot 级角色）",
     )
     b_role_shot_retry_parser.add_argument("--shot-id", required=True, help="目标 shot_id")
-    b_role_shot_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    b_role_shot_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     d_status_parser = subparsers.add_parser("d-task-status", help="查看模块D单元状态摘要")
     d_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    d_status_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    d_status_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     d_retry_parser = subparsers.add_parser("d-retry-shot", help="按shot_id重试模块D单元，并在D内重建最终视频")
     d_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     d_retry_parser.add_argument("--shot-id", required=True, help="模块D单元标识（等价shot_id）")
-    d_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    d_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     bcd_status_parser = subparsers.add_parser("bcd-task-status", help="查看跨模块B/C/D链路状态摘要")
     bcd_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    bcd_status_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    bcd_status_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     bcd_retry_parser = subparsers.add_parser("bcd-retry-segment", help="按segment_id重试跨模块B/C/D链路")
     bcd_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     bcd_retry_parser.add_argument("--segment-id", required=True, help="目标链路segment_id")
-    bcd_retry_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    bcd_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
-    monitor_parser = subparsers.add_parser("monitor", help="手动启动任务监督服务（按需）")
-    monitor_parser.add_argument("--task-id", required=True, help="任务唯一标识")
-    monitor_parser.add_argument("--config", default=str(default_config_path), help="配置文件路径")
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="手动启动任务监督服务（按需，可省略 --task-id 自动选择最新任务）",
+    )
+    monitor_parser.add_argument("--task-id", help="任务唯一标识（可选；缺省时自动选择最新任务）")
+    monitor_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     return parser
 
@@ -372,6 +380,12 @@ def _execute_request(
     边界条件：monitor 命令会走专用 handler。
     """
     service_logger = logger if logger is not None else logging.getLogger("SYS")
+    if str(request.command).strip() == "monitor":
+        return _run_task_monitor_command(
+            args=argparse.Namespace(task_id=request.task_id),
+            runner=runner,
+            logger=service_logger,
+        )
     service = MvplCommandService(
         runner=runner,
         workspace_root=workspace_root,
@@ -496,12 +510,46 @@ def _run_task_monitor_command(
     - RuntimeError: task_id 不存在或服务启动失败时抛出。
     边界条件：服务默认持续运行，直到用户中断（Ctrl+C）或显式停止。
     """
-    task_id = str(getattr(args, "task_id", "")).strip()
+    task_id = _resolve_monitor_target_task_id(args=args, runner=runner, logger=logger)
     return _run_task_monitor_command_by_task(
         task_id=task_id,
         runner=runner,
         logger=logger,
     )
+
+
+def _resolve_monitor_target_task_id(
+    args: argparse.Namespace,
+    runner: Any,
+    logger: Any,
+) -> str:
+    """
+    功能说明：解析 monitor 命令实际应监督的任务ID。
+    参数说明：
+    - args: 命令行参数对象。
+    - runner: 流水线调度器（提供状态库访问）。
+    - logger: 日志对象。
+    返回值：
+    - str: 最终用于启动监督服务的任务ID。
+    异常说明：
+    - RuntimeError: 状态库为空且未显式指定 task_id 时抛出。
+    边界条件：未传 task_id 时默认使用 updated_at 最新任务。
+    """
+    raw_task_id = getattr(args, "task_id", "")
+    explicit_task_id = str(raw_task_id).strip() if raw_task_id is not None else ""
+    if explicit_task_id:
+        return explicit_task_id
+
+    task_rows = runner.state_store.list_tasks()
+    if not task_rows:
+        raise RuntimeError("monitor 启动失败：当前状态库没有任何任务，请先创建任务或显式指定 --task-id。")
+
+    latest_task_id = str(task_rows[0].get("task_id", "")).strip()
+    if not latest_task_id:
+        raise RuntimeError("monitor 启动失败：最新任务记录缺少有效 task_id，请显式指定 --task-id。")
+
+    logger.info("monitor 未显式指定 task_id，已自动选择最新任务，task_id=%s", latest_task_id)
+    return latest_task_id
 
 
 def _run_task_monitor_command_by_task(

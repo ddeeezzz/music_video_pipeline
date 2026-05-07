@@ -37,7 +37,7 @@ class _FakeRunner:
 
 def test_build_parser_should_accept_monitor_command(tmp_path: Path) -> None:
     """
-    功能说明：验证CLI解析器已注册 monitor 命令并支持 task_id 参数。
+    功能说明：验证CLI解析器已注册 monitor 命令，并允许省略 task_id。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
@@ -51,7 +51,12 @@ def test_build_parser_should_accept_monitor_command(tmp_path: Path) -> None:
     args = parser.parse_args(["monitor", "--task-id", "task_cli_monitor_001"])
     assert args.command == "monitor"
     assert args.task_id == "task_cli_monitor_001"
-    assert str(args.config).endswith("configs/default.json")
+    assert str(args.config).endswith("configs/music_yby/default.json")
+
+    args_without_task_id = parser.parse_args(["monitor"])
+    assert args_without_task_id.command == "monitor"
+    assert args_without_task_id.task_id is None
+    assert str(args_without_task_id.config).endswith("configs/music_yby/default.json")
 
 
 def test_dispatch_command_should_route_to_monitor_runner(tmp_path: Path, monkeypatch) -> None:
@@ -87,7 +92,7 @@ def test_dispatch_command_should_route_to_monitor_runner(tmp_path: Path, monkeyp
         runner=runner,  # type: ignore[arg-type]
         workspace_root=workspace_root,
         config=None,  # type: ignore[arg-type]
-        config_path=(workspace_root / "configs" / "default.json").resolve(),
+        config_path=(workspace_root / "configs" / "music_yby" / "default.json").resolve(),
         logger=logger,
     )
     assert result["kind"] == "monitor"
@@ -116,9 +121,9 @@ def test_write_task_monitor_launch_page_should_write_redirect_file(tmp_path: Pat
     assert "http://127.0.0.1:45678/task-monitor?task_id=task_cli_monitor_002" in html_text
 
 
-def test_run_task_monitor_command_should_require_existing_task(tmp_path: Path) -> None:
+def test_run_task_monitor_command_should_reject_unknown_explicit_task(tmp_path: Path) -> None:
     """
-    功能说明：验证 monitor 命令在 task_id 不存在时会报错。
+    功能说明：验证 monitor 命令在显式 task_id 不存在时会报错。
     参数说明：
     - tmp_path: pytest 临时目录。
     返回值：无。
@@ -139,6 +144,31 @@ def test_run_task_monitor_command_should_require_existing_task(tmp_path: Path) -
         assert False, "预期应抛出 RuntimeError"
     except RuntimeError as error:
         assert "任务不存在" in str(error)
+
+
+def test_run_task_monitor_command_should_fail_when_state_store_has_no_tasks(tmp_path: Path) -> None:
+    """
+    功能说明：验证 monitor 命令在无参且状态库为空时会给出明确错误。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅校验无任务状态库场景。
+    """
+    state_store = StateStore(db_path=tmp_path / "state.sqlite3")
+    runner = _FakeRunner(state_store=state_store, runs_dir=tmp_path / "runs")
+    logger = logging.getLogger("test_run_task_monitor_command_should_fail_when_state_store_has_no_tasks")
+    logger.setLevel(logging.INFO)
+
+    try:
+        cli._run_task_monitor_command(
+            args=argparse.Namespace(task_id=None),
+            runner=runner,  # type: ignore[arg-type]
+            logger=logger,
+        )
+        assert False, "预期应抛出 RuntimeError"
+    except RuntimeError as error:
+        assert "当前状态库没有任何任务" in str(error)
 
 
 def test_run_task_monitor_command_should_start_service_and_write_launch_page(tmp_path: Path, monkeypatch) -> None:
@@ -222,3 +252,95 @@ def test_run_task_monitor_command_should_start_service_and_write_launch_page(tmp
     launch_text = Path(summary["launch_page_path"]).read_text(encoding="utf-8")
     assert "task_monitor.html" in str(summary["launch_page_path"])
     assert summary["monitor_url"] in launch_text
+
+
+def test_run_task_monitor_command_should_pick_latest_task_when_task_id_missing(tmp_path: Path, monkeypatch) -> None:
+    """
+    功能说明：验证 monitor 命令在未传 task_id 时会自动选择最新任务。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    - monkeypatch: pytest 补丁工具。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：最新任务以 updated_at 倒序规则为准。
+    """
+    state_store = StateStore(db_path=tmp_path / "state.sqlite3")
+    runs_dir = tmp_path / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    runner = _FakeRunner(state_store=state_store, runs_dir=runs_dir)
+    logger = logging.getLogger("test_run_task_monitor_command_should_pick_latest_task_when_task_id_missing")
+    logger.setLevel(logging.INFO)
+
+    old_task_id = "task_cli_monitor_old"
+    new_task_id = "task_cli_monitor_new"
+    for task_id in (old_task_id, new_task_id):
+        task_dir = runs_dir / task_id
+        task_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = tmp_path / f"{task_id}.mp3"
+        config_path = tmp_path / f"{task_id}.json"
+        audio_path.write_bytes(b"fake")
+        config_path.write_text("{}", encoding="utf-8")
+        state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+
+    state_store.update_task_status(task_id=old_task_id, status="running")
+    state_store.update_task_status(task_id=new_task_id, status="failed")
+    with state_store._connect() as connection:  # type: ignore[attr-defined]
+        connection.execute(
+            "UPDATE tasks SET updated_at = ? WHERE task_id = ?",
+            ("2026-04-17T12:00:00+08:00", old_task_id),
+        )
+        connection.execute(
+            "UPDATE tasks SET updated_at = ? WHERE task_id = ?",
+            ("2026-04-17T12:10:00+08:00", new_task_id),
+        )
+        connection.commit()
+
+    calls: list[tuple[str, str, bool]] = []
+
+    class _FakeMonitorService:
+        def __init__(
+            self,
+            state_store,  # noqa: ANN001
+            task_id,  # noqa: ANN001
+            logger,  # noqa: ANN001
+            host="127.0.0.1",  # noqa: ANN001
+            port=0,  # noqa: ANN001
+            tick_seconds=1.0,  # noqa: ANN001
+            auto_stop_on_terminal=True,  # noqa: ANN001
+        ) -> None:
+            _ = (state_store, logger, host, port, tick_seconds)
+            self.task_id = str(task_id)
+            self._is_running = False
+            self.monitor_url = f"http://127.0.0.1:9999/task-monitor?task_id={self.task_id}"
+            self._auto_stop_on_terminal = bool(auto_stop_on_terminal)
+
+        @property
+        def is_running(self) -> bool:
+            return self._is_running
+
+        def start(self) -> None:
+            self._is_running = True
+            calls.append(("start", self.task_id, self._auto_stop_on_terminal))
+
+        def wait_until_stopped(self, timeout_seconds=None) -> bool:  # noqa: ANN001
+            _ = timeout_seconds
+            calls.append(("wait", self.task_id, self._auto_stop_on_terminal))
+            self._is_running = False
+            return True
+
+        def stop(self) -> None:
+            calls.append(("stop", self.task_id, self._auto_stop_on_terminal))
+            self._is_running = False
+
+    monkeypatch.setattr(cli, "TaskMonitorService", _FakeMonitorService)
+
+    summary = cli._run_task_monitor_command(
+        args=argparse.Namespace(task_id=None),
+        runner=runner,  # type: ignore[arg-type]
+        logger=logger,
+    )
+
+    assert summary["task_id"] == new_task_id
+    assert calls[0] == ("start", new_task_id, False)
+    assert calls[1][0] == "wait"
+    assert calls[2][0] == "stop"

@@ -80,7 +80,7 @@ def test_build_parser_should_accept_bcd_status_and_retry_commands(tmp_path: Path
     status_args = parser.parse_args(["bcd-task-status", "--task-id", "task_cli_bcd_001"])
     assert status_args.command == "bcd-task-status"
     assert status_args.task_id == "task_cli_bcd_001"
-    assert str(status_args.config).endswith("configs/default.json")
+    assert str(status_args.config).endswith("configs/music_yby/default.json")
 
     retry_args = parser.parse_args(
         ["bcd-retry-segment", "--task-id", "task_cli_bcd_001", "--segment-id", "seg_0009"]
@@ -88,7 +88,7 @@ def test_build_parser_should_accept_bcd_status_and_retry_commands(tmp_path: Path
     assert retry_args.command == "bcd-retry-segment"
     assert retry_args.task_id == "task_cli_bcd_001"
     assert retry_args.segment_id == "seg_0009"
-    assert str(retry_args.config).endswith("configs/default.json")
+    assert str(retry_args.config).endswith("configs/music_yby/default.json")
 
 
 def test_dispatch_command_should_route_to_bcd_status_and_retry_methods(tmp_path: Path) -> None:
