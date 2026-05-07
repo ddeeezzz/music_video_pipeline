@@ -7,7 +7,7 @@
 - 模块 A V2 会结合 Demucs、FunASR、all-in-one 特征与 librosa 特征，产出 `big_segments`、`segments`、`beats`、`lyric_units`、`energy_features` 等结构化结果。
 - 模块 B（现已升级为 V2 架构）负责把音频结构转成可执行的视觉脚本，通过“视觉总监 -> 大段落导演 -> 镜头分镜师 -> Prompt构建师”的多角色协作链路，支持结构化 Markdown 解析、增量重试与复杂的剧本拆解。
 - 模块 C 负责关键帧生成，并记录 LoRA / base model 绑定信息，便于追踪生成来源。
-- 模块 D 支持 `ffmpeg` 与 `animatediff` 两种后端、shot 级并行渲染、单元重试、终拼策略切换，以及 copy 失败后的回退重编码。
+- 模块 D 当前已收口为 ComfyUI 单元渲染路径：支持 shot 级并行渲染、单元重试、双关键帧契约校验、运镜后处理，以及基于 FFmpeg 的终拼策略切换与 copy 失败后的回退重编码。
 - B/C/D 已经接入跨模块波前并行调度；在真实生成链路下，可以边出分镜、边出关键帧、边渲染视频片段，并根据 GPU 负载动态收缩/放宽并发窗口。
 - 全流程状态写入 SQLite，支持 `resume`、单模块调试、segment / shot 定向补跑、监督页面、产物上传与评测脚本。
 
@@ -24,8 +24,6 @@
 - 最终输出是稳定 JSON 契约，供模块 B 做视觉脚本生成。
 
 ## 模块 B：视觉策略转化链路
-
-![模块 B 视觉策略转化链路](docs/images/architecture/p3.png)
 
 - 模块 B（V2）以模块 A 的 JSON 契约为输入，采用多角色级联（Visual Director / Big Segment Director / Segment Director / Prompt Builder）进行结构化拆解。
 - 输出为规范的 Markdown 脚本，随后被解析为结构化的 `scene_desc`、`keyframe_prompt` 和 `video_prompt`。
@@ -79,7 +77,7 @@
 - `uv`
 - `ffmpeg` / `ffprobe`
 - 推荐 Linux / WSL2；当前依赖和现成配置档主要围绕 Linux x86_64 环境组织
-- 真实 AnimateDiff 链路建议显存 24G
+- 建议显存 24G
 
 ### 依赖安装
 
@@ -123,11 +121,12 @@ uv pip install -e . --index-url https://mirrors.aliyun.com/pypi/simple/
 
 ## CLI 命令
 
-四个入口：
+当前提供四个命令入口：
 
 | 命令 | 说明 |
 |------|------|
 | `mvpl` / `music-video-pipeline` | 主流水线 |
+| `model_assets` | 模型资产下载与同步 |
 | `eval` | CLIP Score 评估 |
 
 ### 全链路执行
@@ -164,7 +163,7 @@ uv run --project /path/to/t1 --no-sync mvpl
 
 ### 保留入口：非交互式命令
 
-仓库当前提供的可用配置档主要在 `configs/music_wsl/` 和 `configs/music_yby/`：
+CLI 当前默认配置已切到 `configs/music_yby/default.json`。仓库当前提供的可用配置档主要在 `configs/music_wsl/` 和 `configs/music_yby/`：
 - `configs/music_wsl/`: 本地 WSL 环境
 - `configs/music_yby/`: 在云显卡服务器上的环境
 
@@ -179,8 +178,11 @@ uv run --no-sync mvpl b-task-status --task-id demo_20s --config configs/music_ws
 uv run --no-sync mvpl c-task-status --task-id demo_20s --config configs/music_wsl/default.json
 uv run --no-sync mvpl d-task-status --task-id demo_20s --config configs/music_wsl/default.json
 uv run --no-sync mvpl bcd-task-status --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl monitor
 uv run --no-sync mvpl monitor --task-id demo_20s --config configs/music_wsl/default.json
 ```
+
+其中 `uv run --no-sync mvpl monitor` 现在支持无参快速启动：若未显式传 `--task-id`，会自动选择状态库中 `updated_at` 最新的任务，并启动对应的监督页面。
 
 定向重试命令保留不变；实际使用时请先通过状态命令确认目标 ID：
 
