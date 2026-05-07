@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, PathsConfig
 # 项目内模块：流水线调度器
 from music_video_pipeline.pipeline import PipelineRunner
 
@@ -204,7 +204,6 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     边界条件：runs_dir 指向临时目录，避免污染仓库。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -216,5 +215,4 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
     )

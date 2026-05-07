@@ -22,8 +22,6 @@ from music_video_pipeline.config import (
     CrossModuleConfig,
     FfmpegConfig,
     LoggingConfig,
-    MockConfig,
-    ModeConfig,
     ModuleAConfig,
     ModuleBConfig,
     ModuleCConfig,
@@ -59,8 +57,6 @@ def test_cross_scheduler_should_run_wavefront_order_and_finish_all_units(tmp_pat
     """
     context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(tmp_path=tmp_path, task_id="chain_ok")
     events: list[tuple[str, int]] = []
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
 
@@ -139,8 +135,6 @@ def test_cross_scheduler_should_stop_only_failed_chain(tmp_path: Path, monkeypat
     边界条件：失败链路采用模块B失败场景，触发下游阻断标记。
     """
     context, chain_units, b_units_map, d_blueprints_map = _build_cross_fixture(tmp_path=tmp_path, task_id="chain_fail")
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
 
@@ -151,9 +145,9 @@ def test_cross_scheduler_should_stop_only_failed_chain(tmp_path: Path, monkeypat
                 module_name="B",
                 unit_id=unit.unit_id,
                 status="failed",
-                error_message="mock b fail",
+                error_message="b failure",
             )
-            raise RuntimeError("mock b fail")
+            raise RuntimeError("b failure")
         context.state_store.set_module_unit_status(
             task_id=context.task_id,
             module_name="B",
@@ -230,8 +224,6 @@ def test_cross_scheduler_should_respect_global_render_limit(tmp_path: Path, monk
         task_id="chain_limit",
         global_render_limit=2,
     )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (2, "test"))
@@ -328,8 +320,6 @@ def test_cross_scheduler_should_allow_d_dispatch_in_bc_when_secondary_gpu_availa
         task_id="chain_phase_gate",
         global_render_limit=1,
     )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "cpu"})
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (2, "test"))
@@ -421,8 +411,6 @@ def test_cross_scheduler_should_dispatch_second_comfyui_d_before_first_done(tmp_
         render_backend="comfyui",
         adaptive_window=adaptive_cfg,
     )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
     monkeypatch.setattr(
@@ -530,8 +518,6 @@ def test_cross_scheduler_should_keep_dual_device_pool_snapshot_in_d_phase(tmp_pa
         render_backend="comfyui",
         adaptive_window=adaptive_cfg,
     )
-
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
     monkeypatch.setattr(
@@ -638,7 +624,6 @@ def test_cross_scheduler_should_use_single_gpu_mode_with_c_and_d_one_inflight_ea
         render_backend="comfyui",
     )
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (1, "test"))
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
 
@@ -752,7 +737,6 @@ def test_cross_scheduler_single_gpu_should_lock_c_then_d_after_oom(tmp_path: Pat
         render_backend="comfyui",
     )
     monkeypatch.setattr(scheduler_adaptive, "_detect_available_gpu_count", lambda context: (1, "test"))
-    monkeypatch.setattr(scheduler_engine, "build_script_generator", lambda mode, logger, module_b_config=None: object())
     monkeypatch.setattr(scheduler_engine, "build_keyframe_generator", lambda mode, logger, app_config=None: object())
     monkeypatch.setattr(scheduler_engine, "resolve_render_profile", lambda context: {"name": "comfyui"})
 
@@ -908,12 +892,12 @@ def test_cross_scheduler_adaptive_should_fallback_to_static_when_probe_failed(tm
         global_render_limit=3,
         adaptive_enabled=True,
     )
-    monkeypatch.setattr(scheduler_adaptive, "_run_gpu_probe_script", lambda context, timeout_seconds: ([], "mock probe failed"))
+    monkeypatch.setattr(scheduler_adaptive, "_run_gpu_probe_script", lambda context, timeout_seconds: ([], "probe failure"))
 
     snapshot = scheduler.collect_adaptive_window_status_snapshot(context=context)
     assert snapshot["enabled"] is True
     assert snapshot["last_probe_ok"] is False
-    assert snapshot["last_probe_error"] == "mock probe failed"
+    assert snapshot["last_probe_error"] == "probe failure"
     assert snapshot["c_dynamic_limit"] == snapshot["fallback_c_limit"]
     assert snapshot["d_dynamic_limit"] == snapshot["fallback_d_limit"]
 
@@ -978,7 +962,6 @@ def _build_cross_fixture(
     audio_path.write_bytes(b"fake-audio")
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir="runs", default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -990,8 +973,7 @@ def _build_cross_fixture(
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
-        module_b=ModuleBConfig(script_workers=3, unit_retry_times=1),
+        module_b=ModuleBConfig(),
         module_c=ModuleCConfig(render_workers=3, unit_retry_times=1),
         module_d=ModuleDConfig(
             render_backend=render_backend,

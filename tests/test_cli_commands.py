@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 # 项目内模块：CLI实现
 from music_video_pipeline import cli
 
@@ -201,35 +201,6 @@ def test_main_without_subcommand_should_enter_interactive_mode(tmp_path: Path, m
     assert called, "预期应进入交互模式"
 
 
-def test_apply_user_custom_prompt_override_should_patch_runtime_config(tmp_path: Path) -> None:
-    """
-    功能说明：验证命令请求携带 user_custom_prompt 覆盖值时会注入运行时配置。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：覆盖值为空字符串时同样视为有效覆盖。
-    """
-    config = _build_test_config(runs_dir=str(tmp_path / "runs_cli_override"))
-    request = cli.CommandRequest(
-        command="run",
-        task_id="task_override_001",
-        config_path=(tmp_path / "config.json"),
-        user_custom_prompt_override="赛博朋克女孩",
-    )
-    patched = cli._apply_user_custom_prompt_override(config=config, request=request)
-    assert patched.module_b.llm.user_custom_prompt == "赛博朋克女孩"
-
-    empty_override_request = cli.CommandRequest(
-        command="run",
-        task_id="task_override_001",
-        config_path=(tmp_path / "config.json"),
-        user_custom_prompt_override="",
-    )
-    empty_patched = cli._apply_user_custom_prompt_override(config=config, request=empty_override_request)
-    assert empty_patched.module_b.llm.user_custom_prompt == ""
-
-
 def _build_test_config(runs_dir: str) -> AppConfig:
     """
     功能说明：构造CLI分发测试用最小配置对象。
@@ -241,7 +212,6 @@ def _build_test_config(runs_dir: str) -> AppConfig:
     边界条件：module_a.funasr_language 必填，固定为 auto。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=runs_dir, default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -253,6 +223,5 @@ def _build_test_config(runs_dir: str) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_a=ModuleAConfig(funasr_language="auto"),
     )

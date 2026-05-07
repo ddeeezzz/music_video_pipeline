@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from music_video_pipeline.context import RuntimeContext
-from music_video_pipeline.generators import build_keyframe_generator, build_script_generator
+from music_video_pipeline.generators import build_keyframe_generator
 from music_video_pipeline.modules.cross_bcd import scheduler_adaptive, scheduler_allocators, scheduler_tasks
 from music_video_pipeline.modules.cross_bcd.models import CrossChainUnit
 from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
@@ -78,7 +78,6 @@ def execute_cross_bcd_wavefront(
     """
     功能说明：执行跨模块 B/C/D 波前并行调度。
     """
-    b_worker_limit = scheduler_adaptive._normalize_b_worker_limit(context.config.module_b.script_workers)
     render_limit = scheduler_adaptive._normalize_global_render_limit(context.config.cross_module.global_render_limit)
     tick_seconds = scheduler_adaptive._normalize_scheduler_tick_seconds(context.config.cross_module.scheduler_tick_ms)
     render_backend = scheduler_adaptive._normalize_module_d_render_backend(context.config.module_d.render_backend)
@@ -102,11 +101,6 @@ def execute_cross_bcd_wavefront(
     c_context = replace(context, logger=logging.getLogger("C"))
     d_context = replace(context, logger=logging.getLogger("D"))
 
-    script_generator = build_script_generator(
-        mode=context.config.mode.script_generator,
-        logger=b_context.logger,
-        module_b_config=context.config.module_b,
-    )
     c_generator_pool_size = scheduler_allocators._resolve_c_generator_pool_size(
         context=context,
         adaptive_window_runtime=adaptive_window_runtime,
@@ -122,7 +116,7 @@ def execute_cross_bcd_wavefront(
     c_generator_cursor = 0
     d_profile = resolve_render_profile(context=d_context)
 
-    active_tasks: dict[Future, tuple[str, int, str | None]] = {}
+    active_tasks: dict[Future, tuple[str, int, Any]] = {}
     failed_chain_indexes: set[int] = set()
     failed_errors: dict[int, str] = {}
     initial_snapshot_state = _refresh_state_snapshot(
@@ -166,7 +160,7 @@ def execute_cross_bcd_wavefront(
             "on" if loop_state.d_dispatch_enabled else "off",
         )
 
-    max_workers = max(2, b_worker_limit + int(adaptive_window_runtime["max_render_workers"]))
+    max_workers = max(2, 1 + int(adaptive_window_runtime["max_render_workers"]))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while True:
             scheduler_tasks._drain_finished_tasks(
@@ -258,7 +252,6 @@ def execute_cross_bcd_wavefront(
                     executor=executor,
                     loop_state=loop_state,
                     adaptive_enabled=adaptive_enabled,
-                    b_worker_limit=b_worker_limit,
                     render_limit=render_limit,
                     selected_indexes=selected_index_set,
                     failed_chain_indexes=failed_chain_indexes,
@@ -268,9 +261,6 @@ def execute_cross_bcd_wavefront(
                     b_units_by_segment_id=b_units_by_segment_id,
                     b_context=b_context,
                     c_context=c_context,
-                    script_generator=script_generator,
-                    module_a_output=module_a_output,
-                    unit_outputs_dir=unit_outputs_dir,
                     c_generator_pool=c_generator_pool,
                     c_generator_cursor=c_generator_cursor,
                     c_generator_pool_size=c_generator_pool_size,
@@ -283,7 +273,6 @@ def execute_cross_bcd_wavefront(
                     executor=executor,
                     loop_state=loop_state,
                     adaptive_enabled=adaptive_enabled,
-                    b_worker_limit=b_worker_limit,
                     render_limit=render_limit,
                     selected_indexes=selected_index_set,
                     failed_chain_indexes=failed_chain_indexes,
@@ -293,9 +282,6 @@ def execute_cross_bcd_wavefront(
                     b_units_by_segment_id=b_units_by_segment_id,
                     b_context=b_context,
                     c_context=c_context,
-                    script_generator=script_generator,
-                    module_a_output=module_a_output,
-                    unit_outputs_dir=unit_outputs_dir,
                     c_generator_pool=c_generator_pool,
                     c_generator_cursor=c_generator_cursor,
                     c_generator_pool_size=c_generator_pool_size,
@@ -386,7 +372,7 @@ def _refresh_state_snapshot(
 
 def _apply_adaptive_tick(
     context: RuntimeContext,
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     adaptive_enabled: bool,
     adaptive_window_runtime: dict[str, Any],
     loop_state: _LoopState,
@@ -548,14 +534,25 @@ def _apply_adaptive_tick(
 
 
 def _build_dispatch_state(
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     d_device_pool: list[str],
     c_generator_pool_size: int,
 ) -> _DispatchState:
-    in_flight_b = {idx for stage, idx, _ in active_tasks.values() if stage == "B"}
+    in_flight_b: set[int] = set()
+    active_b_count = 0
+    for stage, idx, metadata in active_tasks.values():
+        if stage == "B":
+            in_flight_b.add(int(idx))
+            active_b_count += 1
+            continue
+        if stage == "B_BATCH":
+            active_b_count += 1
+            if isinstance(metadata, list):
+                in_flight_b.update(int(item) for item in metadata)
+            else:
+                in_flight_b.add(int(idx))
     in_flight_c = {idx for stage, idx, _ in active_tasks.values() if stage == "C"}
     in_flight_d = {idx for stage, idx, _ in active_tasks.values() if stage == "D"}
-    active_b_count = len(in_flight_b)
     active_c_count = len(in_flight_c)
     active_d_count = len(in_flight_d)
     active_render_count = active_c_count + active_d_count
@@ -581,7 +578,6 @@ def _dispatch_bc_units(
     executor: ThreadPoolExecutor,
     loop_state: _LoopState,
     adaptive_enabled: bool,
-    b_worker_limit: int,
     render_limit: int,
     selected_indexes: set[int],
     failed_chain_indexes: set[int],
@@ -591,47 +587,45 @@ def _dispatch_bc_units(
     b_units_by_segment_id: dict[str, ModuleBUnit],
     b_context: RuntimeContext,
     c_context: RuntimeContext,
-    script_generator: Any,
-    module_a_output: dict[str, Any],
-    unit_outputs_dir: Any,
     c_generator_pool: list[Any],
     c_generator_cursor: int,
     c_generator_pool_size: int,
     frames_dir: Any,
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     dispatch_state: _DispatchState,
 ) -> tuple[int, int]:
     if loop_state.current_phase != "bc":
         return 0, c_generator_cursor
     dispatched_count = 0
 
-    for unit_index in sorted(selected_indexes):
-        if dispatch_state.active_b_count >= b_worker_limit:
-            break
-        if unit_index in failed_chain_indexes or unit_index in dispatch_state.in_flight_b:
-            continue
-        b_row = b_by_index.get(unit_index)
-        if not b_row:
-            continue
-        b_status = str(b_row.get("status", "pending"))
-        if b_status not in {"pending", "running", "failed"}:
-            continue
-        chain_unit = chain_by_index[unit_index]
-        b_unit = b_units_by_segment_id.get(chain_unit.segment_id)
-        if not b_unit:
-            continue
-        future = executor.submit(
-            scheduler_tasks._run_b_chain_unit,
-            b_context,
-            b_unit,
-            script_generator,
-            module_a_output,
-            unit_outputs_dir,
-        )
-        active_tasks[future] = ("B", unit_index, None)
-        dispatch_state.active_b_count += 1
-        dispatch_state.in_flight_b.add(unit_index)
-        dispatched_count += 1
+    b_batch_units: list[ModuleBUnit] = []
+    if dispatch_state.active_b_count == 0:
+        for unit_index in sorted(selected_indexes):
+            if unit_index in failed_chain_indexes:
+                continue
+            b_row = b_by_index.get(unit_index)
+            if not b_row:
+                continue
+            b_status = str(b_row.get("status", "pending"))
+            if b_status not in {"pending", "running", "failed"}:
+                continue
+            chain_unit = chain_by_index[unit_index]
+            b_unit = b_units_by_segment_id.get(chain_unit.segment_id)
+            if b_unit is None:
+                continue
+            b_batch_units.append(b_unit)
+        if b_batch_units:
+            future = executor.submit(
+                scheduler_tasks._run_b_chain_batch,
+                b_context,
+                {str(unit.unit_id) for unit in b_batch_units},
+                list(b_batch_units),
+            )
+            first_unit_index = int(min(item.unit_index for item in b_batch_units))
+            active_tasks[future] = ("B_BATCH", first_unit_index, [int(item.unit_index) for item in b_batch_units])
+            dispatch_state.active_b_count = 1
+            dispatch_state.in_flight_b.update(int(item.unit_index) for item in b_batch_units)
+            dispatched_count += 1
 
     for unit_index in sorted(selected_indexes):
         if adaptive_enabled or loop_state.single_gpu_mode:
@@ -690,7 +684,7 @@ def _dispatch_d_units(
     d_blueprints_by_index: dict[int, ModuleDUnitBlueprint],
     d_context: RuntimeContext,
     d_profile: dict[str, Any],
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     dispatch_state: _DispatchState,
     d_done_count: int,
 ) -> int:
@@ -802,7 +796,7 @@ def _apply_oom_downscale(
 
 
 def _should_exit_loop(
-    active_tasks: dict[Future, tuple[str, int, str | None]],
+    active_tasks: dict[Future, tuple[str, int, Any]],
     dispatched_count: int,
     selected_indexes: set[int],
     failed_chain_indexes: set[int],

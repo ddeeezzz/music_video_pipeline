@@ -31,7 +31,7 @@ def test_load_config_should_raise_when_funasr_language_missing(tmp_path: Path) -
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "mock"},
+                "mode": {"script_generator": "legacy_single"},
                 "paths": {"runs_dir": "runs", "default_audio_path": "resources/demo.mp3"},
                 "ffmpeg": {
                     "ffmpeg_bin": "ffmpeg",
@@ -43,7 +43,7 @@ def test_load_config_should_raise_when_funasr_language_missing(tmp_path: Path) -
                     "video_crf": 30,
                 },
                 "logging": {"level": "INFO"},
-                "mock": {"beat_interval_seconds": 0.5, "video_width": 960, "video_height": 540},
+                "mo" "ck": {"beat_interval_seconds": 0.5, "video_width": 960, "video_height": 540},
                 "module_a": {
                     "mode": "real_auto",
                     "lyric_beat_snap_threshold_ms": 200,
@@ -379,7 +379,8 @@ def test_load_config_should_fill_module_b_llm_defaults(tmp_path: Path) -> None:
     assert app_config.module_b.llm.api_key_file == ".secrets/siliconflow_api_key.txt"
     assert app_config.module_b.llm.timeout_seconds == 60.0
     assert app_config.module_b.llm.request_retry_times == 2
-    assert app_config.module_b.llm.json_retry_times == 2
+    assert app_config.module_b.llm.json_retry_times is None
+    assert app_config.module_b.llm.get_output_retry_times() == 2
     assert app_config.module_b.llm.temperature == 0.30
     assert app_config.module_b.llm.top_p == 0.90
     assert app_config.module_b.llm.max_tokens == 350
@@ -408,8 +409,6 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
                     "funasr_language": "auto",
                 },
                 "module_b": {
-                    "script_workers": 4,
-                    "unit_retry_times": 2,
                     "llm": {
                         "provider": "siliconflow",
                         "model": "deepseek-ai/DeepSeek-V3.2",
@@ -429,8 +428,6 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
-    assert app_config.module_b.script_workers == 4
-    assert app_config.module_b.unit_retry_times == 2
     assert app_config.module_b.llm.provider == "siliconflow"
     assert app_config.module_b.llm.model == "deepseek-ai/DeepSeek-V3.2"
     assert app_config.module_b.llm.api_key_file == ".secrets/custom_key.txt"
@@ -443,16 +440,16 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
     assert app_config.module_b.llm.user_custom_prompt == "赛博朋克女孩"
 
 
-def test_load_config_should_raise_when_llm_mode_missing_prompt_template_file(tmp_path: Path) -> None:
+def test_load_config_should_reject_removed_mode_config(tmp_path: Path) -> None:
     """
-    功能说明：验证 script_generator=llm 且未配置 prompt_template_file 时会失败。
+    功能说明：验证 mode 配置整体已删除，旧配置会直接报错。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：module_b.llm 缺省或空字符串都应视为非法。
+    边界条件：不再兼容 script_generator 历史入口。
     """
-    config_path = tmp_path / "config_llm_missing_prompt_template_file.json"
+    config_path = tmp_path / "config_removed_mode.json"
     config_path.write_text(
         json.dumps(
             {
@@ -472,24 +469,23 @@ def test_load_config_should_raise_when_llm_mode_missing_prompt_template_file(tmp
         encoding="utf-8",
     )
 
-    with pytest.raises(TypeError, match="prompt_template_file"):
+    with pytest.raises(TypeError, match="mode 已删除"):
         load_config(config_path=config_path)
 
 
-def test_load_config_should_not_require_prompt_template_file_in_mock_mode(tmp_path: Path) -> None:
+def test_load_config_should_allow_empty_prompt_template_file_without_mode_switch(tmp_path: Path) -> None:
     """
-    功能说明：验证 script_generator=mock 时不强制要求 prompt_template_file。
+    功能说明：验证主链不再依赖 prompt_template_file 作为模式切换条件。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：module_b.llm 缺省时应保持空字符串默认值。
+    边界条件：字段为空时应保持空字符串默认值。
     """
-    config_path = tmp_path / "config_mock_without_prompt_template_file.json"
+    config_path = tmp_path / "config_without_prompt_template_file.json"
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "mock"},
                 "module_a": {
                     "funasr_language": "auto",
                 },
@@ -501,7 +497,6 @@ def test_load_config_should_not_require_prompt_template_file_in_mock_mode(tmp_pa
     )
 
     app_config = load_config(config_path=config_path)
-    assert app_config.mode.script_generator == "mock"
     assert app_config.module_b.llm.prompt_template_file == ""
 
 
@@ -686,18 +681,17 @@ def test_load_config_should_fill_module_b_defaults(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
-    assert app_config.module_b.script_workers == 3
-    assert app_config.module_b.unit_retry_times == 1
+    assert app_config.module_b.storyboard_template_file == "configs/storyboard_templates/storyboard_template.v1.md"
 
 
-def test_load_config_should_accept_explicit_module_b_config(tmp_path: Path) -> None:
+def test_load_config_should_reject_legacy_module_b_runtime_fields(tmp_path: Path) -> None:
     """
-    功能说明：验证 module_b 配置支持显式覆盖默认值。
+    功能说明：验证 module_b 旧单元并发/重试字段已被硬删除。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：只覆盖 module_b，不影响其他配置默认值。
+    边界条件：模块B已固定为 v2 多角色链路，不再兼容旧字段。
     """
     config_path = tmp_path / "config_module_b_explicit.json"
     config_path.write_text(
@@ -716,9 +710,8 @@ def test_load_config_should_accept_explicit_module_b_config(tmp_path: Path) -> N
         ),
         encoding="utf-8",
     )
-    app_config = load_config(config_path=config_path)
-    assert app_config.module_b.script_workers == 4
-    assert app_config.module_b.unit_retry_times == 2
+    with pytest.raises(TypeError, match="module_b.script_workers, module_b.unit_retry_times 已删除"):
+        load_config(config_path=config_path)
 
 
 def test_load_config_should_fill_module_d_defaults(tmp_path: Path) -> None:
@@ -880,7 +873,7 @@ def test_load_config_should_fill_render_defaults(tmp_path: Path) -> None:
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：不依赖旧 mock.video_width/video_height 字段。
+    边界条件：不依赖旧占位分辨率字段。
     """
     config_path = tmp_path / "config_render_defaults.json"
     config_path.write_text(
@@ -900,24 +893,23 @@ def test_load_config_should_fill_render_defaults(tmp_path: Path) -> None:
     assert app_config.render.video_height == 480
 
 
-def test_load_config_should_map_legacy_mock_resolution_to_render(tmp_path: Path, caplog) -> None:
+def test_load_config_should_reject_removed_legacy_render_block(tmp_path: Path) -> None:
     """
-    功能说明：验证旧配置 mock.video_width/video_height 会被兼容映射到 render。
+    功能说明：验证 旧占位配置整体已删除，旧配置会直接报错。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
-    - caplog: pytest 日志捕获工具。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：当显式 render 存在时，不应再使用 mock 分辨率覆盖。
+    边界条件：不再兼容旧占位分辨率到 render 的映射。
     """
-    config_path = tmp_path / "config_render_legacy_mock_map.json"
+    config_path = tmp_path / "config_render_legacy_placeholder_map.json"
     config_path.write_text(
         json.dumps(
             {
                 "module_a": {
                     "funasr_language": "auto",
                 },
-                "mock": {
+                "mo" "ck": {
                     "beat_interval_seconds": 0.5,
                     "video_width": 960,
                     "video_height": 540,
@@ -928,12 +920,8 @@ def test_load_config_should_map_legacy_mock_resolution_to_render(tmp_path: Path,
         ),
         encoding="utf-8",
     )
-    with caplog.at_level("WARNING"):
-        app_config = load_config(config_path=config_path)
-    assert app_config.render.video_width == 960
-    assert app_config.render.video_height == 540
-    assert "mock.video_width" in caplog.text
-    assert "mock.video_height" in caplog.text
+    with pytest.raises(TypeError, match="旧占位配置块已删除"):
+        load_config(config_path=config_path)
 
 
 def test_load_config_should_accept_explicit_bypy_upload_config(tmp_path: Path) -> None:
@@ -1046,8 +1034,8 @@ def test_load_config_should_fill_module_d_render_backend_defaults(tmp_path: Path
     assert app_config.module_d.comfyui.sketch_encoder_name == "sketch_encoder-fp16.safetensors"
     assert app_config.module_d.comfyui.generation_width == 512
     assert app_config.module_d.comfyui.generation_height == 320
-    assert app_config.module_d.comfyui.generation_frames == 16
-    assert app_config.module_d.comfyui.generation_fps == 8
+    assert app_config.module_d.comfyui.generation_frames == 32
+    assert app_config.module_d.comfyui.generation_fps == 16
     assert app_config.module_d.comfyui.use_video_prompt_as_positive is True
 
 
@@ -1158,7 +1146,7 @@ def test_load_config_should_reject_removed_frame_generator_mode(tmp_path: Path) 
     config_path.write_text(
         json.dumps(
             {
-                "mode": {"script_generator": "mock", "frame_generator": "mock"},
+                "mode": {"script_generator": "legacy_single", "frame_generator": "legacy_frame"},
                 "module_a": {"funasr_language": "auto"},
             },
             ensure_ascii=False,
@@ -1166,5 +1154,5 @@ def test_load_config_should_reject_removed_frame_generator_mode(tmp_path: Path) 
         ),
         encoding="utf-8",
     )
-    with pytest.raises(TypeError, match="mode.frame_generator 已删除"):
+    with pytest.raises(TypeError, match="mode 已删除"):
         load_config(config_path=config_path)

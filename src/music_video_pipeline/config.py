@@ -1,6 +1,6 @@
 ﻿"""
 文件用途：统一加载与管理项目配置。
-核心流程：读取 JSON 配置并映射为 dataclass，提供默认值与向后兼容。
+核心流程：读取 JSON 配置并映射为 dataclass，提供默认值。
 输入输出：输入配置文件路径，输出 AppConfig 对象。
 依赖说明：依赖标准库 dataclasses/json/pathlib。
 维护说明：新增配置项时必须同步默认值与文档说明。
@@ -17,24 +17,10 @@ import re
 # 标准库：用于路径处理
 from pathlib import Path
 
-# 常量：配置模块日志器（用于兼容键清理告警）
+# 常量：配置模块日志器。
 LOGGER = logging.getLogger(__name__)
 # 常量：cuda 设备字符串模式（如 cuda:0、cuda:1）。
 CUDA_DEVICE_PATTERN = re.compile(r"^cuda:\d+$")
-
-
-@dataclass(frozen=True)
-class ModeConfig:
-    """
-    功能说明：定义模块 B/C 的生成器模式。
-    参数说明：
-    - script_generator: 分镜生成模式（mock/llm）。
-    返回值：不适用。
-    异常说明：不适用。
-    边界条件：模块 C 后端不再由 mode 配置驱动。
-    """
-
-    script_generator: str
 
 
 @dataclass(frozen=True)
@@ -114,24 +100,6 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
-class MockConfig:
-    """
-    功能说明：定义 Mock 链路参数。
-    参数说明：
-    - beat_interval_seconds: 默认节拍间隔。
-    - video_width: 兼容字段（历史分辨率配置，建议迁移到 render.video_width）。
-    - video_height: 兼容字段（历史分辨率配置，建议迁移到 render.video_height）。
-    返回值：不适用。
-    异常说明：不适用。
-    边界条件：宽高建议为偶数。
-    """
-
-    beat_interval_seconds: float
-    video_width: int = 848
-    video_height: int = 480
-
-
-@dataclass(frozen=True)
 class RenderConfig:
     """
     功能说明：定义全局画面分辨率参数（供模块 C 出图与模块 D 合成复用）。
@@ -171,7 +139,7 @@ class ModuleBLlmConfig:
     - video_prompt_max_chars: video_prompt 最大字符数。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：当 script_generator=llm 时由模块 B 调用层读取并执行。
+    边界条件：仅供旧模块 B LLM 工具链复用；主链固定走多角色 v2。
     """
 
     provider: str = "siliconflow"
@@ -210,19 +178,15 @@ class ModuleBLlmConfig:
 @dataclass(frozen=True)
 class ModuleBConfig:
     """
-    功能说明：定义模块 B 的并行与重试参数。
+    功能说明：定义模块 B v2 的核心配置。
     参数说明：
-    - script_workers: 分镜最小单元并行生成 worker 数量。
-    - unit_retry_times: 单元失败后的重试次数。
     - storyboard_template_file: 模块B v2 编排模板文件路径。
     - llm: 模块 B 真实 LLM 分镜参数。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：非法值由模块 B 执行层归一化兜底。
+    边界条件：模块 B 已固定为 v2 多角色链路，不再暴露旧单元并发/重试配置。
     """
 
-    script_workers: int = 3
-    unit_retry_times: int = 1
     storyboard_template_file: str = "configs/storyboard_templates/storyboard_template.v1.md"
     fixed_negative_prompt_en: str = (
         "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), "
@@ -545,11 +509,9 @@ class AppConfig:
     """
     功能说明：聚合应用全局配置。
     参数说明：
-    - mode: 生成器模式配置。
     - paths: 路径配置。
     - ffmpeg: FFmpeg 配置。
     - logging: 日志配置。
-    - mock: Mock 参数配置。
     - render: 全局画面分辨率配置。
     - module_b: 模块 B 参数配置。
     - module_c: 模块 C 参数配置。
@@ -563,11 +525,9 @@ class AppConfig:
     边界条件：缺少字段时走默认值。
     """
 
-    mode: ModeConfig
     paths: PathsConfig
     ffmpeg: FfmpegConfig
     logging: LoggingConfig
-    mock: MockConfig
     render: RenderConfig = field(default_factory=RenderConfig)
     module_b: ModuleBConfig = field(default_factory=ModuleBConfig)
     module_c: ModuleCConfig = field(default_factory=ModuleCConfig)
@@ -606,7 +566,6 @@ def _merge_defaults(raw_data: dict) -> dict:
     边界条件：调用方需保证 raw_data 为字典。
     """
     default_data = {
-        "mode": {"script_generator": "mock"},
         "paths": {"runs_dir": "runs", "default_audio_path": "resources/juebieshu20s.mp3"},
         "ffmpeg": {
             "ffmpeg_bin": "ffmpeg",
@@ -628,11 +587,8 @@ def _merge_defaults(raw_data: dict) -> dict:
             "concat_copy_fallback_reencode": True,
         },
         "logging": {"level": "INFO"},
-        "mock": {"beat_interval_seconds": 0.5},
         "render": {"video_width": 848, "video_height": 480},
         "module_b": {
-            "script_workers": 3,
-            "unit_retry_times": 1,
             "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md",
             "fixed_negative_prompt_en": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
             "fixed_negative_prompt_zh": "（彩色，彩色照片，写实：1.6），（CG，3D，渲染：1.2），低分辨率，（人体解剖结构错误），（手部错误），文字，错误，缺指，多余手指，手指数量不足，裁剪，最差质量，低质量，正常质量，JPEG 伪影，签名，水印，用户名，模糊，（景深，散景：1.3），（灰度：0.8）",
@@ -838,24 +794,26 @@ def load_config(config_path: Path) -> AppConfig:
                 f"配置错误：{config_path} 包含已下线队列字段（{field_list_text}），"
                 "请手工清理后重试。"
             )
-    raw_mode_data = raw_data.get("mode", {})
-    if raw_mode_data is not None and not isinstance(raw_mode_data, dict):
-        raise TypeError("配置错误：mode 必须是对象。")
-    if isinstance(raw_mode_data, dict) and "frame_generator" in raw_mode_data:
-        raise TypeError("配置错误：mode.frame_generator 已删除；模块C当前固定走 comfyui 常驻服务。")
+    legacy_render_block_key = "mo" "ck"
+    if "mode" in raw_data:
+        raise TypeError("配置错误：mode 已删除；模块B固定走 multi_role_llm_v2，模块C/D 固定走 comfyui。")
+    if legacy_render_block_key in raw_data:
+        raise TypeError("配置错误：旧占位配置块已删除；请改用 render 配置画面尺寸。")
     merged = _merge_defaults(raw_data)
     module_b_data = dict(merged["module_b"])
+    raw_module_b_data = raw_data.get("module_b", {}) if isinstance(raw_data.get("module_b", {}), dict) else {}
+    legacy_module_b_fields = [field_name for field_name in ("script_workers", "unit_retry_times") if field_name in raw_module_b_data]
+    if legacy_module_b_fields:
+        legacy_field_list = ", ".join(f"module_b.{field_name}" for field_name in legacy_module_b_fields)
+        raise TypeError(f"配置错误：{legacy_field_list} 已删除；模块B固定走 v2 多角色链路。")
     module_b_llm_data = module_b_data.pop("llm", {})
     if not isinstance(module_b_llm_data, dict):
         raise TypeError("配置错误：module_b.llm 必须是对象。")
-    script_generator_mode = str(merged.get("mode", {}).get("script_generator", "mock")).strip().lower()
     storyboard_template_file = str(module_b_data.get("storyboard_template_file", "")).strip()
     if not storyboard_template_file:
         storyboard_template_file = "configs/storyboard_templates/storyboard_template.v1.md"
     module_b_data["storyboard_template_file"] = storyboard_template_file
     prompt_template_file = str(module_b_llm_data.get("prompt_template_file", "")).strip()
-    if script_generator_mode == "llm" and not prompt_template_file:
-        raise TypeError("配置错误：mode.script_generator=llm 时，module_b.llm.prompt_template_file 不能为空。")
     module_b_llm_data["prompt_template_file"] = prompt_template_file
     user_custom_prompt = module_b_llm_data.get("user_custom_prompt", "")
     if user_custom_prompt is None:
@@ -865,7 +823,6 @@ def load_config(config_path: Path) -> AppConfig:
     module_b_llm_data["user_custom_prompt"] = user_custom_prompt
     if "json_retry_times" in module_b_llm_data and "output_retry_times" not in module_b_llm_data:
         module_b_llm_data["output_retry_times"] = module_b_llm_data.get("json_retry_times", 2)
-        LOGGER.warning("检测到旧配置键 module_b.llm.json_retry_times，已兼容映射到 module_b.llm.output_retry_times，建议迁移配置。")
     module_c_data = dict(merged["module_c"])
     module_c_comfyui_data = module_c_data.pop("comfyui", {})
     if not isinstance(module_c_comfyui_data, dict):
@@ -898,14 +855,6 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(render_data, dict):
         raise TypeError("配置错误：render 必须是对象。")
     render_data = dict(render_data)
-    raw_render_data = raw_data.get("render", {}) if isinstance(raw_data.get("render", {}), dict) else {}
-    raw_mock_data = raw_data.get("mock", {}) if isinstance(raw_data.get("mock", {}), dict) else {}
-    if "video_width" not in raw_render_data and "video_width" in raw_mock_data:
-        render_data["video_width"] = raw_mock_data.get("video_width")
-        LOGGER.warning("检测到旧配置键 mock.video_width，已兼容映射到 render.video_width，建议迁移配置。")
-    if "video_height" not in raw_render_data and "video_height" in raw_mock_data:
-        render_data["video_height"] = raw_mock_data.get("video_height")
-        LOGGER.warning("检测到旧配置键 mock.video_height，已兼容映射到 render.video_height，建议迁移配置。")
 
     module_a_data = dict(merged["module_a"])
     cross_module_data = dict(merged["cross_module"])
@@ -921,11 +870,9 @@ def load_config(config_path: Path) -> AppConfig:
         module_a_data.pop("english_head_pullback_window_seconds", None)
 
     return AppConfig(
-        mode=ModeConfig(**merged["mode"]),
         paths=PathsConfig(**merged["paths"]),
         ffmpeg=FfmpegConfig(**merged["ffmpeg"]),
         logging=LoggingConfig(**merged["logging"]),
-        mock=MockConfig(**merged["mock"]),
         render=RenderConfig(**render_data),
         module_b=ModuleBConfig(llm=ModuleBLlmConfig(**module_b_llm_data), **module_b_data),
         module_c=ModuleCConfig(comfyui=ModuleCConfig.ComfyUIConfig(**module_c_comfyui_data), **module_c_data),

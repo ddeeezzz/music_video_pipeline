@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 # 项目内模块：CLI实现
 from music_video_pipeline import cli
 
@@ -150,7 +150,6 @@ def _build_test_config(runs_dir: str) -> AppConfig:
     边界条件：module_a.funasr_language 必填，固定为 auto。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=runs_dir, default_audio_path="resources/demo.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -162,6 +161,5 @@ def _build_test_config(runs_dir: str) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_a=ModuleAConfig(funasr_language="auto"),
     )

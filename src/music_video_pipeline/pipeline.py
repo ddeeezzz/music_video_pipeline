@@ -515,18 +515,12 @@ class PipelineRunner:
         - config_path: 配置文件路径。
         返回值：
         - dict: 任务执行摘要，并附带本次重试 role 与缓存失效摘要。
-        异常说明：任务不存在、上游未完成、模块B非 v2 链路或模块执行失败时抛 RuntimeError。
+        异常说明：任务不存在、上游未完成或模块执行失败时抛 RuntimeError。
         边界条件：仅执行模块B，不自动执行 C/D；完成后 C/D 保持 pending 等待后续衔接。
         """
         normalized_role_name = str(role_name).strip().lower()
         if not normalized_role_name:
             raise RuntimeError("role_name 不能为空。")
-        if str(self.config.mode.script_generator).strip().lower() != "multi_role_llm_v2":
-            raise RuntimeError(
-                "模块B角色级重试仅支持 multi_role_llm_v2 链路，当前 script_generator="
-                f"{self.config.mode.script_generator}"
-            )
-
         task_record = self.state_store.get_task(task_id=task_id)
         if not task_record:
             raise RuntimeError(f"任务不存在，无法重试模块B角色：task_id={task_id}")
@@ -576,7 +570,7 @@ class PipelineRunner:
         - config_path: 配置文件路径。
         返回值：
         - dict: 任务执行摘要，并附带本次重试 role/shot 与缓存失效摘要。
-        异常说明：任务不存在、上游未完成、目标 shot 不存在、模块B非 v2 链路或模块执行失败时抛 RuntimeError。
+        异常说明：任务不存在、上游未完成、目标 shot 不存在或模块执行失败时抛 RuntimeError。
         边界条件：仅执行模块B，不自动执行 C/D；仅将目标链路的 C/D 置为 pending。
         """
         normalized_role_name = str(role_name).strip().lower()
@@ -585,12 +579,6 @@ class PipelineRunner:
             raise RuntimeError("模块B角色内 shot 重试仅支持 role3 或 role4。")
         if not normalized_shot_id:
             raise RuntimeError("shot_id 不能为空。")
-        if str(self.config.mode.script_generator).strip().lower() != "multi_role_llm_v2":
-            raise RuntimeError(
-                "模块B角色内 shot 重试仅支持 multi_role_llm_v2 链路，当前 script_generator="
-                f"{self.config.mode.script_generator}"
-            )
-
         task_record = self.state_store.get_task(task_id=task_id)
         if not task_record:
             raise RuntimeError(f"任务不存在，无法重试模块B角色内 shot：task_id={task_id}")
@@ -928,9 +916,29 @@ class PipelineRunner:
                     f"跨模块链路定向重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
                 )
 
+            chain_rows_before_reset = self.state_store.list_bcd_chain_status(task_id=task_id)
+            matched_chain_rows = [
+                row for row in chain_rows_before_reset if str(row.get("segment_id", "")).strip() == normalized_segment_id
+            ]
+            if not matched_chain_rows:
+                raise RuntimeError(
+                    f"跨模块链路定向重试失败：segment_id 不存在或尚未建立链路，task_id={task_id}，segment_id={normalized_segment_id}"
+                )
+            retry_chain_row = matched_chain_rows[0]
+            retry_shot_id = str(retry_chain_row.get("shot_id", "")).strip()
+            if not retry_shot_id:
+                raise RuntimeError(
+                    f"跨模块链路定向重试失败：目标链路缺少 shot_id，task_id={task_id}，segment_id={normalized_segment_id}"
+                )
+            invalidation_summary = invalidate_module_b_v2_role_shot_outputs(
+                task_dir=context.task_dir,
+                role_name="role3",
+                shot_id=retry_shot_id,
+                logger=self.logger,
+            )
             reset_result = self.state_store.reset_bcd_chain_units(task_id=task_id, segment_id=normalized_segment_id)
             self.logger.info(
-                "跨模块链路定向重试已重置目标链路，task_id=%s，segment_id=%s，unit_index=%s，shot_id=%s",
+                "跨模块链路定向重试已失效模块B v2 目标shot缓存并重置链路，task_id=%s，segment_id=%s，unit_index=%s，shot_id=%s",
                 task_id,
                 reset_result["segment_id"],
                 reset_result["unit_index"],
@@ -942,6 +950,7 @@ class PipelineRunner:
             summary["retry_segment_id"] = normalized_segment_id
             summary["retry_unit_index"] = int(reset_result["unit_index"])
             summary["retry_shot_id"] = str(reset_result["shot_id"])
+            summary["module_b_v2_invalidation"] = invalidation_summary
             chain_rows = self.state_store.list_bcd_chain_status(task_id=task_id)
             chain_status_counts = {"pending": 0, "running": 0, "done": 0, "failed": 0}
             for item in chain_rows:

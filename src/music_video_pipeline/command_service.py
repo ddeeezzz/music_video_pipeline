@@ -32,6 +32,7 @@ class CommandRequest:
     role_name: str | None = None
     shot_id: str | None = None
     segment_id: str | None = None
+    user_custom_prompt_override: str | None = None
     storyboard_template_file_override: str | None = None
 
 

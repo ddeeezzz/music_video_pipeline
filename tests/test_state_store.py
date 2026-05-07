@@ -87,7 +87,7 @@ def test_state_store_should_list_task_module_status_map(tmp_path: Path) -> None:
     store.init_task(task_id="task_map_001", audio_path="a.mp3", config_path="a.json")
     store.init_task(task_id="task_map_002", audio_path="b.mp3", config_path="b.json")
     store.set_module_status(task_id="task_map_001", module_name="A", status="done", artifact_path="a_out.json")
-    store.set_module_status(task_id="task_map_001", module_name="B", status="failed", error_message="mock")
+    store.set_module_status(task_id="task_map_001", module_name="B", status="failed", error_message="placeholder")
 
     summary = store.list_task_module_status_map(task_ids=["task_map_001", "task_map_002"])
     assert summary["task_map_001"]["A"] == "done"
@@ -339,7 +339,7 @@ def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None
         unit_id="shot_002",
         status="failed",
         artifact_path="",
-        error_message="mock failed",
+        error_message="simulated failure",
     )
 
     done_frame_items = store.list_module_c_done_frame_items(task_id="task_units_001")
@@ -357,7 +357,7 @@ def test_state_store_should_sync_and_update_module_units(tmp_path: Path) -> None
     )
     assert len(failed_units) == 1
     assert failed_units[0]["unit_id"] == "shot_002"
-    assert failed_units[0]["error_message"] == "mock failed"
+    assert failed_units[0]["error_message"] == "simulated failure"
 
 
 def test_state_store_should_clear_module_c_units_when_reset_from_upstream(tmp_path: Path) -> None:
@@ -497,7 +497,7 @@ def test_state_store_should_build_module_unit_status_summary(tmp_path: Path) -> 
         module_name="C",
         unit_id="shot_002",
         status="failed",
-        error_message="mock failed",
+        error_message="simulated failure",
     )
     store.set_module_unit_status(
         task_id="task_units_003",
@@ -551,7 +551,7 @@ def test_state_store_should_reset_single_module_unit(tmp_path: Path) -> None:
         unit_id="shot_002",
         status="failed",
         artifact_path="",
-        error_message="mock failed",
+        error_message="simulated failure",
     )
 
     store.reset_module_unit(task_id="task_units_004", module_name="C", unit_id="shot_002")
@@ -605,7 +605,7 @@ def test_state_store_should_list_module_b_done_shot_items(tmp_path: Path) -> Non
         unit_id="seg_0002",
         status="failed",
         artifact_path="",
-        error_message="mock failed",
+        error_message="simulated failure",
     )
 
     done_items = store.list_module_b_done_shot_items(task_id="task_units_005")
@@ -684,7 +684,7 @@ def test_state_store_should_list_module_d_done_segment_items(tmp_path: Path) -> 
         unit_id="shot_002",
         status="failed",
         artifact_path="",
-        error_message="mock failed",
+        error_message="simulated failure",
     )
 
     done_items = store.list_module_d_done_segment_items(task_id="task_units_007")
@@ -783,7 +783,7 @@ def test_state_store_should_build_bcd_chain_status(tmp_path: Path) -> None:
     store.set_module_unit_status(task_id="task_chain_001", module_name="B", unit_id="seg_0002", status="done", artifact_path="/tmp/b2.json")
     store.set_module_unit_status(task_id="task_chain_001", module_name="C", unit_id="shot_002", status="running")
 
-    store.set_module_unit_status(task_id="task_chain_001", module_name="B", unit_id="seg_0003", status="failed", error_message="mock failed")
+    store.set_module_unit_status(task_id="task_chain_001", module_name="B", unit_id="seg_0003", status="failed", error_message="simulated failure")
 
     chain_rows = store.list_bcd_chain_status(task_id="task_chain_001")
     assert len(chain_rows) == 3
@@ -890,11 +890,11 @@ def test_state_store_should_mark_bcd_downstream_blocked(tmp_path: Path) -> None:
         task_id="task_chain_003",
         unit_index=0,
         from_module="B",
-        reason="upstream_blocked:B:mock failed",
+        reason="upstream_blocked:B:simulated failure",
     )
 
     c_1 = store.get_module_unit_record(task_id="task_chain_003", module_name="C", unit_id="shot_001")
     d_1 = store.get_module_unit_record(task_id="task_chain_003", module_name="D", unit_id="shot_001")
     assert c_1 is not None and c_1["status"] == "failed"
-    assert c_1["error_message"] == "upstream_blocked:B:mock failed"
+    assert c_1["error_message"] == "upstream_blocked:B:simulated failure"
     assert d_1 is not None and d_1["status"] == "done"

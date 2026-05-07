@@ -1,23 +1,17 @@
 """
 文件用途：验证模块B v2 模板、规则与新契约字段的核心行为。
-核心流程：加载正式模板、校验新 ModuleBOutput 契约，并检查旧 mock 入口已切到新字段。
+核心流程：加载正式模板、校验新 ModuleBOutput 契约，并检查旧规则入口已切到新字段。
 输入输出：输入 pytest 测试上下文，输出断言结果。
 依赖说明：依赖 pytest 与项目内模块实现。
 维护说明：当 camera_plan/transition_plan 契约调整时需同步更新本测试。
 """
 
-# 标准库：用于日志对象。
-import logging
 # 标准库：用于路径处理。
 from pathlib import Path
 
 # 第三方库：用于异常断言。
 import pytest
 
-# 项目内模块：模块B配置。
-from music_video_pipeline.config import ModuleBConfig
-# 项目内模块：分镜生成器。
-from music_video_pipeline.generators.script_generator import MockScriptGenerator
 # 项目内模块：模块B v2 解析与校验。
 from music_video_pipeline.modules.module_b_v2.parser import (
     validate_role1_visual_catalog_output,
@@ -351,50 +345,6 @@ def test_role4_should_compile_tokens_and_merge_fixed_negative_prompt() -> None:
     assert any(str(token.get("text", "")) == "anime limited animation" for token in item["video_prompt_tokens_en"])
     assert "realistic" in item["keyframe_negative_prompt_start_en"]
     assert any(str(token.get("text", "")) == "extra people" for token in item["keyframe_negative_prompt_start_tokens_en_increment"])
-
-
-def test_mock_script_generator_should_emit_new_plan_fields() -> None:
-    """
-    功能说明：验证旧 mock 分镜入口已经切到新 plan 字段，而不是旧 camera_motion/transition。
-    参数说明：无。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：该行为保证旧模式仍可进入模块 C/D 新链路。
-    """
-    generator = MockScriptGenerator()
-    shot = generator.generate_one(
-        module_a_output={
-            "big_segments": [{"segment_id": "big_001", "label": "verse"}],
-            "segments": [{"segment_id": "seg_001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"}],
-            "energy_features": [{"energy_level": "mid", "trend": "flat"}],
-            "lyric_units": [],
-        },
-        segment={"segment_id": "seg_001", "big_segment_id": "big_001", "start_time": 0.0, "end_time": 2.0, "label": "verse"},
-        segment_index=0,
-    )
-    assert "camera_plan" in shot
-    assert "transition_plan" in shot
-    assert "camera_motion" not in shot
-    assert "transition" not in shot
-    validate_module_b_output([shot])
-
-
-def test_multi_role_mode_should_be_removed_from_legacy_factory() -> None:
-    """
-    功能说明：验证新模式名 multi_role_llm_v2 已从旧 ScriptGenerator 工厂摘除。
-    参数说明：无。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：真正入口由 module_b.orchestrator 直接路由到 run_module_b_v2。
-    """
-    from music_video_pipeline.generators.script_generator import build_script_generator
-
-    with pytest.raises(ValueError, match="run_module_b_v2"):
-        build_script_generator(
-            mode="multi_role_llm_v2",
-            logger=logging.getLogger("test_module_b_v2_new_contracts"),
-            module_b_config=ModuleBConfig(),
-        )
 
 
 def test_module_d_transition_and_camera_helpers_should_match_new_schema() -> None:

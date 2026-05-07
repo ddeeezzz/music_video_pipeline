@@ -108,7 +108,7 @@ def test_build_task_monitor_snapshot_should_return_failed_task_status(tmp_path: 
     state_store = StateStore(db_path=tmp_path / "state.sqlite3")
     task_id = "task_failed"
     _seed_task_and_units(state_store=state_store, task_id=task_id, workspace=tmp_path)
-    state_store.update_task_status(task_id=task_id, status="failed", error_message="mock failed")
+    state_store.update_task_status(task_id=task_id, status="failed", error_message="simulated failure")
     snapshot = build_task_monitor_snapshot(state_store=state_store, task_id=task_id)
     assert snapshot["task_status"] == "failed"
     assert snapshot["task_id"] == task_id

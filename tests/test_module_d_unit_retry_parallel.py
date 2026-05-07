@@ -20,8 +20,6 @@ from music_video_pipeline.config import (
     BypyUploadConfig,
     FfmpegConfig,
     LoggingConfig,
-    MockConfig,
-    ModeConfig,
     ModuleAConfig,
     ModuleDConfig,
     PathsConfig,
@@ -59,7 +57,7 @@ def test_run_module_d_should_retry_failed_unit_and_keep_output_order(tmp_path: P
     def _fake_render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
         attempt_counts[unit.unit_id] = attempt_counts.get(unit.unit_id, 0) + 1
         if unit.unit_id == "shot_002" and attempt_counts[unit.unit_id] == 1:
-            raise RuntimeError("mock comfyui failed once")
+            raise RuntimeError("comfyui failed once")
         unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
         unit.segment_path.write_bytes(f"segment:{unit.unit_id}".encode("utf-8"))
         return {
@@ -122,7 +120,7 @@ def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_p
     def _always_fail_shot_002(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
         first_attempts.append(unit.unit_id)
         if unit.unit_id == "shot_002":
-            raise RuntimeError("mock comfyui keeps failing")
+            raise RuntimeError("comfyui keeps failing")
         unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
         unit.segment_path.write_bytes(f"segment:{unit.unit_id}".encode("utf-8"))
         return {"segment_path": str(unit.segment_path)}
@@ -206,7 +204,7 @@ def test_execute_one_unit_with_retry_should_retry_comfyui_renderer_once(tmp_path
     def _fail_once_then_succeed(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
         attempt_counter["count"] += 1
         if attempt_counter["count"] == 1:
-            raise RuntimeError("mock first failure")
+            raise RuntimeError("first failure")
         unit.segment_path.parent.mkdir(parents=True, exist_ok=True)
         unit.segment_path.write_bytes(b"ok")
         return {"segment_path": str(unit.segment_path)}
@@ -250,16 +248,16 @@ def test_execute_one_unit_with_retry_should_raise_after_retry_exhausted(tmp_path
     )
 
     def _always_fail(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
-        raise RuntimeError(f"mock always fail:{unit.unit_id}")
+        raise RuntimeError(f"always fail:{unit.unit_id}")
 
     monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _always_fail)
 
-    with pytest.raises(RuntimeError, match="mock always fail"):
+    with pytest.raises(RuntimeError, match="always fail"):
         module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
 
     record = context.state_store.get_module_unit_record(task_id=context.task_id, module_name="D", unit_id=unit.unit_id)
     assert record is not None and record["status"] == "failed"
-    assert "mock always fail" in str(record["error_message"])
+    assert "always fail" in str(record["error_message"])
 
 
 
@@ -292,7 +290,6 @@ def _build_context(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     config = AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(runs_dir), default_audio_path=str(audio_path)),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -304,7 +301,6 @@ def _build_context(
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=960, video_height=540),
         module_d=ModuleDConfig(
             segment_workers=segment_workers,
             unit_retry_times=unit_retry_times,

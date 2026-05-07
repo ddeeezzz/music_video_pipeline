@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 # 项目内模块：配置数据类
-from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, MockConfig, ModeConfig, ModuleAConfig, PathsConfig
+from music_video_pipeline.config import AppConfig, FfmpegConfig, LoggingConfig, ModuleAConfig, PathsConfig
 # 项目内模块：运行上下文
 from music_video_pipeline.context import RuntimeContext
 # 项目内模块：目录工具
@@ -352,7 +352,6 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
     边界条件：ffmpeg 配置在本测试中不会被实际调用。
     """
     return AppConfig(
-        mode=ModeConfig(script_generator="mock"),
         paths=PathsConfig(runs_dir=str(tmp_path / "runs"), default_audio_path="input.mp3"),
         ffmpeg=FfmpegConfig(
             ffmpeg_bin="ffmpeg",
@@ -364,6 +363,5 @@ def _build_test_config(tmp_path: Path) -> AppConfig:
             video_crf=30,
         ),
         logging=LoggingConfig(level="INFO"),
-        mock=MockConfig(beat_interval_seconds=0.5, video_width=640, video_height=360),
         module_a=ModuleAConfig(funasr_language="auto", mode="fallback_only"),
     )

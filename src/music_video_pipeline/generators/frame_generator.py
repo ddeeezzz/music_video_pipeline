@@ -3,7 +3,7 @@
 核心流程：定义统一生成接口 -> 校验后端为 comfyui -> 构建 ComfyUIFrameGenerator。
 输入输出：输入生成参数，输出符合模块 D 双锚点契约的 frame_item。
 依赖说明：依赖标准库 abc/logging/pathlib/typing 与项目内 ComfyUI 关键帧生成器。
-维护说明：模块 C 已彻底收口为 ComfyUI 常驻服务路径；不再保留 mock 或本地 diffusers 生成实现。
+维护说明：模块 C 已彻底收口为 ComfyUI 常驻服务路径；不再保留旧占位或本地 diffusers 生成实现。
 """
 
 # 标准库：定义抽象基类。

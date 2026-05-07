@@ -9,6 +9,7 @@
 __all__ = [
     "MultiRoleScriptGeneratorV2",
     "run_module_b_v2",
+    "run_module_b_v2_incremental",
     "invalidate_module_b_v2_role_outputs",
     "invalidate_module_b_v2_role_shot_outputs",
 ]
@@ -28,6 +29,7 @@ def __getattr__(name: str):
     if name in {
         "MultiRoleScriptGeneratorV2",
         "run_module_b_v2",
+        "run_module_b_v2_incremental",
         "invalidate_module_b_v2_role_outputs",
         "invalidate_module_b_v2_role_shot_outputs",
     }:
@@ -36,11 +38,13 @@ def __getattr__(name: str):
             invalidate_module_b_v2_role_outputs,
             invalidate_module_b_v2_role_shot_outputs,
             run_module_b_v2,
+            run_module_b_v2_incremental,
         )
 
         exports = {
             "MultiRoleScriptGeneratorV2": MultiRoleScriptGeneratorV2,
             "run_module_b_v2": run_module_b_v2,
+            "run_module_b_v2_incremental": run_module_b_v2_incremental,
             "invalidate_module_b_v2_role_outputs": invalidate_module_b_v2_role_outputs,
             "invalidate_module_b_v2_role_shot_outputs": invalidate_module_b_v2_role_shot_outputs,
         }
