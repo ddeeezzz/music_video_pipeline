@@ -535,6 +535,7 @@ class TaskMonitorService:
                     "status": str(item.get("status", "unknown")),
                     "audio_path": str(item.get("audio_path", "")),
                     "config_path": str(item.get("config_path", "")),
+                    "output_video_path": str(item.get("output_video_path", "")),
                     "updated_at": str(item.get("updated_at", "")),
                     "module_status": module_status_map.get(task_id, {}),
                 }

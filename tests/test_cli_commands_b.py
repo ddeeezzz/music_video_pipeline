@@ -85,13 +85,13 @@ def test_build_parser_should_accept_module_b_status_and_retry_commands(tmp_path:
     status_args = parser.parse_args(["b-task-status", "--task-id", "task_cli_b_001"])
     assert status_args.command == "b-task-status"
     assert status_args.task_id == "task_cli_b_001"
-    assert str(status_args.config).endswith("configs/default.json")
+    assert str(status_args.config).endswith("configs/music_yby/default.json")
 
     retry_args = parser.parse_args(["b-retry-segment", "--task-id", "task_cli_b_001", "--segment-id", "seg_0007"])
     assert retry_args.command == "b-retry-segment"
     assert retry_args.task_id == "task_cli_b_001"
     assert retry_args.segment_id == "seg_0007"
-    assert str(retry_args.config).endswith("configs/default.json")
+    assert str(retry_args.config).endswith("configs/music_yby/default.json")
 
 
 def test_dispatch_command_should_route_to_module_b_status_and_retry_methods(tmp_path: Path) -> None:

@@ -79,7 +79,7 @@ def test_run_interactive_cli_should_collect_run_and_execute(tmp_path: Path, monk
 
     saved = json.loads(session_path.read_text(encoding="utf-8"))
     assert saved["task_id"] == "task_interactive_001"
-    assert str(saved["config_path"]).endswith("configs/default.json")
+    assert str(saved["config_path"]) == str(default_config_path.resolve())
 
 
 def test_select_rerun_task_context_should_return_none_when_no_db(tmp_path: Path, monkeypatch) -> None:

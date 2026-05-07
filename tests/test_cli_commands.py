@@ -88,13 +88,13 @@ def test_build_parser_should_accept_module_c_status_and_retry_commands(tmp_path:
     status_args = parser.parse_args(["c-task-status", "--task-id", "task_cli_001"])
     assert status_args.command == "c-task-status"
     assert status_args.task_id == "task_cli_001"
-    assert str(status_args.config).endswith("configs/default.json")
+    assert str(status_args.config).endswith("configs/music_yby/default.json")
 
     retry_args = parser.parse_args(["c-retry-shot", "--task-id", "task_cli_001", "--shot-id", "shot_007"])
     assert retry_args.command == "c-retry-shot"
     assert retry_args.task_id == "task_cli_001"
     assert retry_args.shot_id == "shot_007"
-    assert str(retry_args.config).endswith("configs/default.json")
+    assert str(retry_args.config).endswith("configs/music_yby/default.json")
 
 
 def test_dispatch_command_should_route_to_module_c_status_and_retry_methods(tmp_path: Path) -> None:
@@ -190,7 +190,7 @@ def test_main_without_subcommand_should_enter_interactive_mode(tmp_path: Path, m
     def _fake_run_interactive_cli(*, workspace_root: Path, default_config_path: Path, execute_request):  # noqa: ANN001
         _ = execute_request
         called.append(workspace_root)
-        assert str(default_config_path).endswith("configs/default.json")
+        assert str(default_config_path).endswith("configs/music_yby/default.json")
         return 0
 
     monkeypatch.setattr(cli, "run_interactive_cli", _fake_run_interactive_cli)

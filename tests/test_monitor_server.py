@@ -185,6 +185,7 @@ def test_task_monitor_service_should_support_home_task_management_apis(tmp_path:
         assert task_list_payload["ok"] is True
         assert task_list_payload["tasks"][0]["task_id"] == task_id
         assert task_list_payload["tasks"][0]["module_status"]["A"] == "done"
+        assert task_list_payload["tasks"][0]["output_video_path"] == ""
 
         task_detail_payload = json.loads(
             urlopen(f"{base_url}/api/task?task_id={task_id}", timeout=3).read().decode("utf-8")
