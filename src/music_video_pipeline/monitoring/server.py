@@ -23,7 +23,7 @@ import threading
 # 标准库：用于URL解析与编码
 from urllib.parse import parse_qs, quote, unquote, urlparse
 # 标准库：用于类型提示
-from typing import Any
+from typing import Any, Callable
 
 # 项目内模块：任务监督快照构建
 from music_video_pipeline.monitoring.snapshot import build_task_monitor_snapshot
@@ -53,6 +53,12 @@ TASK_CREATE_API_PATH = "/api/task/create"
 TASK_RENAME_API_PATH = "/api/task/rename"
 # 常量：任务复制接口路径
 TASK_COPY_API_PATH = "/api/task/copy"
+# 常量：任务强制重跑接口路径
+TASK_RERUN_API_PATH = "/api/task/rerun"
+
+
+# 类型别名：用于触发任务强制重跑的回调函数。
+TaskRerunHandler = Callable[[str], dict[str, Any]]
 
 
 class TaskMonitorService:
@@ -75,6 +81,7 @@ class TaskMonitorService:
         state_store: StateStore,
         task_id: str,
         logger: logging.Logger,
+        rerun_handler: TaskRerunHandler | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
         tick_seconds: float = 1.0,
@@ -86,6 +93,7 @@ class TaskMonitorService:
         - state_store: 状态存储对象。
         - task_id: 任务唯一标识。
         - logger: 日志对象。
+        - rerun_handler: 可选的任务强制重跑回调。
         - host: 监听地址。
         - port: 监听端口。
         - tick_seconds: 推送间隔秒数。
@@ -97,6 +105,7 @@ class TaskMonitorService:
         self.state_store = state_store
         self.task_id = task_id
         self.logger = logger
+        self.rerun_handler = rerun_handler
         self.host = host
         self.port = int(port)
         self.tick_seconds = max(0.2, float(tick_seconds))
@@ -109,6 +118,7 @@ class TaskMonitorService:
         self._async_stop_event: asyncio.Event | None = None
         self._connections: set[Any] = set()
         self._task_terminal = False
+        self._rerun_threads: dict[str, threading.Thread] = {}
 
         self._started_event = threading.Event()
         self._startup_error: Exception | None = None
@@ -435,6 +445,13 @@ class TaskMonitorService:
                 content_type="application/json; charset=utf-8",
                 body_text=json.dumps(payload, ensure_ascii=False),
             )
+        if parsed.path == TASK_RERUN_API_PATH:
+            payload, status = self._handle_rerun_task_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
         if parsed.path == "/web-data":
             query = parse_qs(parsed.query)
             target_task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
@@ -656,6 +673,65 @@ class TaskMonitorService:
             "task_id": new_task_id,
             "task": self._build_task_detail_payload(task_id=new_task_id).get("task"),
         }, HTTPStatus.OK
+
+    def _handle_rerun_task_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：处理主页“生成”按钮触发的强制全链路重跑请求。
+        参数说明：
+        - parsed: 已解析的请求URL对象。
+        返回值：
+        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
+        异常说明：无；错误统一转为 JSON。
+        边界条件：仅接受已存在任务，且同一任务不允许并发重复触发。
+        """
+        if self.rerun_handler is None:
+            return {"ok": False, "error": "当前监督服务未配置生成能力。"}, HTTPStatus.NOT_IMPLEMENTED
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"生成失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        active_thread = self._rerun_threads.get(task_id)
+        if active_thread is not None and active_thread.is_alive():
+            return {"ok": False, "error": f"生成失败：任务已在后台启动中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        task_status = str(task_record.get("status", "")).strip().lower()
+        if task_status == "running":
+            return {"ok": False, "error": f"生成失败：任务当前正在运行，task_id={task_id}"}, HTTPStatus.CONFLICT
+
+        rerun_thread = threading.Thread(
+            target=self._run_rerun_task_in_background,
+            name=f"task-rerun-{task_id}",
+            args=(task_id,),
+            daemon=True,
+        )
+        self._rerun_threads[task_id] = rerun_thread
+        rerun_thread.start()
+        self.logger.info("任务强制重跑已提交，task_id=%s，from_module=A", task_id)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "message": f"任务已开始生成，task_id={task_id}，模式=强制从A模块开始覆盖式重跑",
+        }, HTTPStatus.OK
+
+    def _run_rerun_task_in_background(self, task_id: str) -> None:
+        """
+        功能说明：在后台线程中执行任务强制重跑。
+        参数说明：
+        - task_id: 任务唯一标识。
+        返回值：无。
+        异常说明：异常统一记录日志，不向前端线程传播。
+        边界条件：线程退出时必须清理并发占位。
+        """
+        try:
+            self.logger.info("后台开始执行任务强制重跑，task_id=%s，from_module=A", task_id)
+            self.rerun_handler(task_id)
+            self.logger.info("后台任务强制重跑执行结束，task_id=%s", task_id)
+        except Exception as error:  # noqa: BLE001
+            self.logger.error("后台任务强制重跑失败，task_id=%s，错误信息=%s", task_id, error)
+        finally:
+            current_thread = self._rerun_threads.get(task_id)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(task_id, None)
 
     def _rename_task_with_artifacts(self, old_task_id: str, new_task_id: str) -> None:
         """

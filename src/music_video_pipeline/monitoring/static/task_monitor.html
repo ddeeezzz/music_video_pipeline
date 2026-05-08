@@ -452,6 +452,10 @@
       font-size: 12px;
     }
     .detail-actions {
+      display: grid;
+      gap: 10px;
+    }
+    .detail-action-row {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
@@ -1234,9 +1238,18 @@
                 </div>
                 <div id="detail-module-tags" class="detail-module-tags"></div>
                 <div class="detail-actions">
-                  <button id="enter-sync-button" class="nav-action" type="button">进入音画校对</button>
-                  <button id="enter-module-a-button" class="nav-action" type="button">进入模块 A 可视化</button>
-                  <button id="enter-monitor-button" class="nav-action" type="button">进入 Monitor</button>
+                  <div class="detail-action-row">
+                    <button id="enter-sync-button" class="nav-action" type="button">进入音画校对</button>
+                    <button id="generate-sync-button" class="primary-button" type="button">生成</button>
+                  </div>
+                  <div class="detail-action-row">
+                    <button id="enter-module-a-button" class="nav-action" type="button">进入模块 A 可视化</button>
+                    <button id="generate-module-a-button" class="primary-button" type="button">生成</button>
+                  </div>
+                  <div class="detail-action-row">
+                    <button id="enter-monitor-button" class="nav-action" type="button">进入 Monitor</button>
+                    <button id="generate-monitor-button" class="primary-button" type="button">生成</button>
+                  </div>
                 </div>
               </div>
 
@@ -1562,8 +1575,11 @@
     const detailUpdatedAtNode = document.getElementById("detail-updated-at");
     const detailModuleTagsNode = document.getElementById("detail-module-tags");
     const enterSyncButton = document.getElementById("enter-sync-button");
+    const generateSyncButton = document.getElementById("generate-sync-button");
     const enterModuleAButton = document.getElementById("enter-module-a-button");
+    const generateModuleAButton = document.getElementById("generate-module-a-button");
     const enterMonitorButton = document.getElementById("enter-monitor-button");
+    const generateMonitorButton = document.getElementById("generate-monitor-button");
     const createTaskIdInput = document.getElementById("create-task-id");
     const createAudioPathInput = document.getElementById("create-audio-path");
     const createConfigPathInput = document.getElementById("create-config-path");
@@ -1594,6 +1610,7 @@
     let activeViewKey = "home";
     let snapshotCache = null;
     let currentTaskSelectionToken = 0;
+    let rerunRequestInFlight = false;
 
     function setNodeText(node, text) {
       if (!node) {
@@ -1700,8 +1717,17 @@
       copyAudioPathInput.value = "";
       copyConfigPathInput.value = "";
       enterSyncButton.disabled = true;
+      generateSyncButton.disabled = true;
       enterModuleAButton.disabled = true;
+      generateModuleAButton.disabled = true;
       enterMonitorButton.disabled = true;
+      generateMonitorButton.disabled = true;
+    }
+
+    function setGenerateButtonsDisabled(isDisabled) {
+      generateSyncButton.disabled = Boolean(isDisabled);
+      generateModuleAButton.disabled = Boolean(isDisabled);
+      generateMonitorButton.disabled = Boolean(isDisabled);
     }
 
     function renderModuleTags(container, moduleStatusMap) {
@@ -1742,8 +1768,11 @@
       copyAudioPathInput.value = task.audio_path || "";
       copyConfigPathInput.value = task.config_path || "";
       enterSyncButton.disabled = !normalizedTaskId;
+      generateSyncButton.disabled = !normalizedTaskId || rerunRequestInFlight;
       enterModuleAButton.disabled = !normalizedTaskId;
+      generateModuleAButton.disabled = !normalizedTaskId || rerunRequestInFlight;
       enterMonitorButton.disabled = !normalizedTaskId;
+      generateMonitorButton.disabled = !normalizedTaskId || rerunRequestInFlight;
       updateTaskQuery(normalizedTaskId);
       renderTaskList(taskListCache);
     }
@@ -2657,6 +2686,32 @@
       await setCurrentTaskId(payload.task_id, { switchViewKey: "home", notice: `已复制为新任务：${payload.task_id}` });
     }
 
+    async function rerunTaskFromModuleA(targetViewKey = null) {
+      if (!currentTaskId) {
+        throw new Error("请先在左侧选择一个任务。");
+      }
+      rerunRequestInFlight = true;
+      setGenerateButtonsDisabled(true);
+      try {
+        const payload = await fetchJson(`/api/task/rerun?task_id=${encodeURIComponent(currentTaskId)}`);
+        await fetchTaskList();
+        await fetchTaskDetail(currentTaskId);
+        if (targetViewKey) {
+          switchView(targetViewKey, true);
+        }
+        if (targetViewKey === "monitor") {
+          await fetchSnapshot().catch(() => {});
+          connectSocket();
+        } else if (targetViewKey === "sync" || targetViewKey === "module-a") {
+          await fetchWebData().catch(() => {});
+        }
+        setHomeNotice(payload.message || `任务已开始生成：${currentTaskId}`, "success");
+      } finally {
+        rerunRequestInFlight = false;
+        setGenerateButtonsDisabled(!currentTaskId);
+      }
+    }
+
     function bindNavigation() {
       for (const button of navButtons) {
         button.addEventListener("click", () => switchView(button.dataset.view, true));
@@ -2735,8 +2790,23 @@
         });
       });
       enterSyncButton.addEventListener("click", () => switchView("sync", true));
+      generateSyncButton.addEventListener("click", () => {
+        rerunTaskFromModuleA("sync").catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
       enterModuleAButton.addEventListener("click", () => switchView("module-a", true));
+      generateModuleAButton.addEventListener("click", () => {
+        rerunTaskFromModuleA("module-a").catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
       enterMonitorButton.addEventListener("click", () => switchView("monitor", true));
+      generateMonitorButton.addEventListener("click", () => {
+        rerunTaskFromModuleA("monitor").catch((error) => {
+          setHomeNotice(error.message || String(error), "error");
+        });
+      });
     }
 
     function startFallbackPolling() {
