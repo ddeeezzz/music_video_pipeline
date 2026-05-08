@@ -73,6 +73,8 @@ def _collect_whitelist_files_v1(task_dir: Path) -> list[Path]:
         "artifacts/module_a_work_v2/algorithm/timeline/stage_big_a1.json",
         "artifacts/module_a_work_v2/algorithm/timeline/stage_lyric_sentence_units_cleaned.json",
         "artifacts/module_a_work_v2/algorithm/timeline/stage_lyric_sentence_units_head_refined.json",
+        "artifacts/module_a_work_v2/algorithm/window/stage_windows_pre_split_classified.json",
+        "artifacts/module_a_work_v2/algorithm/window/stage_windows_pre_boundary_other_split.json",
         "artifacts/module_a_work_v2/algorithm/window/stage_windows_classified.json",
         "artifacts/module_a_work_v2/algorithm/window/stage_windows_merged.json",
     ]
@@ -123,6 +125,8 @@ def _collect_module_a_whitelist_files_v1(task_dir: Path) -> list[Path]:
         "artifacts/module_a_work_v2/algorithm/timeline/stage_big_a1.json",
         "artifacts/module_a_work_v2/algorithm/timeline/stage_lyric_sentence_units_cleaned.json",
         "artifacts/module_a_work_v2/algorithm/timeline/stage_lyric_sentence_units_head_refined.json",
+        "artifacts/module_a_work_v2/algorithm/window/stage_windows_pre_split_classified.json",
+        "artifacts/module_a_work_v2/algorithm/window/stage_windows_pre_boundary_other_split.json",
         "artifacts/module_a_work_v2/algorithm/window/stage_windows_classified.json",
         "artifacts/module_a_work_v2/algorithm/window/stage_windows_merged.json",
     ]

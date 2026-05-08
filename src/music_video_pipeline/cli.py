@@ -580,6 +580,7 @@ def _run_task_monitor_command_by_task(
         state_store=runner.state_store,
         task_id=task_id,
         logger=logger,
+        rerun_handler=runner._rerun_task_from_module_a_for_monitor,
         host=monitor_host,
         port=monitor_port,
         auto_stop_on_terminal=False,
