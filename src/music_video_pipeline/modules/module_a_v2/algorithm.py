@@ -237,6 +237,8 @@ def run_algorithm_stage(
     )
 
     windows_raw = list(pipeline_result.get("windows_raw", []))
+    windows_pre_split_classified = list(pipeline_result.get("windows_pre_split_classified", []))
+    windows_pre_boundary_other_split = list(pipeline_result.get("windows_pre_boundary_other_split", []))
     windows_classified = list(pipeline_result.get("windows_classified", []))
     windows_merged = list(pipeline_result.get("windows_merged", []))
     activity_windows = dict(pipeline_result.get("activity_windows", {}))
@@ -313,6 +315,18 @@ def run_algorithm_stage(
         artifact_name="stage_windows_raw",
     )
     dump_json_artifact(
+        output_path=artifacts.algorithm_window_stage_windows_pre_split_classified_path,
+        payload=windows_pre_split_classified,
+        logger=logger,
+        artifact_name="stage_windows_pre_split_classified",
+    )
+    dump_json_artifact(
+        output_path=artifacts.algorithm_window_stage_windows_pre_boundary_other_split_path,
+        payload=windows_pre_boundary_other_split,
+        logger=logger,
+        artifact_name="stage_windows_pre_boundary_other_split",
+    )
+    dump_json_artifact(
         output_path=artifacts.algorithm_window_stage_windows_classified_path,
         payload=windows_classified,
         logger=logger,
@@ -352,6 +366,8 @@ def run_algorithm_stage(
             "lyric_units": lyric_units,
             "energy_features": energy_features,
             "windows_raw": windows_raw,
+            "windows_pre_split_classified": windows_pre_split_classified,
+            "windows_pre_boundary_other_split": windows_pre_boundary_other_split,
             "activity_windows": activity_windows,
             "windows_classified": windows_classified,
             "windows_merged": windows_merged,

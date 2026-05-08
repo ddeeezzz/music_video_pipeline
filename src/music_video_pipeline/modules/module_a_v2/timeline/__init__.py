@@ -15,7 +15,7 @@ from .window_builder import (
 # 项目内模块：窗口四分类
 from .role_classifier import build_dual_track_activity_windows, classify_window_roles
 # 项目内模块：窗口并段与小节估计
-from .role_merger import estimate_bar_length_seconds, merge_windows_by_rules
+from .role_merger import estimate_bar_length_seconds, merge_windows_by_rules, split_long_other_windows_by_major
 # 项目内模块：A1与最终S段求解
 from .big_timestamp_resolver import resolve_big_timestamps_and_segments
 
@@ -26,6 +26,7 @@ __all__ = [
     "build_dual_track_activity_windows",
     "classify_window_roles",
     "estimate_bar_length_seconds",
+    "split_long_other_windows_by_major",
     "merge_windows_by_rules",
     "resolve_big_timestamps_and_segments",
 ]

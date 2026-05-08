@@ -167,6 +167,7 @@ class PipelineRunner:
             state_store=self.state_store,
             task_id=task_id,
             logger=self.logger,
+            rerun_handler=self._rerun_task_from_module_a_for_monitor,
             host=self.config.monitoring.host,
             port=int(self.config.monitoring.port),
             auto_stop_on_terminal=True,
@@ -182,6 +183,32 @@ class PipelineRunner:
                 error,
             )
             return None
+
+    def _rerun_task_from_module_a_for_monitor(self, task_id: str) -> dict:
+        """
+        功能说明：为监督页“生成”按钮提供强制从模块 A 开始重跑的回调。
+        参数说明：
+        - task_id: 任务唯一标识。
+        返回值：
+        - dict: 重跑执行摘要。
+        异常说明：
+        - RuntimeError: 任务不存在或缺少必要输入时抛出异常。
+        边界条件：始终沿用任务当前记录的 audio_path 与 config_path。
+        """
+        task_record = self.state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行强制重跑：task_id={task_id}")
+        audio_path_text = str(task_record.get("audio_path", "")).strip()
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not audio_path_text or not config_path_text:
+            raise RuntimeError(f"任务缺少 audio_path 或 config_path，无法执行强制重跑：task_id={task_id}")
+        self.logger.info("监督页触发任务强制重跑，task_id=%s，from_module=A", task_id)
+        return self.run(
+            task_id=task_id,
+            audio_path=Path(audio_path_text),
+            config_path=Path(config_path_text),
+            force_module="A",
+        )
 
     def _write_task_monitor_launch_page(self, task_dir: Path, task_id: str, monitor_url: str) -> Path:
         """
