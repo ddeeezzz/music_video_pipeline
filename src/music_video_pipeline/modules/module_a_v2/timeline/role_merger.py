@@ -1,7 +1,7 @@
 """
 文件用途：执行窗口细分与并段（长窗口按节拍细分 + tiny合并）。
 核心流程：先按节拍切分长非歌词窗口，再按小节阈值合并短窗口。
-输入输出：输入已分类窗口与节拍，输出处理后窗口与并段事件。
+输入输出：输入已分类窗口与节拍，输出切分后窗口或并段后窗口。
 依赖说明：仅依赖标准库。
 维护说明：本文件只负责窗口细分和并段，不负责边界矫正。
 """
@@ -44,6 +44,41 @@ ROLE_SCORE_WEIGHTS_CHANT = {
     "energy": 0.15,
     "f0_delta": 0.50,
 }
+# 常量：other 统一重拍切分权重（切分时不预设 chant/inst/silence 细角色）
+ROLE_SCORE_WEIGHTS_OTHER = {
+    "chroma_delta": 0.34,
+    "onset_delta": 0.33,
+    "energy": 0.33,
+    "f0_delta": 0.00,
+}
+
+# 常量：tiny源窗口处理优先级（值越小越先处理）
+TINY_SOURCE_ROLE_PRIORITY = {
+    "lyric": 0,
+    "chant": 1,
+    "inst": 2,
+    "silence": 3,
+}
+# 常量：tiny 相似度权重 - onset
+TINY_SIMILARITY_WEIGHT_ONSET = 0.35
+# 常量：tiny 相似度权重 - energy
+TINY_SIMILARITY_WEIGHT_ENERGY = 0.20
+# 常量：tiny 相似度权重 - chroma
+TINY_SIMILARITY_WEIGHT_CHROMA = 0.25
+# 常量：tiny 相似度权重 - voiced/f0
+TINY_SIMILARITY_WEIGHT_VOICED_F0 = 0.20
+# 常量：tiny onset 摘要窗口最小秒数，避免极短段密度失真
+TINY_ONSET_SUMMARY_MIN_SECONDS = 0.2
+# 常量：tiny onset 密度归一化上限（每秒）
+TINY_ONSET_DENSITY_CAP = 12.0
+# 常量：tiny energy 差值映射上限
+TINY_ENERGY_DIFF_CAP = 1.0
+# 常量：tiny voiced 比例差值映射上限
+TINY_VOICED_RATIO_DIFF_CAP = 1.0
+# 常量：tiny F0 半音差值映射上限
+TINY_F0_MIDI_DIFF_CAP = 12.0
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     """
     功能说明：安全转换为浮点数。
@@ -90,6 +125,19 @@ def _window_duration(window_item: dict[str, Any]) -> float:
     start_time = _safe_float(window_item.get("start_time", 0.0), 0.0)
     end_time = _safe_float(window_item.get("end_time", start_time), start_time)
     return max(0.0, end_time - start_time)
+
+
+def _clamp_unit_interval(value: float) -> float:
+    """
+    功能说明：将数值夹到 0~1 区间。
+    参数说明：
+    - value: 输入值。
+    返回值：
+    - float: 截断后的数值。
+    异常说明：无。
+    边界条件：NaN/inf 已由上游规避。
+    """
+    return min(1.0, max(0.0, float(value)))
 
 
 def _quantile(values: list[float], quantile: float) -> float:
@@ -275,6 +323,62 @@ def _normalize_f0_points(f0_points: list[dict[str, Any]] | None) -> list[dict[st
     return [merged[time_key] for time_key in sorted(merged.keys())]
 
 
+def _collect_points_in_window(
+    points: list[dict[str, Any]],
+    start_time: float,
+    end_time: float,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：筛选窗口时间范围内的点序列。
+    参数说明：
+    - points: 点序列，要求存在 time 字段。
+    - start_time/end_time: 窗口起止时间。
+    返回值：
+    - list[dict[str, Any]]: 落在窗口内的点。
+    异常说明：无。
+    边界条件：空输入返回空；采用闭区间容差。
+    """
+    if not points:
+        return []
+    lower_bound = float(start_time) - EPSILON_SECONDS
+    upper_bound = float(end_time) + EPSILON_SECONDS
+    output: list[dict[str, Any]] = []
+    for item in points:
+        time_value = _safe_float(item.get("time", 0.0), 0.0)
+        if lower_bound <= time_value <= upper_bound:
+            output.append(item)
+    return output
+
+
+def _collect_series_values_in_window(
+    times: list[float],
+    values: list[float],
+    start_time: float,
+    end_time: float,
+) -> list[float]:
+    """
+    功能说明：筛选窗口范围内的时间序列数值。
+    参数说明：
+    - times/values: 时间和值序列。
+    - start_time/end_time: 窗口起止时间。
+    返回值：
+    - list[float]: 落在窗口内的值列表。
+    异常说明：无。
+    边界条件：长度不齐时按较短长度截断。
+    """
+    pair_count = min(len(times), len(values))
+    if pair_count <= 0:
+        return []
+    lower_bound = float(start_time) - EPSILON_SECONDS
+    upper_bound = float(end_time) + EPSILON_SECONDS
+    output: list[float] = []
+    for index in range(pair_count):
+        time_value = _safe_float(times[index], 0.0)
+        if lower_bound <= time_value <= upper_bound:
+            output.append(max(0.0, _safe_float(values[index], 0.0)))
+    return output
+
+
 def _median_vector(vectors: list[list[float]]) -> list[float]:
     """
     功能说明：计算 12 维向量序列的逐维中位数。
@@ -447,6 +551,167 @@ def _compute_f0_delta_raw(
     return abs(float(statistics.median(post_values)) - float(statistics.median(pre_values))), True
 
 
+def _build_tiny_window_summary(
+    window_item: dict[str, Any],
+    onset_points: list[dict[str, float]],
+    accompaniment_rms_times: list[float],
+    accompaniment_rms_values: list[float],
+    chroma_points: list[dict[str, Any]],
+    f0_points: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    功能说明：构建 tiny 相似度比较所需的窗口级摘要特征。
+    参数说明：
+    - window_item: 待摘要窗口。
+    - onset_points: onset 点序列。
+    - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列。
+    - chroma_points: chroma 点序列。
+    - f0_points: F0 点序列。
+    返回值：
+    - dict[str, Any]: onset/energy/chroma/voiced_f0 摘要结果。
+    异常说明：无。
+    边界条件：任一特征缺失时返回可退化字段，不抛异常。
+    """
+    start_time = _safe_float(window_item.get("start_time", 0.0), 0.0)
+    end_time = _safe_float(window_item.get("end_time", start_time), start_time)
+    duration = max(EPSILON_SECONDS, end_time - start_time)
+
+    onset_rows = _collect_points_in_window(onset_points, start_time=start_time, end_time=end_time)
+    onset_count = len(onset_rows)
+    onset_density = min(
+        TINY_ONSET_DENSITY_CAP,
+        float(onset_count) / max(TINY_ONSET_SUMMARY_MIN_SECONDS, duration),
+    )
+    onset_energy_values = [max(0.0, _safe_float(item.get("energy_raw", 0.0), 0.0)) for item in onset_rows]
+    onset_energy_median = float(statistics.median(onset_energy_values)) if onset_energy_values else 0.0
+
+    energy_values = _collect_series_values_in_window(
+        times=accompaniment_rms_times,
+        values=accompaniment_rms_values,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    energy_median = float(statistics.median(energy_values)) if energy_values else 0.0
+
+    chroma_rows = _collect_points_in_window(chroma_points, start_time=start_time, end_time=end_time)
+    chroma_vectors = [
+        [max(0.0, _safe_float(vector[index], 0.0)) for index in range(12)]
+        for vector in [item.get("chroma", []) for item in chroma_rows]
+        if isinstance(vector, list) and len(vector) >= 12
+    ]
+    chroma_vector = _median_vector(chroma_vectors)
+
+    f0_rows = _collect_points_in_window(f0_points, start_time=start_time, end_time=end_time)
+    voiced_rows = [
+        item for item in f0_rows
+        if bool(item.get("voiced", False)) and _safe_float(item.get("f0_hz", 0.0), 0.0) > EPSILON_SECONDS
+    ]
+    voiced_ratio = (
+        float(len(voiced_rows)) / max(1, len(f0_rows))
+        if f0_rows
+        else 0.0
+    )
+    voiced_midi_values = [
+        midi_value
+        for midi_value in [
+            _hz_to_midi_value(_safe_float(item.get("f0_hz", 0.0), 0.0))
+            for item in voiced_rows
+        ]
+        if midi_value is not None
+    ]
+    voiced_midi_median = float(statistics.median(voiced_midi_values)) if voiced_midi_values else None
+
+    return {
+        "duration": round(duration, 6),
+        "onset_density": round(float(onset_density), 6),
+        "onset_energy_median": round(float(onset_energy_median), 6),
+        "energy_median": round(float(energy_median), 6),
+        "chroma_vector": [round(float(value), 6) for value in chroma_vector] if chroma_vector else [],
+        "voiced_ratio": round(float(voiced_ratio), 6),
+        "voiced_midi_median": round(float(voiced_midi_median), 6) if voiced_midi_median is not None else None,
+    }
+
+
+def _difference_to_similarity(diff_value: float, diff_cap: float) -> float:
+    """
+    功能说明：将差值映射为 0~1 相似度。
+    参数说明：
+    - diff_value: 特征差值。
+    - diff_cap: 差值上限，达到上限视为0相似度。
+    返回值：
+    - float: 相似度。
+    异常说明：无。
+    边界条件：上限非正时退化为完全相似。
+    """
+    safe_cap = max(EPSILON_SECONDS, float(diff_cap))
+    return _clamp_unit_interval(1.0 - min(safe_cap, max(0.0, float(diff_value))) / safe_cap)
+
+
+def _compute_tiny_similarity_components(
+    source_summary: dict[str, Any],
+    neighbor_summary: dict[str, Any],
+) -> dict[str, float]:
+    """
+    功能说明：计算 tiny 源窗与邻窗的四项相似度。
+    参数说明：
+    - source_summary: tiny 源窗摘要。
+    - neighbor_summary: 邻窗摘要。
+    返回值：
+    - dict[str, float]: 四项组件与总分。
+    异常说明：无。
+    边界条件：缺失特征时自动退化为保守比较。
+    """
+    onset_density_similarity = _difference_to_similarity(
+        abs(_safe_float(source_summary.get("onset_density", 0.0), 0.0) - _safe_float(neighbor_summary.get("onset_density", 0.0), 0.0)),
+        TINY_ONSET_DENSITY_CAP,
+    )
+    onset_energy_similarity = _difference_to_similarity(
+        abs(_safe_float(source_summary.get("onset_energy_median", 0.0), 0.0) - _safe_float(neighbor_summary.get("onset_energy_median", 0.0), 0.0)),
+        TINY_ENERGY_DIFF_CAP,
+    )
+    onset_similarity = _clamp_unit_interval((onset_density_similarity + onset_energy_similarity) / 2.0)
+
+    energy_similarity = _difference_to_similarity(
+        abs(_safe_float(source_summary.get("energy_median", 0.0), 0.0) - _safe_float(neighbor_summary.get("energy_median", 0.0), 0.0)),
+        TINY_ENERGY_DIFF_CAP,
+    )
+
+    source_chroma_vector = source_summary.get("chroma_vector", [])
+    neighbor_chroma_vector = neighbor_summary.get("chroma_vector", [])
+    chroma_similarity = 0.0
+    if isinstance(source_chroma_vector, list) and isinstance(neighbor_chroma_vector, list):
+        chroma_similarity = _clamp_unit_interval(1.0 - _cosine_distance(source_chroma_vector, neighbor_chroma_vector))
+
+    voiced_ratio_similarity = _difference_to_similarity(
+        abs(_safe_float(source_summary.get("voiced_ratio", 0.0), 0.0) - _safe_float(neighbor_summary.get("voiced_ratio", 0.0), 0.0)),
+        TINY_VOICED_RATIO_DIFF_CAP,
+    )
+    source_midi = source_summary.get("voiced_midi_median")
+    neighbor_midi = neighbor_summary.get("voiced_midi_median")
+    if source_midi is None or neighbor_midi is None:
+        voiced_f0_similarity = voiced_ratio_similarity
+    else:
+        f0_similarity = _difference_to_similarity(
+            abs(_safe_float(source_midi, 0.0) - _safe_float(neighbor_midi, 0.0)),
+            TINY_F0_MIDI_DIFF_CAP,
+        )
+        voiced_f0_similarity = _clamp_unit_interval((voiced_ratio_similarity + f0_similarity) / 2.0)
+
+    similarity_total = (
+        TINY_SIMILARITY_WEIGHT_ONSET * onset_similarity
+        + TINY_SIMILARITY_WEIGHT_ENERGY * energy_similarity
+        + TINY_SIMILARITY_WEIGHT_CHROMA * chroma_similarity
+        + TINY_SIMILARITY_WEIGHT_VOICED_F0 * voiced_f0_similarity
+    )
+    return {
+        "onset_similarity": round(float(onset_similarity), 6),
+        "energy_similarity": round(float(energy_similarity), 6),
+        "chroma_similarity": round(float(chroma_similarity), 6),
+        "voiced_f0_similarity": round(float(voiced_f0_similarity), 6),
+        "total_similarity": round(float(_clamp_unit_interval(similarity_total)), 6),
+    }
+
+
 def _pick_pitch_source_for_chant(
     beat_time: float,
     half_window_seconds: float,
@@ -508,6 +773,8 @@ def _resolve_role_weights(role: str) -> dict[str, float]:
     """
     if role == "chant":
         return ROLE_SCORE_WEIGHTS_CHANT
+    if role == "other":
+        return ROLE_SCORE_WEIGHTS_OTHER
     return ROLE_SCORE_WEIGHTS_INST
 
 
@@ -726,12 +993,14 @@ def _pick_beat_in_bucket_by_score(
     )
     return float(selected_time), dict(selected_meta), "energy_peak"
 
-def _split_long_other_windows_by_major(
+def split_long_other_windows_by_major(
     windows: list[dict[str, Any]],
     beats: list[dict[str, Any]],
     bar_length_seconds: float,
     long_window_split_min_bars: float,
     major_split_step_bars: float,
+    eligible_window_role_hints: set[str] | None = None,
+    score_role: str = "other",
     onset_points: list[dict[str, Any]] | None = None,
     vocal_rms_times: list[float] | None = None,
     vocal_rms_values: list[float] | None = None,
@@ -749,6 +1018,8 @@ def _split_long_other_windows_by_major(
     - bar_length_seconds: 小节时长（秒）。
     - long_window_split_min_bars: 触发 downbeat 细分的时长阈值（小节）。
     - major_split_step_bars: downbeat 滑动桶步长（小节）。
+    - eligible_window_role_hints: 允许参与重拍切分的 window_role_hint 集合；None 表示默认仅切 other。
+    - score_role: 重拍打分使用的统一角色语义。
     - onset_points: onset强度点列表（time+energy_raw）。
     - vocal_rms_times/vocal_rms_values: 人声 RMS 序列。
     - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列。
@@ -757,11 +1028,15 @@ def _split_long_other_windows_by_major(
     返回值：
     - list[dict[str, Any]]: 切分后的窗口列表。
     异常说明：无。
-    边界条件：仅处理 role!=lyric 且时长超过指定小节阈值的窗口。
+    边界条件：仅处理指定 role_hint 且时长超过指定小节阈值的窗口。
     """
     safe_bar_seconds = max(0.2, float(bar_length_seconds))
     safe_long_window_split_min_bars = max(EPSILON_SECONDS, float(long_window_split_min_bars))
     safe_major_split_step_bars = max(EPSILON_SECONDS, float(major_split_step_bars))
+    safe_score_role = str(score_role).lower().strip() or "other"
+    safe_role_hints = {str(item).lower().strip() for item in (eligible_window_role_hints or {"other"}) if str(item).strip()}
+    if not safe_role_hints:
+        safe_role_hints = {"other"}
     beat_rows = _collect_beat_rows(beats=beats)
     if not beat_rows:
         return windows
@@ -772,10 +1047,11 @@ def _split_long_other_windows_by_major(
 
     output: list[dict[str, Any]] = []
     for item in windows:
-        role = str(item.get("role", "silence")).lower().strip()
-        if role == "lyric":
+        role_hint = str(item.get("window_role_hint", "other")).lower().strip()
+        if role_hint not in safe_role_hints:
             output.append(dict(item))
             continue
+        role = safe_score_role
 
         start_time = _safe_float(item.get("start_time", 0.0), 0.0)
         end_time = _safe_float(item.get("end_time", start_time), start_time)
@@ -937,9 +1213,22 @@ def _pick_by_gap(
     return left_index, tie_reason
 
 
+def _get_tiny_source_role_priority(role: str) -> int:
+    """
+    功能说明：返回 tiny 源窗口处理优先级。
+    参数说明：
+    - role: 源窗口角色。
+    返回值：
+    - int: 角色优先级，数值越小越先处理。
+    异常说明：无。
+    边界条件：未知角色按最低优先级处理。
+    """
+    return int(TINY_SOURCE_ROLE_PRIORITY.get(str(role).lower().strip(), 99))
+
+
 def _pick_merge_target_index(windows: list[dict[str, Any]], source_index: int) -> tuple[int | None, str]:
     """
-    功能说明：根据并段层级选择被吸收段的目标邻居。
+    功能说明：根据旧规则选择被吸收段的目标邻居（保留未接线）。
     参数说明：
     - windows: 当前窗口列表。
     - source_index: 待吸收窗口索引。
@@ -1003,12 +1292,124 @@ def _pick_merge_target_index(windows: list[dict[str, Any]], source_index: int) -
     return left_index, "tiny_default_left"
 
 
+def _pick_merge_target_index_by_similarity(
+    windows: list[dict[str, Any]],
+    source_index: int,
+    onset_points: list[dict[str, float]],
+    accompaniment_rms_times: list[float],
+    accompaniment_rms_values: list[float],
+    chroma_points: list[dict[str, Any]],
+    f0_points: list[dict[str, Any]],
+) -> tuple[int | None, dict[str, Any]]:
+    """
+    功能说明：按左右相似度选择 tiny 并段目标。
+    参数说明：
+    - windows: 当前窗口列表。
+    - source_index: 待吸收窗口索引。
+    - onset_points/accompaniment_rms_times/accompaniment_rms_values/chroma_points/f0_points: 相似度特征输入。
+    返回值：
+    - tuple[int | None, dict[str, Any]]: (目标索引, 决策元数据)。
+    异常说明：无。
+    边界条件：平分固定选左；边界窗直接选唯一邻居。
+    """
+    left_index = source_index - 1 if source_index - 1 >= 0 else None
+    right_index = source_index + 1 if source_index + 1 < len(windows) else None
+
+    if left_index is None and right_index is None:
+        return None, {"reason": "no_neighbor", "decision_strategy": "similarity"}
+    if left_index is None:
+        return right_index, {
+            "reason": "edge_right_only",
+            "decision_strategy": "similarity",
+            "selected_side": "right",
+            "tie_break_applied": False,
+        }
+    if right_index is None:
+        return left_index, {
+            "reason": "edge_left_only",
+            "decision_strategy": "similarity",
+            "selected_side": "left",
+            "tie_break_applied": False,
+        }
+
+    source_summary = _build_tiny_window_summary(
+        window_item=windows[source_index],
+        onset_points=onset_points,
+        accompaniment_rms_times=accompaniment_rms_times,
+        accompaniment_rms_values=accompaniment_rms_values,
+        chroma_points=chroma_points,
+        f0_points=f0_points,
+    )
+    left_summary = _build_tiny_window_summary(
+        window_item=windows[left_index],
+        onset_points=onset_points,
+        accompaniment_rms_times=accompaniment_rms_times,
+        accompaniment_rms_values=accompaniment_rms_values,
+        chroma_points=chroma_points,
+        f0_points=f0_points,
+    )
+    right_summary = _build_tiny_window_summary(
+        window_item=windows[right_index],
+        onset_points=onset_points,
+        accompaniment_rms_times=accompaniment_rms_times,
+        accompaniment_rms_values=accompaniment_rms_values,
+        chroma_points=chroma_points,
+        f0_points=f0_points,
+    )
+    left_components = _compute_tiny_similarity_components(source_summary=source_summary, neighbor_summary=left_summary)
+    right_components = _compute_tiny_similarity_components(source_summary=source_summary, neighbor_summary=right_summary)
+    left_total = _safe_float(left_components.get("total_similarity", 0.0), 0.0)
+    right_total = _safe_float(right_components.get("total_similarity", 0.0), 0.0)
+    if left_total > right_total + EPSILON_SECONDS:
+        return left_index, {
+            "reason": "similarity_left_higher",
+            "decision_strategy": "similarity",
+            "selected_side": "left",
+            "tie_break_applied": False,
+            "source_summary": source_summary,
+            "left_summary": left_summary,
+            "right_summary": right_summary,
+            "left_similarity_total": round(float(left_total), 6),
+            "right_similarity_total": round(float(right_total), 6),
+            "left_similarity_components": left_components,
+            "right_similarity_components": right_components,
+        }
+    if right_total > left_total + EPSILON_SECONDS:
+        return right_index, {
+            "reason": "similarity_right_higher",
+            "decision_strategy": "similarity",
+            "selected_side": "right",
+            "tie_break_applied": False,
+            "source_summary": source_summary,
+            "left_summary": left_summary,
+            "right_summary": right_summary,
+            "left_similarity_total": round(float(left_total), 6),
+            "right_similarity_total": round(float(right_total), 6),
+            "left_similarity_components": left_components,
+            "right_similarity_components": right_components,
+        }
+    return left_index, {
+        "reason": "similarity_tie_left",
+        "decision_strategy": "similarity",
+        "selected_side": "left",
+        "tie_break_applied": True,
+        "source_summary": source_summary,
+        "left_summary": left_summary,
+        "right_summary": right_summary,
+        "left_similarity_total": round(float(left_total), 6),
+        "right_similarity_total": round(float(right_total), 6),
+        "left_similarity_components": left_components,
+        "right_similarity_components": right_components,
+    }
+
+
 def _merge_one_window(
     windows: list[dict[str, Any]],
     source_index: int,
     target_index: int,
     reason: str,
     merge_kind: str,
+    decision_meta: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     功能说明：执行单次窗口吸收操作。
@@ -1018,6 +1419,7 @@ def _merge_one_window(
     - target_index: 吸收目标窗口索引。
     - reason: 决策原因。
     - merge_kind: 并段类型（tiny/bar）。
+    - decision_meta: 额外决策解释字段。
     返回值：
     - tuple[list[dict[str, Any]], dict[str, Any]]: (新窗口列表, 并段事件)。
     异常说明：无。
@@ -1060,6 +1462,9 @@ def _merge_one_window(
         "target_window_id": str(target_item.get("window_id", "")),
         "target_role": str(target_item.get("role", "silence")),
     }
+    if decision_meta:
+        for key, value in decision_meta.items():
+            event[key] = value
     return windows, event
 
 
@@ -1152,41 +1557,23 @@ def merge_windows_by_rules(
     accompaniment_f0_points: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """
-    功能说明：执行“长窗口按重拍细分 + 按小节tiny并段”。
+    功能说明：执行按小节阈值的 tiny 并段。
     参数说明：
     - windows_classified: 已分类窗口。
     - tiny_merge_bars: tiny阈值（小节）。
     - bar_length_seconds: 一小节时长（秒）。
-    - beats: 结构化节拍列表（用于重拍切分）。
+    - beats: 结构化节拍列表（当前仅为接口兼容保留）。
     - duration_seconds: 音频总时长（秒）。
-    - long_window_split_min_bars: 触发 downbeat 细分的时长阈值（小节）。
-    - major_split_step_bars: downbeat 滑动桶步长（小节）。
-    - onset_points: onset强度点列表（time+energy_raw）。
-    - vocal_rms_times/vocal_rms_values: 人声 RMS 序列。
-    - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列。
-    - accompaniment_chroma_points: 伴奏 chroma 点序列。
-    - vocal_f0_points/accompaniment_f0_points: 人声/伴奏 F0 点序列。
+    - long_window_split_min_bars/major_split_step_bars: 兼容旧接口保留，当前不参与逻辑。
+    - onset_points/vocal_rms_times/vocal_rms_values: tiny 相似度所需的局部特征输入。
+    - accompaniment_rms_times/accompaniment_rms_values: tiny 相似度的 energy 参考。
+    - accompaniment_chroma_points/vocal_f0_points/accompaniment_f0_points: tiny 相似度的 chroma/F0 参考。
     返回值：
     - tuple[list[dict[str, Any]], list[dict[str, Any]]]: (并段后窗口, 并段事件)。
     异常说明：异常由调用方或上层流程统一处理。
-    边界条件：所有角色均可作为被吸收对象，最终连续性由归一化步骤保证。
+    边界条件：所有角色均可作为被吸收对象；长 other 切分需在本函数之前完成。
     """
     windows = [dict(item) for item in sorted(windows_classified, key=lambda row: _safe_float(row.get("start_time", 0.0), 0.0))]
-    windows = _split_long_other_windows_by_major(
-        windows=windows,
-        beats=beats,
-        bar_length_seconds=bar_length_seconds,
-        long_window_split_min_bars=long_window_split_min_bars,
-        major_split_step_bars=major_split_step_bars,
-        onset_points=onset_points,
-        vocal_rms_times=vocal_rms_times,
-        vocal_rms_values=vocal_rms_values,
-        accompaniment_rms_times=accompaniment_rms_times,
-        accompaniment_rms_values=accompaniment_rms_values,
-        accompaniment_chroma_points=accompaniment_chroma_points,
-        vocal_f0_points=vocal_f0_points,
-        accompaniment_f0_points=accompaniment_f0_points,
-    )
     for item in windows:
         item.setdefault("source_window_ids", [str(item.get("window_id", ""))])
         item.setdefault("merge_action", "keep_original")
@@ -1196,26 +1583,48 @@ def merge_windows_by_rules(
     if safe_tiny_bars <= 0.0:
         safe_tiny_bars = DEFAULT_TINY_MERGE_BARS
     safe_tiny_seconds = max(0.2, float(bar_length_seconds)) * safe_tiny_bars
+    normalized_onset_points = _normalize_onset_points(onset_points=onset_points)
+    normalized_chroma_points = _normalize_chroma_points(chroma_points=accompaniment_chroma_points)
+    normalized_vocal_f0_points = _normalize_f0_points(f0_points=vocal_f0_points)
+    normalized_accompaniment_f0_points = _normalize_f0_points(f0_points=accompaniment_f0_points)
+    merged_f0_points = sorted(
+        normalized_vocal_f0_points + normalized_accompaniment_f0_points,
+        key=lambda item: _safe_float(item.get("time", 0.0), 0.0),
+    )
 
     # 单阶段：按小节阈值执行tiny并段
     while True:
-        tiny_index = None
+        tiny_candidates: list[tuple[int, int]] = []
         for index, item in enumerate(windows):
-            if _window_duration(item) <= safe_tiny_seconds + EPSILON_SECONDS:
-                tiny_index = index
-                break
+            if _window_duration(item) < safe_tiny_seconds:
+                source_role = str(item.get("role", "silence")).lower().strip()
+                tiny_candidates.append((_get_tiny_source_role_priority(source_role), index))
+        tiny_index = None
+        if tiny_candidates:
+            tiny_candidates.sort(key=lambda item: (item[0], item[1]))
+            tiny_index = int(tiny_candidates[0][1])
         if tiny_index is None:
             break
 
-        target_index, reason = _pick_merge_target_index(windows=windows, source_index=tiny_index)
+        target_index, decision_meta = _pick_merge_target_index_by_similarity(
+            windows=windows,
+            source_index=tiny_index,
+            onset_points=normalized_onset_points,
+            accompaniment_rms_times=list(accompaniment_rms_times or []),
+            accompaniment_rms_values=list(accompaniment_rms_values or []),
+            chroma_points=normalized_chroma_points,
+            f0_points=merged_f0_points,
+        )
         if target_index is None:
             break
+        reason = str(decision_meta.get("reason", "similarity_tie_left"))
         windows, event = _merge_one_window(
             windows=windows,
             source_index=tiny_index,
             target_index=target_index,
             reason=reason,
             merge_kind="tiny",
+            decision_meta=decision_meta,
         )
         merge_events.append(event)
 

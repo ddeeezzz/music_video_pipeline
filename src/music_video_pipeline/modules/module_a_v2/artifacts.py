@@ -39,6 +39,8 @@ class ModuleAV2Artifacts:
     perception_signal_librosa_vocal_candidates_path: Path
 
     algorithm_window_stage_windows_raw_path: Path
+    algorithm_window_stage_windows_pre_split_classified_path: Path
+    algorithm_window_stage_windows_pre_boundary_other_split_path: Path
     algorithm_window_stage_windows_classified_path: Path
     algorithm_window_stage_windows_merged_path: Path
 
@@ -101,6 +103,9 @@ def build_module_a_v2_artifacts(work_dir: Path) -> ModuleAV2Artifacts:
         perception_signal_librosa_vocal_candidates_path=perception_signal_librosa_dir / "vocal_candidates.json",
 
         algorithm_window_stage_windows_raw_path=algorithm_window_dir / "stage_windows_raw.json",
+        algorithm_window_stage_windows_pre_split_classified_path=algorithm_window_dir / "stage_windows_pre_split_classified.json",
+        algorithm_window_stage_windows_pre_boundary_other_split_path=algorithm_window_dir
+        / "stage_windows_pre_boundary_other_split.json",
         algorithm_window_stage_windows_classified_path=algorithm_window_dir / "stage_windows_classified.json",
         algorithm_window_stage_windows_merged_path=algorithm_window_dir / "stage_windows_merged.json",
 

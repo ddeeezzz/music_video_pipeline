@@ -19,11 +19,12 @@ from music_video_pipeline.modules.module_a_v2.timeline import (
     merge_windows_by_rules,
     resplit_long_lyric_windows,
     resolve_big_timestamps_and_segments,
+    split_long_other_windows_by_major,
 )
 
 
 # 常量：tiny并段默认阈值（小节）
-DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS = 0.9
+DEFAULT_CONTENT_ROLE_TINY_MERGE_BARS = 0.8
 
 
 # 常量：近锚点冲突默认阈值（秒）
@@ -71,6 +72,46 @@ def _resolve_dynamic_gap_threshold(sentence_split_stats: dict[str, Any], fallbac
     if threshold <= 0.0:
         return max(0.04, float(fallback_value))
     return float(threshold)
+
+
+def _build_pre_split_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    功能说明：构造长 other 前移切分使用的预阶段窗口，仅区分 lyric / other。
+    参数说明：
+    - windows: 原始窗口列表。
+    返回值：
+    - list[dict[str, Any]]: 仅含 lyric / other 预角色的窗口列表。
+    异常说明：无。
+    边界条件：缺失 role_hint 时回退 other。
+    """
+    output: list[dict[str, Any]] = []
+    for item in windows:
+        rewritten = dict(item)
+        role_hint = str(rewritten.get("window_role_hint", "other")).lower().strip()
+        pre_split_role = "lyric" if role_hint == "lyric" else "other"
+        rewritten["role"] = pre_split_role
+        rewritten["pre_split_role"] = pre_split_role
+        rewritten["merge_action"] = "keep_original"
+        output.append(rewritten)
+    return output
+
+
+def _copy_final_role_fields(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    功能说明：为正式分类窗口写入 final_role 字段，保留 tiny merge 使用角色。
+    参数说明：
+    - windows: 正式分类后的窗口列表。
+    返回值：
+    - list[dict[str, Any]]: 追加 final_role 的窗口列表。
+    异常说明：无。
+    边界条件：保留已有 pre_split_role，不做删除。
+    """
+    output: list[dict[str, Any]] = []
+    for item in windows:
+        rewritten = dict(item)
+        rewritten["final_role"] = str(rewritten.get("role", "silence"))
+        output.append(rewritten)
+    return output
 
 
 def apply_content_role_pipeline(
@@ -181,8 +222,24 @@ def apply_content_role_pipeline(
             if EPSILON_SECONDS < _safe_float(item.get(boundary_key, 0.0), 0.0) < float(duration_seconds) - EPSILON_SECONDS
         }
     )
+    windows_pre_split_classified = _build_pre_split_windows(windows_raw)
+    windows_pre_boundary_other_split = split_long_other_windows_by_major(
+        windows=windows_pre_split_classified,
+        beats=beats,
+        bar_length_seconds=bar_length_seconds,
+        long_window_split_min_bars=long_other_split_min_bars,
+        major_split_step_bars=major_split_step_bars,
+        onset_points=list(onset_points or []),
+        vocal_rms_times=list(vocal_rms_times or []),
+        vocal_rms_values=list(vocal_rms_values or []),
+        accompaniment_rms_times=list(accompaniment_rms_times or []),
+        accompaniment_rms_values=list(accompaniment_rms_values or []),
+        accompaniment_chroma_points=list(accompaniment_chroma_points or []),
+        vocal_f0_points=list(vocal_f0_points or []),
+        accompaniment_f0_points=list(accompaniment_f0_points or []),
+    )
     windows_for_classification = inject_boundary_points_into_windows(
-        windows=windows_raw,
+        windows=windows_pre_boundary_other_split,
         boundary_points=activity_boundary_points,
         duration_seconds=duration_seconds,
         target_window_role_hint="other",
@@ -192,14 +249,13 @@ def apply_content_role_pipeline(
         vocal_activity_intervals=list(activity_windows.get("vocal", {}).get("intervals", [])),
         accompaniment_activity_intervals=list(activity_windows.get("accompaniment", {}).get("intervals", [])),
     )
+    windows_classified = _copy_final_role_fields(windows_classified)
     windows_merged, merge_events = merge_windows_by_rules(
         windows_classified=windows_classified,
         tiny_merge_bars=safe_tiny_merge_bars,
         bar_length_seconds=bar_length_seconds,
         beats=beats,
         duration_seconds=duration_seconds,
-        long_window_split_min_bars=long_other_split_min_bars,
-        major_split_step_bars=major_split_step_bars,
         onset_points=list(onset_points or []),
         vocal_rms_times=list(vocal_rms_times or []),
         vocal_rms_values=list(vocal_rms_values or []),
@@ -239,6 +295,8 @@ def apply_content_role_pipeline(
             _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over_limit_count", 0), 0)
         ),
         "windows_raw": windows_raw,
+        "windows_pre_split_classified": windows_pre_split_classified,
+        "windows_pre_boundary_other_split": windows_pre_boundary_other_split,
         "activity_windows": activity_windows,
         "windows_classified": windows_classified,
         "windows_merged": windows_merged,
@@ -263,5 +321,7 @@ def apply_content_role_pipeline(
             "long_lyric_remaining_over_limit_count": int(
                 _safe_float(long_lyric_resplit_stats.get("long_lyric_remaining_over_limit_count", 0), 0)
             ),
+            "windows_pre_split_classified": windows_pre_split_classified,
+            "windows_pre_boundary_other_split": windows_pre_boundary_other_split,
         },
     }

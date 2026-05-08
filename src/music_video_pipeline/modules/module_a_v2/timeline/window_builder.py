@@ -937,6 +937,38 @@ def _merge_tiny_within_long_lyric_window(
     return working_windows, merge_events
 
 
+def _append_long_lyric_major_fallback_events(
+    events: list[dict[str, Any]],
+    source_window_id: str,
+    split_windows: list[dict[str, Any]],
+) -> None:
+    """
+    功能说明：为长歌词重拍兜底切分补充调试事件。
+    参数说明：
+    - events: 长歌词重切事件列表。
+    - source_window_id: 原始长歌词窗口ID。
+    - split_windows: 重拍兜底切分后的子窗列表。
+    返回值：无。
+    异常说明：无。
+    边界条件：不足两个子窗时不记录事件。
+    """
+    if len(split_windows) <= 1:
+        return
+    ordered_windows = sorted(split_windows, key=lambda item: _safe_float(item.get("start_time", 0.0), 0.0))
+    for split_rank, item in enumerate(ordered_windows[:-1], start=1):
+        events.append(
+            {
+                "source_window_id": str(source_window_id),
+                "split_basis": "major_fallback",
+                "split_rank": int(split_rank),
+                "boundary_time": _round_time(_safe_float(item.get("end_time", 0.0), 0.0)),
+                "segment_start_time": _round_time(_safe_float(item.get("start_time", 0.0), 0.0)),
+                "segment_end_time": _round_time(_safe_float(item.get("end_time", 0.0), 0.0)),
+                "split_major_pick_reason": str(item.get("split_major_pick_reason", "")),
+            }
+        )
+
+
 def resplit_long_lyric_windows(
     windows_raw: list[dict[str, Any]],
     sentence_units: list[dict[str, Any]],
@@ -963,7 +995,7 @@ def resplit_long_lyric_windows(
     边界条件：无可切分信息时保留原窗口并记录剩余超长数量。
     """
     # 项目内模块：复用小节时长估计能力
-    from .role_merger import estimate_bar_length_seconds
+    from .role_merger import estimate_bar_length_seconds, split_long_other_windows_by_major
 
     safe_duration = max(0.0, float(duration_seconds))
     normalized_windows = _normalize_windows_continuity(windows=windows_raw, duration_seconds=safe_duration)
@@ -1006,6 +1038,27 @@ def resplit_long_lyric_windows(
             events=resplit_events,
         )
         split_result_windows = split_windows if split_windows else [rewritten]
+        if not all(
+            _window_duration(item) <= max_lyric_window_seconds + EPSILON_SECONDS
+            for item in split_result_windows
+        ):
+            fallback_input_windows = [dict(item) for item in split_result_windows]
+            fallback_split_windows = split_long_other_windows_by_major(
+                windows=fallback_input_windows,
+                beats=beats,
+                bar_length_seconds=bar_length_seconds,
+                long_window_split_min_bars=safe_long_lyric_resplit_max_bars,
+                major_split_step_bars=safe_long_lyric_resplit_max_bars,
+                eligible_window_role_hints={"lyric"},
+                score_role="other",
+            )
+            if len(fallback_split_windows) > len(split_result_windows):
+                _append_long_lyric_major_fallback_events(
+                    events=resplit_events,
+                    source_window_id=str(rewritten.get("window_id", "")),
+                    split_windows=fallback_split_windows,
+                )
+                split_result_windows = fallback_split_windows
         all_within_max_lyric_window = all(
             _window_duration(item) <= max_lyric_window_seconds + EPSILON_SECONDS
             for item in split_result_windows
@@ -1186,6 +1239,12 @@ def inject_boundary_points_into_windows(
         current_role_hint = str(window_item.get("window_role_hint", "")).strip().lower()
         should_split_current = True
         if safe_target_role_hint is not None and current_role_hint != safe_target_role_hint:
+            should_split_current = False
+        if (
+            should_split_current
+            and current_role_hint == "other"
+            and str(window_item.get("split_basis", "")).lower().strip() == "major"
+        ):
             should_split_current = False
 
         start_time = _safe_float(window_item.get("start_time", 0.0), 0.0)
