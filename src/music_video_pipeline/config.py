@@ -498,7 +498,7 @@ class ModuleAConfig:
     visual_lead_seconds: float = 0.06
     long_instrumental_gap_seconds: float = 5.0
     lyric_boundary_near_anchor_seconds: float = 1.5
-    content_role_tiny_merge_bars: float = 0.9
+    content_role_tiny_merge_bars: float = 0.8
     long_lyric_resplit_max_bars: float = 3.0
     long_other_split_min_bars: float = 1.0
     major_split_step_bars: float = 2.5
@@ -717,7 +717,7 @@ def _merge_defaults(raw_data: dict) -> dict:
             "visual_lead_seconds": 0.06,
             "long_instrumental_gap_seconds": 5.0,
             "lyric_boundary_near_anchor_seconds": 1.5,
-            "content_role_tiny_merge_bars": 0.9,
+            "content_role_tiny_merge_bars": 0.8,
             "long_lyric_resplit_max_bars": 3.0,
             "long_other_split_min_bars": 1.0,
             "major_split_step_bars": 2.5,

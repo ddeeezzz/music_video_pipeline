@@ -164,7 +164,7 @@ def test_load_config_should_ignore_removed_lyric_segment_policy_key_with_warning
     assert app_config.module_a.visual_lead_seconds == 0.06
     assert app_config.module_a.long_instrumental_gap_seconds == 5.0
     assert app_config.module_a.lyric_boundary_near_anchor_seconds == 1.5
-    assert app_config.module_a.content_role_tiny_merge_bars == 0.9
+    assert app_config.module_a.content_role_tiny_merge_bars == 0.8
     assert app_config.module_a.long_lyric_resplit_max_bars == 3.0
     assert app_config.module_a.long_other_split_min_bars == 1.0
     assert app_config.module_a.major_split_step_bars == 2.5

@@ -79,7 +79,7 @@
     "long_pause_seconds": 0.8,
     "merge_gap_seconds": 0.25,
     "max_visual_unit_seconds": 6.0,
-    "content_role_tiny_merge_bars": 0.9,
+    "content_role_tiny_merge_bars": 0.5,
     "long_lyric_resplit_max_bars": 2.0,
     "long_other_split_min_bars": 1.0,
     "major_split_step_bars": 2.5,
