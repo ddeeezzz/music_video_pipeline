@@ -1,0 +1,18 @@
+{
+  "template": "center",
+  "fps": 24,
+  "duration_in_frames": 48,
+  "bpm": 130,
+  "background": {
+    "kind": "solid",
+    "color": "#FFFFFF"
+  },
+  "symbol": {
+    "src": "/fixtures/center-symbol.svg",
+    "width_ratio": 0.42,
+    "height_ratio": 0.42
+  },
+  "motion": {
+    "breathe": true
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "template": "grid",
+  "fps": 24,
+  "duration_in_frames": 84,
+  "bpm": 130,
+  "background": {
+    "kind": "solid",
+    "color": "#FFFFFF"
+  },
+  "symbols": [
+    {"src": "/fixtures/grid-a.svg", "width_ratio": 0.26, "height_ratio": 0.52},
+    {"src": "/fixtures/grid-b.svg", "width_ratio": 0.26, "height_ratio": 0.52},
+    {"src": "/fixtures/grid-c.svg", "width_ratio": 0.26, "height_ratio": 0.52}
+  ],
+  "layout": {
+    "visible_cell_count": 3
+  },
+  "motion": {
+    "active_ratio": 0.45
+  }
+}

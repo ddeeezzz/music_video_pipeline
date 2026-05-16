@@ -1,0 +1,23 @@
+{
+  "name": "mvpl-remotion-templates",
+  "private": true,
+  "version": "0.1.0",
+  "description": "music_video_pipeline 的正式 Remotion 模板工程。",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render:center": "remotion render src/index.ts CenterTemplate ..\\runs\\remotion_center_demo.mp4 --props=src\\fixtures\\center.json"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "latest",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@remotion/cli": "latest",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.8.0"
+  }
+}

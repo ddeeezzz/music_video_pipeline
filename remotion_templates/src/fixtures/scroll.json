@@ -1,0 +1,33 @@
+{
+  "template": "scroll",
+  "fps": 24,
+  "duration_in_frames": 144,
+  "bpm": 130,
+  "background": {
+    "kind": "solid",
+    "color": "#FFFFFF"
+  },
+  "symbols": [
+    {
+      "src": "/fixtures/scroll-symbol.svg",
+      "width_ratio": 0.28,
+      "height_ratio": 0.72
+    },
+    {
+      "src": "/fixtures/scroll-symbol.svg",
+      "width_ratio": 0.28,
+      "height_ratio": 0.72
+    },
+    {
+      "src": "/fixtures/scroll-symbol.svg",
+      "width_ratio": 0.28,
+      "height_ratio": 0.72
+    }
+  ],
+  "layout": {
+    "visible_cell_count": 3
+  },
+  "motion": {
+    "loop": false
+  }
+}
