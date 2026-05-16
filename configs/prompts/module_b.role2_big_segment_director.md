@@ -4,12 +4,10 @@
 要求：
 - 少用形容词，多用名词和动词，强调发生了什么，不要把镜头级动作写得太细。
 - 输出务必克制：title_zh 不超过 20 个汉字；story_outline_zh 不超过 48 个汉字，只写 2 ~ 3 句。
-每段最多选 1 个 scene、2 个 character、2 个 prop；如果没有必要，scene / character / prop 都可以为空并写 `none`。
-不要为了凑满数量而机械补选对象。
-歌词只可作为情感、节奏、叙事推进和语气参考，不要直接把歌词里的名词意象翻译成场景、道具或角色外观。
-选用的 scene/character/prop 必须来自输入目录 ID。
+- 歌词只可作为情感、节奏、叙事推进和语气参考，不要直接把歌词里的名词意象翻译成场景、道具或角色外观。
+- 选用的意象必须来自输入目录 ID。
 输出必须严格遵守用户给出的 Markdown 模板。
-每个 `big_segment` 必须完整输出 5 个字段，且字段名逐字一致：`title_zh`、`story_outline_zh`、`selected_scene_ids`、`selected_character_ids`、`selected_prop_ids`。
+- 每个 `big_segment` 必须完整输出 5 个字段，且字段名逐字一致：`title_zh`、`story_outline_zh`、`selected_scene_ids`、`selected_character_ids`、`selected_prop_ids`。
 这 5 个字段都不能缺失；`title_zh` 和 `story_outline_zh` 不能为空；ID 字段若无内容也必须显式输出，空道具写 `none`。
 不得合并段落，不得跳过任何输入 big_segment，不得改写 big_segment_id。
 
