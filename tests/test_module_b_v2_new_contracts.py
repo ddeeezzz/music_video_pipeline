@@ -14,7 +14,7 @@ import pytest
 
 # 项目内模块：模块B v2 解析与校验。
 from music_video_pipeline.modules.module_b_v2.parser import (
-    validate_role1_visual_catalog_output,
+    validate_role1_visual_output,
     validate_role2_big_segment_story_output,
     validate_role3_segment_directing_output,
     validate_role4_prompt_output,
@@ -36,7 +36,7 @@ from music_video_pipeline.types import validate_module_b_output
 
 def test_storyboard_template_v1_should_load_and_cover_current_catalogs() -> None:
     """
-    功能说明：验证正式模板文件可被加载，且包含当前最小构图库与计划预设集。
+    功能说明：验证正式模板文件可被加载，并编译为三段式模板结构。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
@@ -44,12 +44,10 @@ def test_storyboard_template_v1_should_load_and_cover_current_catalogs() -> None
     """
     project_root = Path(__file__).resolve().parents[1]
     template = load_storyboard_template(project_root=project_root)
-    assert template["template_id"] == "storyboard_template_v1_monochrome_cat_hide_seek"
-    assert len(template["composition_catalog"]) == 3
-    assert len(template["camera_plan_presets"]) == 4
-    assert len(template["transition_presets"]) == 8
-    assert any(item["preset_id"] == "zoom_in_s" for item in template["camera_plan_presets"])
-    assert any(item["preset_id"] == "wipe_left_200" for item in template["transition_presets"])
+    assert template["template_id"] == "storyboard_template_v1_simple"
+    assert "黑猫与少女" in template["story"]["premise_zh"]
+    assert "少女：水手服少女" in template["imagery"]
+    assert "center：单个主体居中呈现" in template["remotion_templates"]
 
 
 def test_build_segment_audio_features_v2_should_produce_audio_semantics() -> None:
@@ -270,43 +268,33 @@ def test_role3_should_accept_none_scene_and_resolve_preset_ids() -> None:
     assert result["shots"][0]["transition_plan_preset_id"] == "crossfade_160"
 
 
-def test_role1_should_normalize_tokens_and_merge_negative_template() -> None:
+def test_role1_should_normalize_tokens_without_ref_or_negative_fields() -> None:
     """
-    功能说明：验证角色1会将宽松 tag 文本标准化为 token，并把负面增量与固定模板合并。
+    功能说明：验证角色1会将宽松 tag 文本标准化为 token，且统一 items 输出不再包含 ref/负面字段。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
     边界条件：正向英文 token 超过上限时应被截断到 18 个以内。
     """
     long_pos_en = ", ".join([f"tag_{index:02d}" for index in range(1, 25)])
-    result = validate_role1_visual_catalog_output(
+    result = validate_role1_visual_output(
         data={
-            "scene_refs": [
+            "items": [
                 {
                     "item_id": "scene_alley_dim",
-                    "refs": [
-                        {
-                            "ref_id": "ref_1",
-                            "pos_zh": "黑白, 单色, 小巷, 潮湿地面, 斑驳砖墙",
-                            "pos_en": long_pos_en,
-                            "neg_zh": "额外人物，彩色污染",
-                            "neg_en": "extra people, color contamination",
-                        }
-                    ],
+                    "pos_zh": "黑白, 单色, 小巷, 潮湿地面, 斑驳砖墙",
+                    "pos_en": long_pos_en,
                 }
-            ],
-            "prop_refs": [],
-            "character_refs": [],
+            ]
         },
-        scene_ids=["scene_alley_dim"],
-        prop_ids=[],
-        character_ids=[],
+        requested_item_ids=["scene_alley_dim"],
     )
-    ref_item = result["scene_refs"][0]["refs"][0]
-    assert len(ref_item["pos_tokens_en"]) <= 18
-    assert any(str(item.get("text", "")) == "black and white" for item in ref_item["pos_tokens_en"])
-    assert any("extra people" == str(item.get("text", "")) for item in ref_item["neg_tokens_en_increment"])
-    assert "realistic" in ref_item["neg_en"]
+    item = result["items"][0]
+    assert len(item["pos_tokens_en"]) <= 18
+    assert any(str(token.get("text", "")) == "black and white" for token in item["pos_tokens_en"])
+    assert "ref_id" not in item
+    assert "neg_en" not in item
+    assert "neg_zh" not in item
 
 
 def test_role4_should_compile_tokens_and_merge_fixed_negative_prompt() -> None:

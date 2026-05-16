@@ -100,36 +100,30 @@ def normalize_non_empty_text(field_name: str, value: object) -> str:
     return normalized
 
 
-def parse_role1_visual_catalog_markdown(text: str) -> dict[str, Any]:
+def parse_role1_visual_markdown(text: str) -> dict[str, Any]:
     """
-    功能说明：解析角色1单类对象的 Markdown 输出。
+    功能说明：解析角色1统一对象列表的 Markdown 输出。
     参数说明：
     - text: 模型返回的 Markdown 文本。
     返回值：
-    - dict[str, Any]: 形如 {"assets": [...]} 的对象。
+    - dict[str, Any]: 形如 {"items": [...]} 的对象。
     异常说明：
     - ModuleBV2ParseError: 结构不符合约定时抛出。
-    边界条件：顶层要求使用 `## item_id` 与 `### ref_id`。
+    边界条件：顶层要求使用 `## item_id`，字段直接挂在 item 下。
     """
     document = parse_markdown_document(text)
-    assets: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for section in document.sections:
         item_id = normalize_non_empty_text("role1.item_id", section.heading)
-        refs: list[dict[str, Any]] = []
-        for subsection in section.subsections:
-            ref_id = normalize_non_empty_text(f"role1[{item_id}].ref_id", subsection.heading)
-            field_map = dict(subsection.fields)
-            refs.append(
-                {
-                    "ref_id": ref_id,
-                    "pos_zh": _require_field(field_map, "pos_zh", f"role1[{item_id}][{ref_id}]"),
-                    "pos_en": _require_field(field_map, "pos_en", f"role1[{item_id}][{ref_id}]"),
-                    "neg_zh": _require_field(field_map, "neg_zh", f"role1[{item_id}][{ref_id}]"),
-                    "neg_en": _require_field(field_map, "neg_en", f"role1[{item_id}][{ref_id}]"),
-                }
-            )
-        assets.append({"item_id": item_id, "refs": refs})
-    return {"assets": assets}
+        field_map = dict(section.fields)
+        items.append(
+            {
+                "item_id": item_id,
+                "pos_zh": _require_field(field_map, "pos_zh", f"role1[{item_id}]"),
+                "pos_en": _require_field(field_map, "pos_en", f"role1[{item_id}]"),
+            }
+        )
+    return {"items": items}
 
 
 def parse_role2_big_segment_story_markdown(text: str) -> dict[str, Any]:
@@ -299,34 +293,24 @@ def validate_storyboard_template(data: dict[str, Any]) -> dict[str, Any]:
     - dict[str, Any]: 原样返回已通过校验的对象。
     异常说明：
     - ModuleBV2ParseError: 字段缺失或结构非法时抛出。
-    边界条件：只做当前 v1 所需最小校验。
+    边界条件：只校验“三段式模板”所需最小结构。
     """
     required_keys = {
         "template_id",
-        "style",
         "story",
-        "scene_catalog",
-        "prop_catalog",
-        "character_catalog",
-        "composition_catalog",
-        "camera_plan_presets",
-        "transition_presets",
+        "imagery",
+        "remotion_templates",
     }
     missing_keys = required_keys.difference(data.keys())
     if missing_keys:
         raise ModuleBV2ParseError(f"编排模板缺失字段：{sorted(missing_keys)}")
-    _validate_unique_ids(data.get("scene_catalog", []), key_name="item_id", field_name="scene_catalog")
-    _validate_unique_ids(data.get("prop_catalog", []), key_name="item_id", field_name="prop_catalog")
-    _validate_unique_ids(data.get("character_catalog", []), key_name="item_id", field_name="character_catalog")
-    _validate_unique_ids(data.get("composition_catalog", []), key_name="composition_id", field_name="composition_catalog")
-    _validate_unique_ids(data.get("camera_plan_presets", []), key_name="preset_id", field_name="camera_plan_presets")
-    _validate_unique_ids(data.get("transition_presets", []), key_name="preset_id", field_name="transition_presets")
-    camera_preset_ids = {
-        validate_camera_plan(item).get("preset_id", "")
-        for item in data.get("camera_plan_presets", [])
-        if isinstance(item, dict)
-    }
-    del camera_preset_ids
+    story_payload = data.get("story", {})
+    if not isinstance(story_payload, dict):
+        raise ModuleBV2ParseError("story 必须是对象。")
+    normalize_non_empty_text("story.premise_zh", story_payload.get("premise_zh", ""))
+
+    normalize_non_empty_text("imagery", data.get("imagery", ""))
+    normalize_non_empty_text("remotion_templates", data.get("remotion_templates", ""))
     return data
 
 
@@ -419,18 +403,16 @@ def _validate_unique_ids(items: Any, key_name: str, field_name: str) -> None:
         seen_ids.add(item_id)
 
 
-def validate_role1_visual_catalog_output(
+def validate_role1_visual_output(
     data: dict[str, Any],
     *,
-    scene_ids: list[str],
-    prop_ids: list[str],
-    character_ids: list[str],
+    requested_item_ids: list[str],
 ) -> dict[str, Any]:
     """
-    功能说明：校验角色1视觉词库输出。
+    功能说明：校验角色1对象视觉描述输出。
     参数说明：
     - data: 角色1输出对象。
-    - scene_ids/prop_ids/character_ids: 各目录合法 ID 集合。
+    - requested_item_ids: 本轮 prompt 中要求模型原样带回的 item_id 集合。
     返回值：
     - dict[str, Any]: 标准化后的角色1输出。
     异常说明：
@@ -438,17 +420,9 @@ def validate_role1_visual_catalog_output(
     边界条件：每个对象至少要返回 1 组 refs。
     """
     payload = {
-        "scene_refs": _validate_visual_asset_refs(data.get("scene_refs", []), "scene_refs", set(scene_ids)),
-        "prop_refs": _validate_visual_asset_refs(data.get("prop_refs", []), "prop_refs", set(prop_ids)),
-        "character_refs": _validate_visual_asset_refs(data.get("character_refs", []), "character_refs", set(character_ids)),
+        "items": _validate_visual_reference_items(data.get("items", []), "items", set(requested_item_ids)),
     }
-    _assert_visual_asset_full_coverage(payload["scene_refs"], expected_ids=set(scene_ids), field_name="scene_refs")
-    _assert_visual_asset_full_coverage(payload["prop_refs"], expected_ids=set(prop_ids), field_name="prop_refs")
-    _assert_visual_asset_full_coverage(
-        payload["character_refs"],
-        expected_ids=set(character_ids),
-        field_name="character_refs",
-    )
+    _assert_full_coverage(payload["items"], expected_ids=set(requested_item_ids), field_name="items")
     return payload
 
 
@@ -766,15 +740,15 @@ def validate_role4_prompt_output(data: dict[str, Any], *, shot_ids: list[str]) -
     return {"shots": normalized_items}
 
 
-def _validate_visual_asset_refs(items: Any, field_name: str, valid_ids: set[str]) -> list[dict[str, Any]]:
+def _validate_visual_reference_items(items: Any, field_name: str, valid_ids: set[str]) -> list[dict[str, Any]]:
     """
-    功能说明：校验角色1单类对象 refs。
+    功能说明：校验角色1对象视觉描述列表。
     参数说明：
     - items: refs 列表。
     - field_name: 字段名。
     - valid_ids: 合法 item_id 集合。
     返回值：
-    - list[dict[str, Any]]: 标准化后的 refs。
+    - list[dict[str, Any]]: 标准化后的对象描述。
     异常说明：
     - ModuleBV2ParseError: 字段或 ID 非法时抛出。
     边界条件：输入目录为空时允许返回空数组。
@@ -791,90 +765,37 @@ def _validate_visual_asset_refs(items: Any, field_name: str, valid_ids: set[str]
             raise ModuleBV2ParseError(f"{field_name}[{index}] 引用了未知 item_id：{item_id}")
         if item_id in seen_ids:
             raise ModuleBV2ParseError(f"{field_name} 存在重复 item_id：{item_id}")
-        refs = item.get("refs", [])
-        if not isinstance(refs, list) or not refs:
-            raise ModuleBV2ParseError(f"{field_name}[{index}].refs 必须是非空列表。")
-        normalized_refs: list[dict[str, Any]] = []
-        seen_ref_ids: set[str] = set()
-        for ref_index, ref_item in enumerate(refs):
-            if not isinstance(ref_item, dict):
-                raise ModuleBV2ParseError(f"{field_name}[{index}].refs[{ref_index}] 必须是对象。")
-            ref_id = normalize_non_empty_text(
-                f"{field_name}[{index}].refs[{ref_index}].ref_id",
-                ref_item.get("ref_id", ""),
-            )
-            if ref_id in seen_ref_ids:
-                raise ModuleBV2ParseError(f"{field_name}[{index}] 存在重复 ref_id：{ref_id}")
-            seen_ref_ids.add(ref_id)
-            normalized_refs.append(
-                {
-                    "ref_id": ref_id,
-                    "pos_zh": normalize_non_empty_text(
-                        f"{field_name}[{index}].refs[{ref_index}].pos_zh",
-                        ref_item.get("pos_zh", ""),
-                    ),
-                    "pos_en": normalize_non_empty_text(
-                        f"{field_name}[{index}].refs[{ref_index}].pos_en",
-                        ref_item.get("pos_en", ""),
-                    ),
-                    "neg_zh": normalize_non_empty_text(
-                        f"{field_name}[{index}].refs[{ref_index}].neg_zh",
-                        ref_item.get("neg_zh", ""),
-                    ),
-                    "neg_en": normalize_non_empty_text(
-                        f"{field_name}[{index}].refs[{ref_index}].neg_en",
-                        ref_item.get("neg_en", ""),
-                    ),
-                    "pos_tokens_zh": build_positive_prompt_tokens(
-                        ref_item.get("pos_zh", ""),
-                        language="zh",
-                        style_text="黑白 漫画",
-                    ),
-                    "pos_tokens_en": build_positive_prompt_tokens(
-                        ref_item.get("pos_en", ""),
-                        language="en",
-                        style_text="black and white manga",
-                    ),
-                    "neg_tokens_zh_increment": build_negative_tokens_with_fixed_template(
-                        ref_item.get("neg_zh", ""),
-                        language="zh",
-                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
-                    )[0],
-                    "neg_tokens_en_increment": build_negative_tokens_with_fixed_template(
-                        ref_item.get("neg_en", ""),
-                        language="en",
-                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
-                    )[0],
-                    "neg_tokens_zh": build_negative_tokens_with_fixed_template(
-                        ref_item.get("neg_zh", ""),
-                        language="zh",
-                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_zh),
-                    )[1],
-                    "neg_tokens_en": build_negative_tokens_with_fixed_template(
-                        ref_item.get("neg_en", ""),
-                        language="en",
-                        fixed_template_text=str(ModuleBConfig().fixed_negative_prompt_en),
-                    )[1],
-                }
-            )
-            normalized_refs[-1]["pos_zh"] = compile_tokens_to_prompt_text(
-                normalized_refs[-1]["pos_tokens_zh"],
-                language="zh",
-            )
-            normalized_refs[-1]["pos_en"] = compile_tokens_to_prompt_text(
-                normalized_refs[-1]["pos_tokens_en"],
-                language="en",
-            )
-            normalized_refs[-1]["neg_zh"] = compile_tokens_to_prompt_text(
-                normalized_refs[-1]["neg_tokens_zh"],
-                language="zh",
-            )
-            normalized_refs[-1]["neg_en"] = compile_tokens_to_prompt_text(
-                normalized_refs[-1]["neg_tokens_en"],
-                language="en",
-            )
         seen_ids.add(item_id)
-        normalized_items.append({"item_id": item_id, "refs": normalized_refs})
+        normalized_item = {
+            "item_id": item_id,
+            "pos_zh": normalize_non_empty_text(
+                f"{field_name}[{index}].pos_zh",
+                item.get("pos_zh", ""),
+            ),
+            "pos_en": normalize_non_empty_text(
+                f"{field_name}[{index}].pos_en",
+                item.get("pos_en", ""),
+            ),
+        }
+        normalized_item["pos_tokens_zh"] = build_positive_prompt_tokens(
+            normalized_item["pos_zh"],
+            language="zh",
+            style_text="黑白 漫画",
+        )
+        normalized_item["pos_tokens_en"] = build_positive_prompt_tokens(
+            normalized_item["pos_en"],
+            language="en",
+            style_text="black and white manga",
+        )
+        normalized_item["pos_zh"] = compile_tokens_to_prompt_text(
+            normalized_item["pos_tokens_zh"],
+            language="zh",
+        )
+        normalized_item["pos_en"] = compile_tokens_to_prompt_text(
+            normalized_item["pos_tokens_en"],
+            language="en",
+        )
+        normalized_items.append(normalized_item)
     return normalized_items
 
 
@@ -983,7 +904,7 @@ def _validate_preset_id_list(items: Any, *, field_name: str, valid_ids: set[str]
     return result
 
 
-def _assert_visual_asset_full_coverage(items: list[dict[str, Any]], *, expected_ids: set[str], field_name: str) -> None:
+def _assert_full_coverage(items: list[dict[str, Any]], *, expected_ids: set[str], field_name: str) -> None:
     """
     功能说明：确保角色1输出完整覆盖输入目录中的全部对象。
     参数说明：

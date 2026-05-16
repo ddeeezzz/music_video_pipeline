@@ -30,6 +30,8 @@ from music_video_pipeline.modules.module_b_v2.models import SAFE_CLOSEUP_COMPOSI
 from music_video_pipeline.modules.module_b_v2.parser import (
     ModuleBV2ParseError,
     parse_role3_segment_directing_markdown,
+    validate_camera_plan,
+    validate_transition_plan,
     validate_role3_segment_directing_output,
 )
 # 项目内模块：统一 prompt 模板加载。

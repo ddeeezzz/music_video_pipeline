@@ -1,7 +1,7 @@
 """
 文件用途：实现模块B v2 的角色4“关键帧提示词生成器”。
-核心流程：按 shot 并发请求 LLM，将视觉词库与镜头编排融合为双关键帧与视频提示词块。
-输入输出：输入视觉词库、角色3编排结果与模板风格，输出提示词块标准结构。
+核心流程：按 shot 并发请求 LLM，将角色1对象描述与镜头编排融合为双关键帧与视频提示词块。
+输入输出：输入角色1对象描述、角色3编排结果与模板风格，输出提示词块标准结构。
 依赖说明：依赖标准库并发工具、v2 LLM runtime、Markdown 渲染器与 parser。
 维护说明：本角色只产出提示词，不负责 camera/transition 选择。
 """
@@ -35,11 +35,6 @@ from music_video_pipeline.modules.module_b_v2.prompt_templates import (
 ROLE4_PROMPT_BUILDER_MIN_MAX_TOKENS = 2200
 # 常量：角色4单镜头提示词请求超时（秒）。
 ROLE4_PROMPT_BUILDER_TIMEOUT_SECONDS = 180.0
-# 常量：角色4风格字段 schema。
-ROLE4_STYLE_SCHEMA = [
-    MarkdownFieldSchema("色彩风格", "style.color_mode", ""),
-    MarkdownFieldSchema("画风", "style.render_style", ""),
-]
 # 常量：角色4镜头摘要字段 schema。
 ROLE4_SHOT_BRIEF_SCHEMA = [
     MarkdownFieldSchema("shot_id", "shot_brief.shot_id", ""),
@@ -61,12 +56,6 @@ ROLE4_VISUAL_REFERENCE_SCHEMA = [
     MarkdownFieldSchema(
         "positive_cues_en",
         "positive_cues_en",
-        [],
-        lambda value: " | ".join([str(item).strip() for item in value if str(item).strip()]) or "none",
-    ),
-    MarkdownFieldSchema(
-        "negative_cues_en",
-        "negative_cues_en",
         [],
         lambda value: " | ".join([str(item).strip() for item in value if str(item).strip()]) or "none",
     ),
@@ -156,23 +145,9 @@ class Role4PromptBuilder:
         异常说明：无。
         边界条件：缺失 refs 时返回空数组字段。
         """
-        refs = item.get("refs", [])
-        positive_cues_en = []
-        negative_cues_en = []
-        if isinstance(refs, list):
-            for ref_item in refs:
-                if not isinstance(ref_item, dict):
-                    continue
-                pos_en = str(ref_item.get("pos_en", "")).strip()
-                neg_en = str(ref_item.get("neg_en", "")).strip()
-                if pos_en:
-                    positive_cues_en.append(pos_en)
-                if neg_en:
-                    negative_cues_en.append(neg_en)
         return {
             "item_id": str(item.get("item_id", "")).strip(),
-            "positive_cues_en": positive_cues_en,
-            "negative_cues_en": negative_cues_en,
+            "positive_cues_en": [str(item.get("pos_en", "")).strip()] if str(item.get("pos_en", "")).strip() else [],
         }
 
     def generate(
@@ -187,7 +162,7 @@ class Role4PromptBuilder:
         功能说明：按 shot 并发生成双关键帧与视频提示词块。
         参数说明：
         - storyboard_template: 已编译模板。
-        - role1_output: 角色1视觉词库。
+        - role1_output: 角色1对象描述输出。
         - role3_output: 角色3镜头编排。
         - target_shot_ids: 可选，仅为这些 shot 生成提示词。
         返回值：
@@ -236,7 +211,7 @@ class Role4PromptBuilder:
         功能说明：构建角色4批量/单镜头共用的只读上下文。
         参数说明：
         - storyboard_template: 已编译模板。
-        - role1_output: 角色1视觉词库。
+        - role1_output: 角色1对象描述输出。
         返回值：
         - dict[str, Any]: 角色4生成上下文。
         异常说明：无。
@@ -263,7 +238,7 @@ class Role4PromptBuilder:
         返回值：
         - dict[str, Any]: 单镜头提示词块。
         异常说明：LLM 或解析失败时抛出异常。
-        边界条件：缺少视觉词库时仍会把对象选择信息原样传给模型。
+        边界条件：缺少角色1对象描述时仍会把对象选择信息原样传给模型。
         """
         visual_lookup = generation_context.get("visual_lookup", {})
         composition_lookup = generation_context.get("composition_lookup", {})
@@ -281,7 +256,7 @@ class Role4PromptBuilder:
         ]
         selected_prop_ids = [str(item).strip() for item in shot_brief.get("selected_prop_ids", []) if str(item).strip()]
         payload = {
-            "style": storyboard_template.get("style", {}),
+            "template_context": self._build_template_context(storyboard_template),
             "shot_brief": shot_brief,
             "style_reference": {
                 "scene": self._compact_visual_reference_item(visual_lookup.get(selected_scene_id, {})),
@@ -295,39 +270,6 @@ class Role4PromptBuilder:
                 ],
             },
         }
-        prompt_asset = render_prompt_asset(
-            project_root=self._llm_runtime.project_root,
-            prompt_asset=ROLE4_PROMPT_ASSET,
-            user_variables=self._build_prompt_variables(payload),
-        )
-        response_text = self._llm_runtime.call_markdown(
-            role_name=f"role4_prompt_builder:{shot_item.get('shot_id', '')}",
-            system_prompt=prompt_asset.system_prompt,
-            user_prompt_markdown=prompt_asset.user_prompt_markdown,
-            max_tokens_override=ROLE4_PROMPT_BUILDER_MIN_MAX_TOKENS,
-            timeout_seconds_override=ROLE4_PROMPT_BUILDER_TIMEOUT_SECONDS,
-        )
-        response = parse_role4_prompt_markdown(response_text)
-        response["shot_id"] = str(shot_item.get("shot_id", "")).strip()
-        response["style_color_mode"] = str((storyboard_template.get("style") or {}).get("color_mode", "")).strip()
-        response["style_render_style"] = str((storyboard_template.get("style") or {}).get("render_style", "")).strip()
-        self._llm_runtime.logger.info(
-            "模块B v2 role4 完成 shot，shot_id=%s",
-            str(shot_item.get("shot_id", "")).strip(),
-        )
-        return response
-
-    def _build_prompt_variables(self, payload: dict[str, Any]) -> dict[str, str]:
-        """
-        功能说明：构建角色4 user prompt 模板变量。
-        参数说明：
-        - payload: 当前 shot 的精简输入。
-        返回值：
-        - dict[str, str]: user prompt 模板变量映射。
-        异常说明：无。
-        边界条件：视觉参考按对象整合，避免拆成碎字段块。
-        """
-        shot_brief = payload.get("shot_brief", {}) if isinstance(payload.get("shot_brief"), dict) else {}
         style_reference = payload.get("style_reference", {}) if isinstance(payload.get("style_reference"), dict) else {}
         scene_ref = style_reference.get("scene", {}) if isinstance(style_reference.get("scene"), dict) else {}
         character_refs = style_reference.get("characters", []) if isinstance(style_reference.get("characters"), list) else []
@@ -341,20 +283,65 @@ class Role4PromptBuilder:
         for index, item in enumerate(prop_refs, start=1):
             if isinstance(item, dict):
                 visual_reference_items.append({"section_heading": f"prop_{index}", **item})
+        prompt_asset = render_prompt_asset(
+            project_root=self._llm_runtime.project_root,
+            prompt_asset=ROLE4_PROMPT_ASSET,
+            user_variables={
+                "template_context": str(payload.get("template_context", "")).strip(),
+                "shot_brief": render_schema_fields(payload, ROLE4_SHOT_BRIEF_SCHEMA),
+                "motion_delta_label": str(shot_brief.get("motion_delta_label", "")).strip(),
+                "motion_speed_label": str(shot_brief.get("motion_speed_label", "")).strip(),
+                "composition_stability": str(shot_brief.get("composition_stability", "")).strip(),
+                "visual_reference": render_repeated_sections(
+                    visual_reference_items,
+                    heading_builder=lambda item, _index: str(item.get("section_heading", "")).strip() or "reference",
+                    field_schema=ROLE4_VISUAL_REFERENCE_SCHEMA,
+                    level=3,
+                ),
+            },
+        )
+        response_text = self._llm_runtime.call_markdown(
+            role_name=f"role4_prompt_builder:{shot_item.get('shot_id', '')}",
+            system_prompt=prompt_asset.system_prompt,
+            user_prompt_markdown=prompt_asset.user_prompt_markdown,
+            max_tokens_override=ROLE4_PROMPT_BUILDER_MIN_MAX_TOKENS,
+            timeout_seconds_override=ROLE4_PROMPT_BUILDER_TIMEOUT_SECONDS,
+        )
+        response = parse_role4_prompt_markdown(response_text)
+        response["shot_id"] = str(shot_item.get("shot_id", "")).strip()
+        response["style_color_mode"] = ""
+        response["style_render_style"] = ""
+        self._llm_runtime.logger.info(
+            "模块B v2 role4 完成 shot，shot_id=%s",
+            str(shot_item.get("shot_id", "")).strip(),
+        )
+        return response
 
-        return {
-            "style_block": render_schema_fields(payload, ROLE4_STYLE_SCHEMA),
-            "shot_brief": render_schema_fields(payload, ROLE4_SHOT_BRIEF_SCHEMA),
-            "motion_delta_label": str(shot_brief.get("motion_delta_label", "")).strip(),
-            "motion_speed_label": str(shot_brief.get("motion_speed_label", "")).strip(),
-            "composition_stability": str(shot_brief.get("composition_stability", "")).strip(),
-            "visual_reference": render_repeated_sections(
-                visual_reference_items,
-                heading_builder=lambda item, _index: str(item.get("section_heading", "")).strip() or "reference",
-                field_schema=ROLE4_VISUAL_REFERENCE_SCHEMA,
-                level=3,
-            ),
-        }
+    def _build_template_context(self, storyboard_template: dict[str, Any]) -> str:
+        """
+        功能说明：将三段式模板原文拼接为角色4可直接阅读的上下文文本。
+        参数说明：
+        - storyboard_template: 已编译模板。
+        返回值：
+        - str: 由故事、意象、remotion模板组成的 Markdown 文本块。
+        异常说明：无。
+        边界条件：缺失字段时以空字符串兜底。
+        """
+        story = ""
+        if isinstance(storyboard_template.get("story"), dict):
+            story = str(storyboard_template.get("story", {}).get("premise_zh", "")).strip()
+        imagery = str(storyboard_template.get("imagery", "")).strip()
+        remotion_templates = str(storyboard_template.get("remotion_templates", "")).strip()
+        return "\n\n".join(
+            [
+                "# 故事",
+                story or "none",
+                "# 意象",
+                imagery or "none",
+                "# remotion模板",
+                remotion_templates or "none",
+            ]
+        ).strip()
 
     def _build_visual_lookup(self, role1_output: dict[str, Any]) -> dict[str, dict[str, Any]]:
         """
@@ -367,11 +354,10 @@ class Role4PromptBuilder:
         边界条件：后出现的同名 item_id 会覆盖前值，模板本身已保证唯一。
         """
         lookup: dict[str, dict[str, Any]] = {}
-        for field_name in ("scene_refs", "prop_refs", "character_refs"):
-            for item in role1_output.get(field_name, []):
-                if not isinstance(item, dict):
-                    continue
-                item_id = str(item.get("item_id", "")).strip()
-                if item_id:
-                    lookup[item_id] = dict(item)
+        for item in role1_output.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("item_id", "")).strip()
+            if item_id:
+                lookup[item_id] = dict(item)
         return lookup

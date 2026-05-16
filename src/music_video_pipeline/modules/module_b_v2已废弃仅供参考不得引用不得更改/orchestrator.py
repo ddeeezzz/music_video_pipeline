@@ -37,7 +37,7 @@ from music_video_pipeline.modules.module_b_v2.audio_rules import build_segment_a
 from music_video_pipeline.modules.module_b_v2.llm_runtime import ModuleBV2LlmRuntime
 # 项目内模块：v2 输出校验。
 from music_video_pipeline.modules.module_b_v2.parser import (
-    validate_role1_visual_catalog_output,
+    validate_role1_visual_output,
     validate_role2_big_segment_story_output,
     validate_role3_segment_directing_output,
     validate_role4_prompt_output,
@@ -605,6 +605,7 @@ def invalidate_module_b_v2_role_outputs(*, task_dir: Path, role_name: str, logge
 
     if normalized_role_name == "role1":
         _remove_file(output_dir / "module_b_role1_visual_catalog.json")
+        _remove_file(output_dir / "module_b_role1_visual_items.json")
         _remove_file(output_dir / "module_b_role4_prompt_blocks.json")
         _remove_dir_children(v2_dirs["role4_shots_dir"])
         for prompt_file in sorted(prompt_dir.glob("role1_visual_director*.prompt.md")):
@@ -880,6 +881,7 @@ def _run_module_b_v2_internal(
         for item in storyboard_template.get("character_catalog", [])
         if isinstance(item, dict)
     ]
+    role1_requested_item_ids = [*scene_ids, *prop_ids, *character_ids]
     composition_ids = [
         str(item.get("composition_id", "")).strip()
         for item in storyboard_template.get("composition_catalog", [])
@@ -891,14 +893,12 @@ def _run_module_b_v2_internal(
         if isinstance(item, dict)
     ]
     reusable_role1_output = _read_validated_artifact(
-        artifact_path=v2_dirs["output_dir"] / "module_b_role1_visual_catalog.json",
+        artifact_path=v2_dirs["output_dir"] / "module_b_role1_visual_items.json",
         artifact_name="role1",
         logger=context.logger,
-        validator=lambda data: validate_role1_visual_catalog_output(
+        validator=lambda data: validate_role1_visual_output(
             data=data,
-            scene_ids=scene_ids,
-            prop_ids=prop_ids,
-            character_ids=character_ids,
+            requested_item_ids=role1_requested_item_ids,
         ),
     )
     reusable_role2_output = _read_validated_artifact(
@@ -1005,7 +1005,7 @@ def _run_module_b_v2_internal(
             emit_completed_unit=_emit_completed_unit_if_ready,
         ),
     )
-    write_json(v2_dirs["output_dir"] / "module_b_role1_visual_catalog.json", role_outputs["role1_output"])
+    write_json(v2_dirs["output_dir"] / "module_b_role1_visual_items.json", role_outputs["role1_output"])
     write_json(v2_dirs["output_dir"] / "module_b_role2_big_segment_story.json", role_outputs["role2_output"])
     write_json(v2_dirs["output_dir"] / "module_b_segment_audio_features_v2.json", role_outputs["segment_audio_features"])
     aggregated_role3_shots = _load_role_shot_cache(

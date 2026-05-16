@@ -46,19 +46,19 @@ class RenderedPromptAsset:
 
 # 常量：角色1 prompt 模板资源。
 ROLE1_PROMPT_ASSET = PromptTemplateAsset(
-    template_file="configs/prompts/module_b_v2.role1_visual_director.md",
+    template_file="configs/prompts/module_b.role1_visual_director.md",
 )
 # 常量：角色2 prompt 模板资源。
 ROLE2_PROMPT_ASSET = PromptTemplateAsset(
-    template_file="configs/prompts/module_b_v2.role2_big_segment_director.md",
+    template_file="configs/prompts/module_b.role2_big_segment_director.md",
 )
 # 常量：角色3 prompt 模板资源。
 ROLE3_PROMPT_ASSET = PromptTemplateAsset(
-    template_file="configs/prompts/module_b_v2.role3_segment_director.md",
+    template_file="configs/prompts/module_b.role3_segment_director.md",
 )
 # 常量：角色4 prompt 模板资源。
 ROLE4_PROMPT_ASSET = PromptTemplateAsset(
-    template_file="configs/prompts/module_b_v2.role4_prompt_builder.md",
+    template_file="configs/prompts/module_b.role4_prompt_builder.md",
 )
 
 
@@ -102,7 +102,7 @@ def render_prompt_template(*, project_root: Path, template_file: str, variables:
 
 def parse_prompt_sections(template_text: str) -> tuple[str, str]:
     """
-    功能说明：从单个 prompt 模板中解析 `# System` 与 `# User Template` 两个 section。
+    功能说明：从单个 prompt 模板中严格解析 system 与 user 两个 section。
     参数说明：
     - template_text: 模板原文。
     返回值：
@@ -112,16 +112,16 @@ def parse_prompt_sections(template_text: str) -> tuple[str, str]:
     边界条件：section 标题必须严格使用一级标题。
     """
     normalized_text = str(template_text or "").replace("\r\n", "\n").strip()
-    system_match = re.search(r"(?m)^# System\s*$", normalized_text)
-    user_match = re.search(r"(?m)^# User Template\s*$", normalized_text)
+    system_match = re.search(r"(?m)^# System Prompt\s*$", normalized_text)
+    user_match = re.search(r"(?m)^# User Prompt\s*$", normalized_text)
     if system_match is None or user_match is None:
-        raise ValueError("prompt 模板缺失固定 section：必须同时包含 `# System` 与 `# User Template`。")
+        raise ValueError("prompt 模板缺失固定 section：必须同时包含 `# System Prompt` 与 `# User Prompt`。")
     if system_match.start() > user_match.start():
-        raise ValueError("prompt 模板 section 顺序非法：`# System` 必须在 `# User Template` 之前。")
+        raise ValueError("prompt 模板 section 顺序非法：`# System Prompt` 必须在 `# User Prompt` 之前。")
     system_text = normalized_text[system_match.end() : user_match.start()].strip()
     user_text = normalized_text[user_match.end() :].strip()
     if not system_text or not user_text:
-        raise ValueError("prompt 模板 section 为空：`# System` 与 `# User Template` 都必须包含正文。")
+        raise ValueError("prompt 模板 section 为空：`# System Prompt` 与 `# User Prompt` 都必须包含正文。")
     return system_text, user_text
 
 

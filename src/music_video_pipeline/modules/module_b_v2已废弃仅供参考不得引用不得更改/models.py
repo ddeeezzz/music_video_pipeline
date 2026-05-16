@@ -7,7 +7,7 @@
 """
 
 # 标准库：用于类型声明。
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 # 项目内模块：提示词 token 类型。
 from music_video_pipeline.modules.module_b_v2.token_contracts import PromptToken
@@ -15,13 +15,6 @@ from music_video_pipeline.modules.module_b_v2.token_contracts import PromptToken
 
 # 常量：默认编排模板文件路径（相对项目根目录）。
 DEFAULT_STORYBOARD_TEMPLATE_FILE = "configs/storyboard_templates/storyboard_template.v1.md"
-
-# 常量：角色1场景资产类别名。
-VISUAL_ASSET_KIND_SCENE = "scene"
-# 常量：角色1道具资产类别名。
-VISUAL_ASSET_KIND_PROP = "prop"
-# 常量：角色1角色资产类别名。
-VISUAL_ASSET_KIND_CHARACTER = "character"
 
 # 常量：近景安全构图集合。
 SAFE_CLOSEUP_COMPOSITION_IDS = {
@@ -60,100 +53,37 @@ VALID_TRANSITION_KINDS = {
 }
 
 
-class StoryboardStyle(TypedDict):
-    """定义编排模板的风格字段。"""
-
-    color_mode: str
-    render_style: str
-
-
 class StoryboardStory(TypedDict):
     """定义编排模板的故事字段。"""
 
     premise_zh: str
 
 
-class StoryboardCatalogItem(TypedDict):
-    """定义场景/道具/角色目录条目。"""
-
-    item_id: str
-    name_zh: str
-    description_zh: str
-
-
-class CompositionCatalogItem(TypedDict):
-    """定义构图目录条目。"""
-
-    composition_id: str
-    name_zh: str
-    description_zh: str
-    prompt_tags_en: list[str]
-    safe_for_closeup: bool
-    safe_for_motion: bool
-
-
-class CameraPlanPreset(TypedDict):
-    """定义运镜 preset 条目。"""
-
-    preset_id: str
-    mode: str
-    direction: str
-    strength: str
-    easing: str
-
-
-class TransitionPreset(TypedDict):
-    """定义转场 preset 条目。"""
-
-    preset_id: str
-    kind: str
-    duration_ms: int
-    easing: str
-
-
 class StoryboardTemplate(TypedDict):
-    """定义编排模板编译后的标准结构。"""
+    """定义编排模板编译后的精简结构。"""
 
     template_id: str
-    style: StoryboardStyle
     story: StoryboardStory
-    scene_catalog: list[StoryboardCatalogItem]
-    prop_catalog: list[StoryboardCatalogItem]
-    character_catalog: list[StoryboardCatalogItem]
-    composition_catalog: list[CompositionCatalogItem]
-    camera_plan_presets: list[CameraPlanPreset]
-    transition_presets: list[TransitionPreset]
+    imagery: str
+    remotion_templates: str
+    imagery_items: list[dict[str, str]]
+    composition_catalog: list[dict[str, Any]]
 
 
-class VisualRefPrompt(TypedDict):
-    """定义角色1返回的单张参考图提示词。"""
+class VisualReferenceItem(TypedDict):
+    """定义角色1返回的单个对象视觉描述。"""
 
-    ref_id: str
+    name_zh: str
     pos_zh: str
     pos_en: str
-    neg_zh: str
-    neg_en: str
     pos_tokens_zh: NotRequired[list[PromptToken]]
     pos_tokens_en: NotRequired[list[PromptToken]]
-    neg_tokens_zh_increment: NotRequired[list[PromptToken]]
-    neg_tokens_en_increment: NotRequired[list[PromptToken]]
-    neg_tokens_zh: NotRequired[list[PromptToken]]
-    neg_tokens_en: NotRequired[list[PromptToken]]
 
 
-class VisualAssetRefItem(TypedDict):
-    """定义角色1返回的单个对象提示词集合。"""
-
-    item_id: str
-    refs: list[VisualRefPrompt]
-
-
-class Role1VisualCatalogOutput(TypedDict):
+class Role1VisualOutput(TypedDict):
     """定义角色1汇总输出。"""
 
-    scene_refs: list[VisualAssetRefItem]
-    prop_refs: list[VisualAssetRefItem]
-    character_refs: list[VisualAssetRefItem]
+    items: list[VisualReferenceItem]
 
 
 class BigSegmentStoryItem(TypedDict):
@@ -162,9 +92,7 @@ class BigSegmentStoryItem(TypedDict):
     big_segment_id: str
     title_zh: str
     story_outline_zh: str
-    selected_scene_ids: list[str]
-    selected_character_ids: list[str]
-    selected_prop_ids: list[str]
+    selected_imagery_names: list[str]
 
 
 class Role2BigSegmentStoryOutput(TypedDict):
@@ -216,9 +144,7 @@ class Role3SegmentDirectingItem(TypedDict):
 
     shot_id: str
     scene_desc_zh: str
-    selected_scene_id: str
-    selected_character_ids: list[str]
-    selected_prop_ids: list[str]
+    selected_imagery_names: list[str]
     composition_id: str
     camera_plan_preset_id: str
     transition_plan_preset_id: str
@@ -277,7 +203,7 @@ class UnitHistoryItem(TypedDict):
 
     shot_id: str
     scene_desc_zh: str
-    selected_scene_id: str
+    selected_imagery_names: list[str]
     composition_id: str
     camera_plan_preset_id: str
 
