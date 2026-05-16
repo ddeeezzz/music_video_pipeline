@@ -225,6 +225,51 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     monitor_parser.add_argument("--task-id", help="任务唯一标识（可选；缺省时自动选择最新任务）")
     monitor_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
+    template_render_parser = subparsers.add_parser(
+        "template-render",
+        aliases=["tr"],
+        help="生成正式模板请求并渲染模板片段",
+    )
+    template_render_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
+    template_render_parser.add_argument(
+        "--template",
+        default="center",
+        choices=["center", "grid", "scroll"],
+        help="模板标识",
+    )
+    template_render_parser.add_argument("--run-name", default="", help="输出 runs 子目录名；留空时按模板自动决定")
+    template_render_parser.add_argument(
+        "--symbol-src",
+        default="/fixtures/center-symbol.svg",
+        help="CenterTemplate 符号资源路径，可写 public 目录路径或绝对文件路径",
+    )
+    template_render_parser.add_argument(
+        "--background-kind",
+        default="solid",
+        choices=["none", "solid", "image", "video"],
+        help="背景类型，默认 solid",
+    )
+    template_render_parser.add_argument("--background-color", default="#FFFFFF", help="纯色背景颜色")
+    template_render_parser.add_argument("--background-src", default="", help="图片或视频背景资源路径")
+    template_render_parser.add_argument(
+        "--symbol-src-list",
+        nargs="*",
+        default=[],
+        help="GridTemplate 使用的三个符号资源路径；留空时使用内置 fixtures",
+    )
+    template_render_parser.add_argument(
+        "--grid-direction",
+        default="left_to_right",
+        choices=["left_to_right", "right_to_left"],
+        help="GridTemplate 槽位进入方向",
+    )
+    template_render_parser.add_argument(
+        "--scroll-direction",
+        default="right_to_left",
+        choices=["left_to_right", "right_to_left"],
+        help="ScrollTemplate 横向滚动方向",
+    )
+
     return parser
 
 
@@ -353,6 +398,21 @@ def _build_command_request(
             command="monitor",
             task_id=args.task_id,
             config_path=config_path,
+        )
+
+    if args.command in {"template-render", "tr"}:
+        return CommandRequest(
+            command="template-render",
+            config_path=config_path,
+            run_name=args.run_name,
+            template_name=args.template,
+            symbol_src=args.symbol_src,
+            symbol_src_list=args.symbol_src_list,
+            background_kind=args.background_kind,
+            background_color=args.background_color,
+            background_src=args.background_src,
+            grid_direction=args.grid_direction,
+            scroll_direction=args.scroll_direction,
         )
 
     raise RuntimeError(f"未知命令: {args.command}")

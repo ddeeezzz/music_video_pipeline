@@ -163,9 +163,10 @@ uv run --project /path/to/t1 --no-sync mvpl
 
 ### 保留入口：非交互式命令
 
-CLI 当前默认配置已切到 `configs/music_yby/default.json`。仓库当前提供的可用配置档主要在 `configs/music_wsl/` 和 `configs/music_yby/`：
+CLI 当前默认配置已切到 `configs/music_yby/default.json`。仓库当前提供的可用配置档主要在 `configs/music_wsl/`、`configs/music_yby/` 和 `configs/music_windows_4060/`：
 - `configs/music_wsl/`: 本地 WSL 环境
 - `configs/music_yby/`: 在云显卡服务器上的环境
+- `configs/music_windows_4060/`: Windows 本地单卡 4060 慢跑验证环境
 
 下例统一显式传配置路径：
 
@@ -180,6 +181,7 @@ uv run --no-sync mvpl d-task-status --task-id demo_20s --config configs/music_ws
 uv run --no-sync mvpl bcd-task-status --task-id demo_20s --config configs/music_wsl/default.json
 uv run --no-sync mvpl monitor
 uv run --no-sync mvpl monitor --task-id demo_20s --config configs/music_wsl/default.json
+uv run --no-sync mvpl resume --task-id demo_20s --config configs/music_windows_4060/default.json
 ```
 
 其中 `uv run --no-sync mvpl monitor` 现在支持无参快速启动：若未显式传 `--task-id`，会自动选择状态库中 `updated_at` 最新的任务，并启动对应的监督页面。
@@ -244,9 +246,11 @@ models/
 - `paths.runs_dir`: 运行输出根目录
 - `paths.default_audio_path`: 默认输入音频
 - `module_b.storyboard_template_file`: 模块 B V2 分镜预设模板
-- `module_b.llm.prompt_template_file`: 模块 B 早期用的 prompt 模板
+- `module_b.llm.output_retry_times`: 模块 B 输出校验重试次数
 - `module_b.llm.user_custom_prompt`: 交互式临时覆盖 prompt
-- `module_d.render_backend`: `ffmpeg` 或 `animatediff`
+- `module_c.render_backend`: 当前固定为 `comfyui`
+- `module_d.render_backend`: 当前固定为 `comfyui`
+- `comfyui.root_dir` / `comfyui.server_url`: ComfyUI 根目录与 API 地址
 - `cross_module.global_render_limit` / `cross_module.adaptive_window.*`: 跨模块并发与自适应窗口
 - `bypy_upload.*`: 任务产物上传开关与远端路径
 

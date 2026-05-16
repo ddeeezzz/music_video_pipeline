@@ -71,6 +71,18 @@ class _FakeRunner:
         )
         return {"task_id": task_id, "shot_id": shot_id, "kind": "c-retry"}
 
+    def __getattr__(self, name: str):  # noqa: ANN001
+        """
+        功能说明：为未覆盖接口提供显式报错，避免测试误调用未知方法。
+        参数说明：
+        - name: 属性名。
+        返回值：不适用。
+        异常说明：
+        - AttributeError: 属性未实现时抛出。
+        边界条件：仅用于测试排错。
+        """
+        raise AttributeError(name)
+
 
 def test_build_parser_should_accept_module_c_status_and_retry_commands(tmp_path: Path) -> None:
     """
@@ -88,13 +100,13 @@ def test_build_parser_should_accept_module_c_status_and_retry_commands(tmp_path:
     status_args = parser.parse_args(["c-task-status", "--task-id", "task_cli_001"])
     assert status_args.command == "c-task-status"
     assert status_args.task_id == "task_cli_001"
-    assert str(status_args.config).endswith("configs/music_yby/default.json")
+    assert Path(str(status_args.config)).as_posix().endswith("configs/music_yby/default.json")
 
     retry_args = parser.parse_args(["c-retry-shot", "--task-id", "task_cli_001", "--shot-id", "shot_007"])
     assert retry_args.command == "c-retry-shot"
     assert retry_args.task_id == "task_cli_001"
     assert retry_args.shot_id == "shot_007"
-    assert str(retry_args.config).endswith("configs/music_yby/default.json")
+    assert Path(str(retry_args.config)).as_posix().endswith("configs/music_yby/default.json")
 
 
 def test_dispatch_command_should_route_to_module_c_status_and_retry_methods(tmp_path: Path) -> None:
@@ -175,6 +187,117 @@ def test_build_parser_should_reject_removed_upload_worker_command(tmp_path: Path
         parser.parse_args(["upload-worker", "--once"])
 
 
+def test_build_parser_should_accept_template_render_command(tmp_path: Path) -> None:
+    """
+    功能说明：验证 CLI 解析器已注册模板渲染子命令。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证参数解析，不触发实际渲染。
+    """
+    workspace_root = tmp_path / "workspace_template_render"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    args = parser.parse_args(
+        [
+            "template-render",
+            "--template",
+            "center",
+            "--run-name",
+            "custom_run",
+            "--background-kind",
+            "image",
+            "--background-src",
+            "M:/bg.png",
+            "--symbol-src",
+            "M:/symbol.png",
+        ]
+    )
+    assert args.command == "template-render"
+    assert args.template == "center"
+    assert args.run_name == "custom_run"
+    assert args.background_kind == "image"
+    assert args.background_src == "M:/bg.png"
+    assert args.symbol_src == "M:/symbol.png"
+
+
+def test_build_parser_should_accept_template_render_short_alias(tmp_path: Path) -> None:
+    """
+    功能说明：验证 CLI 解析器已为模板渲染子命令注册短别名 tr。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证短别名解析，不触发实际渲染。
+    """
+    workspace_root = tmp_path / "workspace_template_render_alias"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    args = parser.parse_args(["tr"])
+    assert args.command == "tr"
+
+
+def test_build_parser_should_accept_grid_template_render_arguments(tmp_path: Path) -> None:
+    """
+    功能说明：验证 CLI 解析器支持 GridTemplate 所需参数。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证参数解析，不触发实际渲染。
+    """
+    workspace_root = tmp_path / "workspace_template_render_grid"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    args = parser.parse_args(
+        [
+            "tr",
+            "--template",
+            "grid",
+            "--symbol-src-list",
+            "M:/a.png",
+            "M:/b.png",
+            "M:/c.png",
+            "--grid-direction",
+            "right_to_left",
+        ]
+    )
+    assert args.command == "tr"
+    assert args.template == "grid"
+    assert args.symbol_src_list == ["M:/a.png", "M:/b.png", "M:/c.png"]
+    assert args.grid_direction == "right_to_left"
+
+
+def test_build_parser_should_accept_scroll_template_render_arguments(tmp_path: Path) -> None:
+    """
+    功能说明：验证 CLI 解析器支持 ScrollTemplate 所需参数。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证参数解析，不触发实际渲染。
+    """
+    workspace_root = tmp_path / "workspace_template_render_scroll"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    parser = cli._build_parser(workspace_root=workspace_root)
+    args = parser.parse_args(
+        [
+            "tr",
+            "--template",
+            "scroll",
+            "--symbol-src",
+            "M:/symbol.png",
+            "--scroll-direction",
+            "left_to_right",
+        ]
+    )
+    assert args.command == "tr"
+    assert args.template == "scroll"
+    assert args.symbol_src == "M:/symbol.png"
+    assert args.scroll_direction == "left_to_right"
+
+
 def test_main_without_subcommand_should_enter_interactive_mode(tmp_path: Path, monkeypatch) -> None:
     """
     功能说明：验证 mvpl 无子命令时会进入交互模式。
@@ -190,7 +313,7 @@ def test_main_without_subcommand_should_enter_interactive_mode(tmp_path: Path, m
     def _fake_run_interactive_cli(*, workspace_root: Path, default_config_path: Path, execute_request):  # noqa: ANN001
         _ = execute_request
         called.append(workspace_root)
-        assert str(default_config_path).endswith("configs/music_yby/default.json")
+        assert Path(str(default_config_path)).as_posix().endswith("configs/music_yby/default.json")
         return 0
 
     monkeypatch.setattr(cli, "run_interactive_cli", _fake_run_interactive_cli)

@@ -868,7 +868,7 @@ def test_load_config_should_fill_bypy_upload_defaults(tmp_path: Path) -> None:
 
 def test_load_config_should_fill_render_defaults(tmp_path: Path) -> None:
     """
-    功能说明：验证 render 配置缺省时会自动补齐默认 848x480。
+    功能说明：验证 render 配置缺省时会自动补齐默认 768x512。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
@@ -889,8 +889,8 @@ def test_load_config_should_fill_render_defaults(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     app_config = load_config(config_path=config_path)
-    assert app_config.render.video_width == 848
-    assert app_config.render.video_height == 480
+    assert app_config.render.video_width == 768
+    assert app_config.render.video_height == 512
 
 
 def test_load_config_should_reject_removed_legacy_render_block(tmp_path: Path) -> None:
@@ -1113,24 +1113,31 @@ def test_load_config_should_fail_when_module_d_render_backend_invalid(tmp_path: 
         load_config(config_path=config_path)
 
 
-def test_music_yby_configs_should_default_to_module_d_comfyui() -> None:
+def test_sample_config_files_should_load_with_current_schema() -> None:
     """
-    功能说明：验证 music_yby 配置目录默认显式覆盖为 module_d.render_backend=comfyui。
+    功能说明：验证仓库示例配置文件均可被当前 load_config 成功加载。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：仅校验 *.json 配置文件。
+    边界条件：仅校验仓库维护的示例配置目录，不覆盖临时测试文件。
     """
     project_root = Path(__file__).resolve().parents[1]
-    config_dir = project_root / "configs" / "music_yby"
-    config_files = sorted(config_dir.glob("*.json"))
-    assert config_files, "music_yby 配置目录为空，无法执行覆盖断言。"
+    config_dirs = [
+        project_root / "configs" / "music_wsl",
+        project_root / "configs" / "music_yby",
+        project_root / "configs" / "music_windows_4060",
+    ]
+    config_files: list[Path] = []
+    for config_dir in config_dirs:
+        config_files.extend(sorted(config_dir.glob("*.json")))
+    assert config_files, "示例配置目录为空，无法执行加载断言。"
     for config_path in config_files:
         app_config = load_config(config_path=config_path)
-        assert app_config.module_d.render_backend == "comfyui", f"配置未覆盖 comfyui: {config_path}"
+        assert app_config.module_c.render_backend == "comfyui", f"模块C后端不符合当前约束: {config_path}"
+        assert app_config.module_d.render_backend == "comfyui", f"模块D后端不符合当前约束: {config_path}"
         assert (
             app_config.module_d.comfyui.contract_file == "configs/comfyui/module_d.contract.json"
-        ), f"配置未统一使用模块D ComfyUI 契约: {config_path}"
+        ), f"模块D契约未统一为当前 ComfyUI 路径: {config_path}"
 
 
 def test_load_config_should_reject_removed_frame_generator_mode(tmp_path: Path) -> None:

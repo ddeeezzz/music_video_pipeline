@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from music_video_pipeline.config import AppConfig
+from music_video_pipeline.template_render_cli import render_center_template
 
 
 MonitorHandler = Callable[[str, Any, Any], dict]
@@ -34,6 +35,15 @@ class CommandRequest:
     segment_id: str | None = None
     user_custom_prompt_override: str | None = None
     storyboard_template_file_override: str | None = None
+    run_name: str | None = None
+    template_name: str | None = None
+    symbol_src: str | None = None
+    symbol_src_list: list[str] | None = None
+    background_kind: str | None = None
+    background_color: str | None = None
+    background_src: str | None = None
+    grid_direction: str | None = None
+    scroll_direction: str | None = None
 
 
 class MvplCommandService:
@@ -156,6 +166,43 @@ class MvplCommandService:
             if dispatch_logger is None:
                 raise RuntimeError("monitor 命令缺少日志对象。")
             return self.monitor_handler(task_id, self.runner, dispatch_logger)
+
+        if command == "template-render":
+            template_name = str(request.template_name or "").strip() or "center"
+            if template_name == "grid":
+                from music_video_pipeline.template_render_cli import render_grid_template
+
+                return render_grid_template(
+                    project_root=self.workspace_root,
+                    run_name=str(request.run_name or "").strip(),
+                    symbol_src_list=request.symbol_src_list or [],
+                    background_kind=str(request.background_kind or "").strip() or "solid",
+                    background_color=str(request.background_color or "").strip() or "#FFFFFF",
+                    background_src=str(request.background_src or "").strip(),
+                    direction=str(request.grid_direction or "").strip() or "left_to_right",
+                )
+            if template_name == "scroll":
+                from music_video_pipeline.template_render_cli import render_scroll_template
+
+                return render_scroll_template(
+                    project_root=self.workspace_root,
+                    run_name=str(request.run_name or "").strip(),
+                    symbol_src=str(request.symbol_src or "").strip() or "/fixtures/center-symbol.svg",
+                    symbol_src_list=request.symbol_src_list or [],
+                    background_kind=str(request.background_kind or "").strip() or "solid",
+                    background_color=str(request.background_color or "").strip() or "#FFFFFF",
+                    background_src=str(request.background_src or "").strip(),
+                    direction=str(request.scroll_direction or "").strip() or "right_to_left",
+                )
+
+            return render_center_template(
+                project_root=self.workspace_root,
+                run_name=str(request.run_name or "").strip() or "center_template_render",
+                symbol_src=str(request.symbol_src or "").strip() or "/fixtures/center-symbol.svg",
+                background_kind=str(request.background_kind or "").strip() or "solid",
+                background_color=str(request.background_color or "").strip() or "#FFFFFF",
+                background_src=str(request.background_src or "").strip(),
+            )
 
         raise RuntimeError(f"未知命令: {command}")
 

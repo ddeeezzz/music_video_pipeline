@@ -111,8 +111,8 @@ class RenderConfig:
     边界条件：当前 ComfyUI 的 SD1.5 工作流要求宽高可被 8 整除。
     """
 
-    video_width: int = 848
-    video_height: int = 480
+    video_width: int = 768
+    video_height: int = 512
 
 
 @dataclass(frozen=True)
@@ -221,6 +221,8 @@ class ModuleCConfig:
         参数说明：
         - contract_start_file: 首关键帧 txt2img 契约文件。
         - contract_end_file: 末关键帧 img2img 契约文件。
+        - contract_prop_start_file: 非人物首关键帧 txt2img 契约文件。
+        - contract_prop_end_file: 非人物末关键帧 img2img 契约文件。
         - checkpoint_file: 单文件 checkpoint 路径（相对项目根）。
         - scene_lora_file: 环境 LoRA 文件路径（相对项目根）。
         - scene_lora_strength: 环境 LoRA 强度。
@@ -239,6 +241,8 @@ class ModuleCConfig:
 
         contract_start_file: str = "configs/comfyui/module_c_start.contract.json"
         contract_end_file: str = "configs/comfyui/module_c_end.contract.json"
+        contract_prop_start_file: str = "configs/comfyui/module_c_prop_start.contract.json"
+        contract_prop_end_file: str = "configs/comfyui/module_c_prop_end.contract.json"
         checkpoint_file: str = "models/base_model/15/single/anything-v5.safetensors"
         scene_lora_file: str = "models/lora/15/akebi/AkebiScene-000012.safetensors"
         scene_lora_strength: float = 1.0
@@ -450,6 +454,9 @@ class ModuleAConfig:
     - device: 设备策略（auto/cpu/cuda）。
     - funasr_model: FunASR 模型名称。
     - demucs_model: Demucs 模型名称。
+    - fpcalc_bin: Chromaprint 指纹命令路径或命令名。
+    - acoustid_api_key_file: AcoustID 应用 API Key 文件路径。
+    - lyrics_enable_fingerprint_lookup: 是否启用 AcoustID 指纹补充链。
     - vocal_energy_enter_quantile: 人声音量进入阈值分位点。
     - vocal_energy_exit_quantile: 人声音量退出阈值分位点。
     - mid_segment_min_duration_seconds: 人声中间段最小时长（秒）。
@@ -485,6 +492,9 @@ class ModuleAConfig:
     funasr_model: str = "FunAudioLLM/Fun-ASR-Nano-2512"
     vad_model: str = "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"
     demucs_model: str = "htdemucs"
+    fpcalc_bin: str = "fpcalc"
+    acoustid_api_key_file: str = ".secrets/acoustid_api_key.txt"
+    lyrics_enable_fingerprint_lookup: bool = True
     vocal_energy_enter_quantile: float = 0.70
     vocal_energy_exit_quantile: float = 0.45
     mid_segment_min_duration_seconds: float = 0.8
@@ -587,7 +597,7 @@ def _merge_defaults(raw_data: dict) -> dict:
             "concat_copy_fallback_reencode": True,
         },
         "logging": {"level": "INFO"},
-        "render": {"video_width": 848, "video_height": 480},
+        "render": {"video_width": 768, "video_height": 512},
         "module_b": {
             "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md",
             "fixed_negative_prompt_en": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
@@ -618,6 +628,8 @@ def _merge_defaults(raw_data: dict) -> dict:
             "comfyui": {
                 "contract_start_file": "configs/comfyui/module_c_start.contract.json",
                 "contract_end_file": "configs/comfyui/module_c_end.contract.json",
+                "contract_prop_start_file": "configs/comfyui/module_c_prop_start.contract.json",
+                "contract_prop_end_file": "configs/comfyui/module_c_prop_end.contract.json",
                 "checkpoint_file": "models/base_model/15/single/anything-v5.safetensors",
                 "scene_lora_file": "models/lora/15/akebi/AkebiScene-000012.safetensors",
                 "scene_lora_strength": 1.0,
@@ -704,6 +716,9 @@ def _merge_defaults(raw_data: dict) -> dict:
             "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
             "vad_model": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
             "demucs_model": "htdemucs",
+            "fpcalc_bin": "fpcalc",
+            "acoustid_api_key_file": ".secrets/acoustid_api_key.txt",
+            "lyrics_enable_fingerprint_lookup": True,
             "vocal_energy_enter_quantile": 0.70,
             "vocal_energy_exit_quantile": 0.45,
             "mid_segment_min_duration_seconds": 0.8,

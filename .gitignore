@@ -14,3 +14,8 @@ ComfyUI/
 !ComfyUI/user/default/workflows/
 .claude
 .runtime
+
+# Remotion 本地依赖、浏览器与渲染输出
+remotion_templates/node_modules/
+remotion_templates/browser/
+remotion_templates/out/

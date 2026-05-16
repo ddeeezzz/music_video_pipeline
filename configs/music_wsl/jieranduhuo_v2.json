@@ -28,7 +28,7 @@
       "api_key_file": ".secrets/siliconflow_api_key.txt",
       "timeout_seconds": 60.0,
       "request_retry_times": 2,
-      "json_retry_times": 2,
+      "output_retry_times": 2,
       "temperature": 0.3,
       "top_p": 0.9,
       "max_tokens": 350,
@@ -39,10 +39,12 @@
     }
   },
   "module_c": {
+    "render_backend": "comfyui",
     "render_workers": 3,
     "unit_retry_times": 1
   },
   "module_d": {
+    "render_backend": "comfyui",
     "segment_workers": 3,
     "unit_retry_times": 1
   },

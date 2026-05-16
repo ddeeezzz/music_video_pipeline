@@ -18,6 +18,7 @@ dependencies = [
   "huggingface_hub>=0.24.0",
   "requests>=2.31.0",
   "librosa>=0.10.2",
+  "markdown-it-py>=3.0.0",
   "websockets>=11.0,<12.0",
   "torch==2.5.0",
   "torchvision==0.20.0",
@@ -65,6 +66,7 @@ dependencies = [
 music-video-pipeline = "music_video_pipeline.cli:main"
 mvpl = "music_video_pipeline.cli:main"
 model_assets = "music_video_pipeline.model_assets_cli:main"
+template_render = "music_video_pipeline.template_render_cli:main"
 eval = "music_video_pipeline.eval_cli:main"
 
 [tool.uv]
