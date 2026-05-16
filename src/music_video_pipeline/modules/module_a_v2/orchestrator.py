@@ -64,6 +64,9 @@ def _run_perception_stage(
         skip_funasr_when_vocals_silent=context.config.module_a.skip_funasr_when_vocals_silent,
         vocal_skip_peak_rms_threshold=context.config.module_a.vocal_skip_peak_rms_threshold,
         vocal_skip_active_ratio_threshold=context.config.module_a.vocal_skip_active_ratio_threshold,
+        fpcalc_bin=context.config.module_a.fpcalc_bin,
+        acoustid_api_key_file=context.config.module_a.acoustid_api_key_file,
+        lyrics_enable_fingerprint_lookup=context.config.module_a.lyrics_enable_fingerprint_lookup,
         logger=context.logger,
     )
 

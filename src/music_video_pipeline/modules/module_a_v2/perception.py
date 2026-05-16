@@ -23,6 +23,8 @@ from music_video_pipeline.modules.module_a_v2.backends.allin1 import analyze_wit
 from music_video_pipeline.modules.module_a_v2.backends.demucs import prepare_stems_with_allin1_demucs
 # 项目内模块：V2 FunASR 歌词重建
 from music_video_pipeline.modules.module_a_v2.funasr_lyrics import recognize_lyrics_with_funasr_v2
+# 项目内模块：V2 歌词来源统一解析
+from music_video_pipeline.modules.module_a_v2.lyrics_resolver import resolve_lyrics_with_priority
 # 项目内模块：V2 Librosa 后端
 from music_video_pipeline.modules.module_a_v2.backends.librosa import extract_acoustic_candidates_with_librosa
 # 项目内模块：V2产物管理
@@ -104,6 +106,9 @@ def run_perception_stage(
     skip_funasr_when_vocals_silent: bool,
     vocal_skip_peak_rms_threshold: float,
     vocal_skip_active_ratio_threshold: float,
+    fpcalc_bin: str,
+    acoustid_api_key_file: str,
+    lyrics_enable_fingerprint_lookup: bool,
     logger,
 ) -> PerceptionBundle:
     """
@@ -119,6 +124,9 @@ def run_perception_stage(
     - skip_funasr_when_vocals_silent: 是否启用低能量跳过策略。
     - vocal_skip_peak_rms_threshold: 峰值 RMS 跳过阈值。
     - vocal_skip_active_ratio_threshold: 活跃占比跳过阈值。
+    - fpcalc_bin: 指纹命令路径或命令名。
+    - acoustid_api_key_file: AcoustID API Key 文件路径。
+    - lyrics_enable_fingerprint_lookup: 是否启用指纹补充链。
     - logger: 日志记录器。
     返回值：
     - PerceptionBundle: 感知层统一输出。
@@ -340,82 +348,68 @@ def run_perception_stage(
     vocal_result = None
     vocal_error = None
     accompaniment_result = None
-    funasr_future = None
-    funasr_executor: ThreadPoolExecutor | None = None
-    try:
-        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="librosa") as librosa_executor:
-            vocal_future = librosa_executor.submit(
-                _run_librosa_track_with_timing,
-                "vocals",
-                demucs_stems["vocals"],
-                extract_beat=False,
-                extract_onset=False,
-                with_f0_points=True,
-                on_rms_ready=_handle_vocal_rms_ready,
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="librosa") as librosa_executor:
+        vocal_future = librosa_executor.submit(
+            _run_librosa_track_with_timing,
+            "vocals",
+            demucs_stems["vocals"],
+            extract_beat=False,
+            extract_onset=False,
+            with_f0_points=True,
+            on_rms_ready=_handle_vocal_rms_ready,
+        )
+        accompaniment_future = librosa_executor.submit(
+            _run_librosa_track_with_timing,
+            "no_vocals",
+            demucs_stems["no_vocals"],
+            with_onset_points=True,
+            with_chroma_points=True,
+            with_f0_points=True,
+        )
+
+        allin1_analysis = analyze_with_allin1(
+            audio_path=audio_path,
+            duration_seconds=duration_seconds,
+            logger=logger,
+            raw_response_path=artifacts.perception_model_allin1_raw_response_path,
+            stems_input=stems_input,
+            work_dir=allin1_work_dir,
+            runtime_device=device,
+        )
+        big_segments_stage1 = list(allin1_analysis.get("big_segments", []))
+        beat_candidates = [float(item) for item in allin1_analysis.get("beat_times", [])]
+        beats = list(allin1_analysis.get("beats", []))
+        if not big_segments_stage1 or len(beats) < 2 or len(beat_candidates) < 2:
+            raise RuntimeError("模块A V2感知层关键产物不足：Allin1大段或节拍不可用")
+
+        try:
+            vocal_result = vocal_future.result()
+            logger.info(
+                "模块A V2-Librosa子任务完成，track=vocals，耗时=%.3fs",
+                _safe_duration("librosa_vocals_start", "librosa_vocals_end"),
             )
-            accompaniment_future = librosa_executor.submit(
-                _run_librosa_track_with_timing,
-                "no_vocals",
-                demucs_stems["no_vocals"],
-                with_onset_points=True,
-                with_chroma_points=True,
-                with_f0_points=True,
+        except Exception as error:  # noqa: BLE001
+            vocal_error = error
+            logger.warning("模块A V2-人声候选提取失败，回退预检序列，错误=%s", error)
+
+        try:
+            accompaniment_result = accompaniment_future.result()
+            logger.info(
+                "模块A V2-Librosa子任务完成，track=no_vocals，耗时=%.3fs",
+                _safe_duration("librosa_no_vocals_start", "librosa_no_vocals_end"),
             )
-
-            if bool(skip_funasr_when_vocals_silent):
-                funasr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
-                funasr_future = funasr_executor.submit(_run_funasr_after_precheck)
-            else:
-                precheck_ready_event.set()
-                funasr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
-                funasr_future = funasr_executor.submit(_run_funasr_task_with_timing)
-
-            allin1_analysis = analyze_with_allin1(
-                audio_path=audio_path,
-                duration_seconds=duration_seconds,
-                logger=logger,
-                raw_response_path=artifacts.perception_model_allin1_raw_response_path,
-                stems_input=stems_input,
-                work_dir=allin1_work_dir,
-                runtime_device=device,
+        finally:
+            timing_marks["librosa_parallel_end"] = perf_counter()
+            librosa_extract_wall_seconds = _safe_span(
+                ["librosa_vocals_start", "librosa_no_vocals_start"],
+                ["librosa_vocals_end", "librosa_no_vocals_end"],
             )
-            big_segments_stage1 = list(allin1_analysis.get("big_segments", []))
-            beat_candidates = [float(item) for item in allin1_analysis.get("beat_times", [])]
-            beats = list(allin1_analysis.get("beats", []))
-            if not big_segments_stage1 or len(beats) < 2 or len(beat_candidates) < 2:
-                raise RuntimeError("模块A V2感知层关键产物不足：Allin1大段或节拍不可用")
-
-            try:
-                vocal_result = vocal_future.result()
-                logger.info(
-                    "模块A V2-Librosa子任务完成，track=vocals，耗时=%.3fs",
-                    _safe_duration("librosa_vocals_start", "librosa_vocals_end"),
-                )
-            except Exception as error:  # noqa: BLE001
-                vocal_error = error
-                logger.warning("模块A V2-人声候选提取失败，回退预检序列，错误=%s", error)
-
-            try:
-                accompaniment_result = accompaniment_future.result()
-                logger.info(
-                    "模块A V2-Librosa子任务完成，track=no_vocals，耗时=%.3fs",
-                    _safe_duration("librosa_no_vocals_start", "librosa_no_vocals_end"),
-                )
-            finally:
-                timing_marks["librosa_parallel_end"] = perf_counter()
-                librosa_extract_wall_seconds = _safe_span(
-                    ["librosa_vocals_start", "librosa_no_vocals_start"],
-                    ["librosa_vocals_end", "librosa_no_vocals_end"],
-                )
-                librosa_schedule_seconds = _safe_duration("librosa_parallel_start", "librosa_parallel_end")
-                logger.info(
-                    "模块A V2-Librosa双轨并行提取结束，双轨墙钟=%.3fs，调度跨度=%.3fs（含precheck/allin1并发等待）",
-                    librosa_extract_wall_seconds,
-                    librosa_schedule_seconds,
-                )
-    finally:
-        if funasr_executor is not None:
-            funasr_executor.shutdown(wait=True)
+            librosa_schedule_seconds = _safe_duration("librosa_parallel_start", "librosa_parallel_end")
+            logger.info(
+                "模块A V2-Librosa双轨并行提取结束，双轨墙钟=%.3fs，调度跨度=%.3fs（含precheck/allin1并发等待）",
+                librosa_extract_wall_seconds,
+                librosa_schedule_seconds,
+            )
 
     if vocal_error is not None:
         vocal_onset_candidates = []
@@ -440,74 +434,66 @@ def run_perception_stage(
         artifact_name="vocal_candidates",
     )
 
-    lyric_sentence_units: list[dict] = []
-    sentence_split_stats: dict = {}
-    funasr_skipped_for_silent_vocals = bool(precheck_payload.get("should_skip", False)) if bool(skip_funasr_when_vocals_silent) else False
-    if funasr_skipped_for_silent_vocals:
-        dump_json_artifact(
-            output_path=artifacts.perception_model_funasr_raw_response_path,
-            payload={"skipped": True, "reason": "silent_vocals_precheck"},
-            logger=logger,
-            artifact_name="funasr_raw_response",
-        )
-        sentence_split_stats = {
-            "skipped": True,
-            "reason": "silent_vocals_precheck",
-            "dynamic_gap_threshold_seconds": 0.35,
-            "sample_source": "none",
-            "sample_count_raw": 0,
-            "sample_count_kept": 0,
-            "sample_count_outlier": 0,
-            "outlier_samples": [],
-        }
-        dump_json_artifact(
-            output_path=artifacts.perception_model_funasr_sentence_split_stats_path,
-            payload=sentence_split_stats,
-            logger=logger,
-            artifact_name="funasr_sentence_split_stats",
-        )
-    else:
+    def _run_funasr_fallback_runner() -> tuple[object, list[dict], dict] | None:
+        """
+        功能说明：执行 FunASR 兜底链，并统一转为“可为空”的标准返回。
+        参数说明：无。
+        返回值：
+        - tuple | None: 正常执行返回 `(raw_result, lyric_sentence_units, sentence_split_stats)`，静音跳过返回 None。
+        异常说明：异常在函数内吞并并转为空歌词结果。
+        边界条件：仅在 resolver 确认需要时执行。
+        """
+        should_skip_by_precheck = bool(precheck_payload.get("should_skip", False)) if bool(skip_funasr_when_vocals_silent) else False
+        if should_skip_by_precheck:
+            return None
         try:
-            if funasr_future is None:
-                raise RuntimeError("FunASR 任务未创建。")
-            funasr_raw_result, lyric_sentence_units, sentence_split_stats = funasr_future.result()
-            dump_json_artifact(
-                output_path=artifacts.perception_model_funasr_raw_response_path,
-                payload=funasr_raw_result,
-                logger=logger,
-                artifact_name="funasr_raw_response",
-            )
-            dump_json_artifact(
-                output_path=artifacts.perception_model_funasr_sentence_split_stats_path,
-                payload=sentence_split_stats,
-                logger=logger,
-                artifact_name="funasr_sentence_split_stats",
-            )
+            return _run_funasr_task_with_timing()
         except Exception as error:  # noqa: BLE001
             logger.warning("模块A V2-FunASR失败，按空歌词继续，错误=%s", error)
-            dump_json_artifact(
-                output_path=artifacts.perception_model_funasr_raw_response_path,
-                payload={"error": str(error), "skipped": False, "result": []},
-                logger=logger,
-                artifact_name="funasr_raw_response",
+            return (
+                {"error": str(error), "skipped": False, "result": []},
+                [],
+                {
+                    "error": str(error),
+                    "skipped": False,
+                    "dynamic_gap_threshold_seconds": 0.35,
+                    "sample_source": "none",
+                    "sample_count_raw": 0,
+                    "sample_count_kept": 0,
+                    "sample_count_outlier": 0,
+                    "outlier_samples": [],
+                },
             )
-            sentence_split_stats = {
-                "error": str(error),
-                "skipped": False,
-                "dynamic_gap_threshold_seconds": 0.35,
-                "sample_source": "none",
-                "sample_count_raw": 0,
-                "sample_count_kept": 0,
-                "sample_count_outlier": 0,
-                "outlier_samples": [],
-            }
-            dump_json_artifact(
-                output_path=artifacts.perception_model_funasr_sentence_split_stats_path,
-                payload=sentence_split_stats,
-                logger=logger,
-                artifact_name="funasr_sentence_split_stats",
-            )
-            lyric_sentence_units = []
+
+    lyric_result = resolve_lyrics_with_priority(
+        audio_path=audio_path,
+        duration_seconds=duration_seconds,
+        artifacts=artifacts,
+        logger=logger,
+        fpcalc_bin=fpcalc_bin,
+        acoustid_api_key_file=acoustid_api_key_file,
+        enable_fingerprint_lookup=lyrics_enable_fingerprint_lookup,
+        funasr_fallback_runner=_run_funasr_fallback_runner,
+    )
+    lyric_sentence_units = list(lyric_result.get("lyric_sentence_units", []))
+    sentence_split_stats = dict(lyric_result.get("sentence_split_stats", {}))
+    funasr_raw_result = lyric_result.get("funasr_raw_result", {"skipped": True, "reason": "not_selected"})
+    funasr_skipped_for_silent_vocals = (
+        bool(skip_funasr_when_vocals_silent)
+        and str(lyric_result.get("reason", "")) == "silent_vocals_precheck"
+    )
+    dump_json_artifact(
+        output_path=artifacts.perception_model_funasr_raw_response_path,
+        payload=funasr_raw_result,
+        logger=logger,
+        artifact_name="funasr_raw_response",
+    )
+    dump_json_artifact(
+        output_path=artifacts.perception_model_funasr_sentence_split_stats_path,
+        payload=sentence_split_stats,
+        logger=logger,
+        artifact_name="funasr_sentence_split_stats",
+    )
 
     relative_timing_payload = {
         mark_name: (round(float(mark_value) - stage_started_at, 3) if mark_value is not None else None)
@@ -521,23 +507,9 @@ def run_perception_stage(
     )
     librosa_schedule_seconds = _safe_duration("librosa_parallel_start", "librosa_parallel_end")
     funasr_seconds = _safe_duration("funasr_start", "funasr_end")
-    span_seconds = librosa_parallel_seconds
+    span_seconds = librosa_parallel_seconds + funasr_seconds
     overlap_seconds = 0.0
     benefit_seconds = 0.0
-    if timing_marks["funasr_start"] is not None and timing_marks["funasr_end"] is not None:
-        librosa_start_values = _mark_values(["librosa_vocals_start", "librosa_no_vocals_start"])
-        librosa_end_values = _mark_values(["librosa_vocals_end", "librosa_no_vocals_end"])
-        if librosa_start_values and librosa_end_values:
-            librosa_started_at = min(librosa_start_values)
-            librosa_ended_at = max(librosa_end_values)
-        else:
-            librosa_started_at = float(timing_marks["librosa_parallel_start"] or 0.0)
-            librosa_ended_at = float(timing_marks["librosa_parallel_end"] or librosa_started_at)
-        funasr_started_at = float(timing_marks["funasr_start"])
-        funasr_ended_at = float(timing_marks["funasr_end"])
-        span_seconds = max(librosa_ended_at, funasr_ended_at) - min(librosa_started_at, funasr_started_at)
-        overlap_seconds = max(0.0, min(librosa_ended_at, funasr_ended_at) - max(librosa_started_at, funasr_started_at))
-        benefit_seconds = max(0.0, librosa_parallel_seconds + funasr_seconds - span_seconds)
     logger.info(
         "模块A V2并发收益统计：librosa_parallel_seconds=%.3f，librosa_schedule_seconds=%.3f，funasr_seconds=%.3f，span_seconds=%.3f，overlap_seconds=%.3f，benefit_seconds=%.3f",
         librosa_parallel_seconds,
@@ -547,11 +519,6 @@ def run_perception_stage(
         overlap_seconds,
         benefit_seconds,
     )
-    if timing_marks["funasr_start"] is not None and timing_marks["funasr_end"] is not None and benefit_seconds <= 1.0:
-        logger.warning(
-            "模块A V2并发收益不足：benefit_seconds=%.3f（<=1.0），可能存在CPU或IO竞争导致并发提速有限",
-            benefit_seconds,
-        )
 
     dump_json_artifact(
         output_path=artifacts.perception_model_funasr_lyric_sentence_units_path,

@@ -105,6 +105,9 @@ def test_module_a_v2_perception_should_write_required_artifacts(monkeypatch, tmp
         skip_funasr_when_vocals_silent=False,
         vocal_skip_peak_rms_threshold=0.01,
         vocal_skip_active_ratio_threshold=0.02,
+        fpcalc_bin="fpcalc",
+        acoustid_api_key_file=".secrets/acoustid_api_key.txt",
+        lyrics_enable_fingerprint_lookup=False,
         logger=logger,
     )
 

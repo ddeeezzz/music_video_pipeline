@@ -31,6 +31,12 @@ class ModuleAV2Artifacts:
     perception_model_demucs_runtime_dir: Path
     perception_model_allin1_runtime_dir: Path
     perception_model_allin1_raw_response_path: Path
+    perception_model_lyrics_metadata_result_path: Path
+    perception_model_lyrics_selected_provider_path: Path
+    perception_model_acoustid_fingerprint_result_path: Path
+    perception_model_acoustid_match_path: Path
+    perception_model_lrclib_match_path: Path
+    perception_model_lrclib_lyric_sentence_units_path: Path
     perception_model_funasr_raw_response_path: Path
     perception_model_funasr_lyric_sentence_units_path: Path
     perception_model_funasr_sentence_split_stats_path: Path
@@ -70,6 +76,9 @@ def build_module_a_v2_artifacts(work_dir: Path) -> ModuleAV2Artifacts:
     perception_model_demucs_runtime_dir = work_dir / "perception" / "model" / "demucs" / "runtime"
     perception_model_allin1_runtime_dir = work_dir / "perception" / "model" / "allin1" / "runtime"
     perception_model_allin1_dir = work_dir / "perception" / "model" / "allin1"
+    perception_model_lyrics_dir = work_dir / "perception" / "model" / "lyrics"
+    perception_model_acoustid_dir = work_dir / "perception" / "model" / "acoustid"
+    perception_model_lrclib_dir = work_dir / "perception" / "model" / "lrclib"
     perception_model_funasr_dir = work_dir / "perception" / "model" / "funasr"
     perception_signal_librosa_dir = work_dir / "perception" / "signal" / "librosa"
 
@@ -82,6 +91,9 @@ def build_module_a_v2_artifacts(work_dir: Path) -> ModuleAV2Artifacts:
         perception_model_demucs_runtime_dir,
         perception_model_allin1_runtime_dir,
         perception_model_allin1_dir,
+        perception_model_lyrics_dir,
+        perception_model_acoustid_dir,
+        perception_model_lrclib_dir,
         perception_model_funasr_dir,
         perception_signal_librosa_dir,
         algorithm_window_dir,
@@ -95,6 +107,12 @@ def build_module_a_v2_artifacts(work_dir: Path) -> ModuleAV2Artifacts:
         perception_model_demucs_runtime_dir=perception_model_demucs_runtime_dir,
         perception_model_allin1_runtime_dir=perception_model_allin1_runtime_dir,
         perception_model_allin1_raw_response_path=perception_model_allin1_dir / "allin1_raw_response.json",
+        perception_model_lyrics_metadata_result_path=perception_model_lyrics_dir / "metadata_result.json",
+        perception_model_lyrics_selected_provider_path=perception_model_lyrics_dir / "selected_provider.json",
+        perception_model_acoustid_fingerprint_result_path=perception_model_acoustid_dir / "fingerprint_result.json",
+        perception_model_acoustid_match_path=perception_model_acoustid_dir / "acoustid_match.json",
+        perception_model_lrclib_match_path=perception_model_lrclib_dir / "lrclib_match.json",
+        perception_model_lrclib_lyric_sentence_units_path=perception_model_lrclib_dir / "lyric_sentence_units.json",
         perception_model_funasr_raw_response_path=perception_model_funasr_dir / "funasr_raw_response.json",
         perception_model_funasr_lyric_sentence_units_path=perception_model_funasr_dir / "lyric_sentence_units.json",
         perception_model_funasr_sentence_split_stats_path=perception_model_funasr_dir / "sentence_split_stats.json",

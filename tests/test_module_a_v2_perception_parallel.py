@@ -1,9 +1,9 @@
 """
-文件用途：验证模块A V2感知层在并发调度升级后的线程编排行为。
-核心流程：打桩感知依赖并记录时间窗，断言双轨Librosa并行与FunASR独立并发语义。
+文件用途：验证模块A V2感知层的线程编排与按需 FunASR 兜底行为。
+核心流程：打桩感知依赖并记录时间窗，断言双轨Librosa并行与 FunASR 按需执行语义。
 输入输出：输入临时目录与伪造依赖，输出断言结果。
 依赖说明：依赖 pytest 与模块A V2感知层入口。
-维护说明：若调度模型改变（例如线程池数量或串并行关系）需同步更新断言。
+维护说明：若歌词主链优先级或并发模型调整，需同步更新本测试断言。
 """
 
 # 标准库：用于日志对象
@@ -25,7 +25,7 @@ from music_video_pipeline.modules.module_a_v2.perception import run_perception_s
 
 # 常量：并行测试中Librosa任务的模拟耗时（秒）
 PARALLEL_SLEEP_SECONDS = 0.30
-# 常量：并行测试中FunASR任务的模拟耗时（秒）
+# 常量：测试中 FunASR 任务的模拟耗时（秒）
 FUNASR_SLEEP_SECONDS = 0.30
 
 
@@ -51,15 +51,15 @@ def _build_fake_stems(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     return vocals_source, bass_source, drums_source, other_source, no_vocals_source
 
 
-def test_run_perception_stage_should_parallel_librosa_and_funasr_on_separate_pools(monkeypatch, tmp_path: Path) -> None:
+def test_run_perception_stage_should_run_funasr_only_after_main_chain_not_selected(monkeypatch, tmp_path: Path) -> None:
     """
-    功能说明：验证非静音跳过场景下，双轨Librosa并行且与FunASR存在并发重叠。
+    功能说明：验证非静音跳过场景下，双轨Librosa保持并行，且 FunASR 仅在主链未选中时按需执行。
     参数说明：
     - monkeypatch: pytest monkeypatch 工具。
     - tmp_path: pytest 临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：Allin1保持快速返回，重点验证线程池隔离与时间重叠。
+    边界条件：主链因无元数据而无法命中 LRCLIB，从而触发 FunASR 兜底。
     """
     audio_path = tmp_path / "demo.wav"
     audio_path.write_bytes(b"fake-audio")
@@ -177,6 +177,9 @@ def test_run_perception_stage_should_parallel_librosa_and_funasr_on_separate_poo
         skip_funasr_when_vocals_silent=False,
         vocal_skip_peak_rms_threshold=0.01,
         vocal_skip_active_ratio_threshold=0.02,
+        fpcalc_bin="fpcalc",
+        acoustid_api_key_file=".secrets/acoustid_api_key.txt",
+        lyrics_enable_fingerprint_lookup=False,
         logger=logger,
     )
 
@@ -199,12 +202,9 @@ def test_run_perception_stage_should_parallel_librosa_and_funasr_on_separate_poo
 
     assert len(funasr_records) == 1
     funasr_record = funasr_records[0]
-    assert str(funasr_record["thread_name"]).startswith("funasr")
-    librosa_parallel_start = min(float(vocals_record["start_at"]), float(accompaniment_record["start_at"]))
+    assert str(funasr_record["thread_name"]) == "MainThread"
     librosa_parallel_end = max(float(vocals_record["end_at"]), float(accompaniment_record["end_at"]))
-    overlap_start = max(librosa_parallel_start, float(funasr_record["start_at"]))
-    overlap_end = min(librosa_parallel_end, float(funasr_record["end_at"]))
-    assert overlap_start < overlap_end
+    assert float(funasr_record["start_at"]) >= librosa_parallel_end
 
 
 def test_run_perception_stage_should_skip_funasr_when_precheck_silent(monkeypatch, tmp_path: Path) -> None:
@@ -262,9 +262,10 @@ def test_run_perception_stage_should_skip_funasr_when_precheck_silent(monkeypatc
     def _fake_extract_acoustic_candidates_with_librosa(audio_path, duration_seconds, logger, **kwargs):
         del duration_seconds, logger
         track_name = Path(audio_path).name
-        if track_name == "vocals.wav" and not bool(kwargs.get("with_f0_points", False)):
-            return [0.0], [], [0.0, 0.5, 1.0], [0.0001, 0.0001, 0.0001]
         if track_name == "vocals.wav":
+            on_rms_ready = kwargs.get("on_rms_ready")
+            if callable(on_rms_ready):
+                on_rms_ready([0.0, 0.5, 1.0], [0.0001, 0.0001, 0.0001])
             return (
                 [0.0, 5.0, 10.0],
                 [0.0, 5.0, 10.0],
@@ -314,6 +315,9 @@ def test_run_perception_stage_should_skip_funasr_when_precheck_silent(monkeypatc
         skip_funasr_when_vocals_silent=True,
         vocal_skip_peak_rms_threshold=0.01,
         vocal_skip_active_ratio_threshold=0.02,
+        fpcalc_bin="fpcalc",
+        acoustid_api_key_file=".secrets/acoustid_api_key.txt",
+        lyrics_enable_fingerprint_lookup=False,
         logger=logger,
     )
 
