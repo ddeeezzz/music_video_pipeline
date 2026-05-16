@@ -22,6 +22,11 @@ from music_video_pipeline.generators import FrameGenerator
 # 项目内模块：模块C单元数据模型
 from music_video_pipeline.modules.module_c.unit_models import ModuleCUnit
 
+# 常量：道具类素材默认输出宽度。
+PROP_DEFAULT_WIDTH = 512
+# 常量：道具类素材默认输出高度。
+PROP_DEFAULT_HEIGHT = 512
+
 
 def execute_units_with_retry(
     context: RuntimeContext,
@@ -152,13 +157,14 @@ def execute_one_unit_with_retry(
             error_message="",
         )
         try:
+            width, height = _resolve_unit_dimensions(context=context, unit=unit)
             frame_item = _generate_one_frame_item(
                 context=context,
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
-                width=context.config.render.video_width,
-                height=context.config.render.video_height,
+                width=width,
+                height=height,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
             return frame_item
@@ -200,13 +206,14 @@ def _execute_units_serial(
     failed_units: list[tuple[ModuleCUnit, Exception]] = []
     for unit in pending_units:
         try:
+            width, height = _resolve_unit_dimensions(context=context, unit=unit)
             frame_item = _generate_one_frame_item(
                 context=context,
                 generator=generator,
                 unit=unit,
                 frames_dir=frames_dir,
-                width=context.config.render.video_width,
-                height=context.config.render.video_height,
+                width=width,
+                height=height,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
         except Exception as error:  # noqa: BLE001
@@ -238,19 +245,20 @@ def _execute_units_parallel(
     failed_units: list[tuple[ModuleCUnit, Exception]] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         future_to_unit = {
-            executor.submit(
+            unit.unit_id: executor.submit(
                 _generate_one_frame_item,
                 context,
                 generator,
                 unit,
                 frames_dir,
-                context.config.render.video_width,
-                context.config.render.video_height,
-            ): unit
+                *(_resolve_unit_dimensions(context=context, unit=unit)),
+            )
             for unit in pending_units
         }
-        for future in as_completed(future_to_unit):
-            unit = future_to_unit[future]
+        future_lookup = {future: unit_id for unit_id, future in future_to_unit.items()}
+        unit_map = {unit.unit_id: unit for unit in pending_units}
+        for future in as_completed(future_lookup):
+            unit = unit_map[future_lookup[future]]
             try:
                 frame_item = future.result()
                 _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
@@ -258,6 +266,23 @@ def _execute_units_parallel(
                 _mark_unit_failed(context=context, unit=unit, error=error)
                 failed_units.append((unit, error))
     return failed_units
+
+
+def _resolve_unit_dimensions(context: RuntimeContext, unit: ModuleCUnit) -> tuple[int, int]:
+    """
+    功能说明：根据素材类型解析模块 C 单元应使用的默认图像尺寸。
+    参数说明：
+    - context: 运行上下文对象。
+    - unit: 模块 C 单元对象。
+    返回值：
+    - tuple[int, int]: 依次为宽度与高度。
+    异常说明：无。
+    边界条件：prop 固定使用 512x512；其余类型沿用全局 render 默认值。
+    """
+    asset_kind = str(unit.shot.get("asset_kind", "character")).strip().lower()
+    if asset_kind == "prop":
+        return PROP_DEFAULT_WIDTH, PROP_DEFAULT_HEIGHT
+    return int(context.config.render.video_width), int(context.config.render.video_height)
 
 
 def _generate_one_frame_item(

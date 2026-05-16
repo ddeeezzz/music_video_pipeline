@@ -6,9 +6,6 @@
   "output_kind": "images",
   "bindings": {
     "checkpoint_name": {"node_id": "1", "input_name": "ckpt_name"},
-    "scene_lora_name": {"node_id": "4", "input_name": "lora_name"},
-    "scene_lora_strength_model": {"node_id": "4", "input_name": "strength_model"},
-    "scene_lora_strength_clip": {"node_id": "4", "input_name": "strength_clip"},
     "char_lora_name": {"node_id": "5", "input_name": "lora_name"},
     "char_lora_strength_model": {"node_id": "5", "input_name": "strength_model"},
     "char_lora_strength_clip": {"node_id": "5", "input_name": "strength_clip"},

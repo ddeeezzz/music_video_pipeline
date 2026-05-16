@@ -24,6 +24,10 @@ from music_video_pipeline.generators import FrameGenerator
 from music_video_pipeline.io_utils import read_json, write_json
 # 项目内模块：模块 C 编排入口。
 from music_video_pipeline.modules.module_c import orchestrator as module_c_orchestrator
+# 项目内模块：模块 C 执行器内部辅助逻辑。
+from music_video_pipeline.modules.module_c import executor as module_c_executor
+# 项目内模块：模块 C 单元数据模型。
+from music_video_pipeline.modules.module_c.unit_models import ModuleCUnit
 # 项目内模块：状态存储。
 from music_video_pipeline.state_store import StateStore
 
@@ -130,6 +134,37 @@ class _PrewarmFailingFrameGenerator(_ScriptedFrameGenerator):
 
     def prewarm(self) -> None:
         raise RuntimeError("comfyui prewarm failed")
+
+
+def test_resolve_unit_dimensions_should_use_512_square_for_prop_and_render_default_for_character(tmp_path: Path) -> None:
+    """
+    功能说明：验证模块 C 会对 prop 使用 512x512，对 character 使用全局默认 768x512。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：仅验证尺寸分流，不触发真实生成。
+    """
+    context = _build_context(tmp_path=tmp_path, task_id="task_c_dimension_route", render_workers=1, unit_retry_times=0)
+    character_unit = ModuleCUnit(
+        unit_id="shot_character_001",
+        unit_index=0,
+        shot={"shot_id": "shot_character_001", "asset_kind": "character", "start_time": 0.0, "end_time": 1.0},
+        start_time=0.0,
+        end_time=1.0,
+        duration=1.0,
+    )
+    prop_unit = ModuleCUnit(
+        unit_id="shot_prop_001",
+        unit_index=1,
+        shot={"shot_id": "shot_prop_001", "asset_kind": "prop", "start_time": 1.0, "end_time": 2.0},
+        start_time=1.0,
+        end_time=2.0,
+        duration=1.0,
+    )
+
+    assert module_c_executor._resolve_unit_dimensions(context=context, unit=character_unit) == (768, 512)
+    assert module_c_executor._resolve_unit_dimensions(context=context, unit=prop_unit) == (512, 512)
 
 
 

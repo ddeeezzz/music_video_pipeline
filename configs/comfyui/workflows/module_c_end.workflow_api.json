@@ -1,17 +1,23 @@
 {
   "1": {
     "inputs": {
-      "ckpt_name": "anything-v5.safetensors"
+      "ckpt_name": "zImageTurboAnime_aioFP8.safetensors"
     },
     "class_type": "CheckpointLoaderSimple"
   },
   "5": {
     "inputs": {
-      "lora_name": "akebi/AkebiChar-000008.safetensors",
+      "lora_name": "xl\\anime_style_v1_zimage.safetensors",
       "strength_model": 1.0,
       "strength_clip": 1.0,
-      "model": ["1", 0],
-      "clip": ["1", 1]
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ]
     },
     "class_type": "LoraLoader"
   },
@@ -24,44 +30,74 @@
   },
   "11": {
     "inputs": {
-      "pixels": ["10", 0],
-      "vae": ["1", 2]
+      "pixels": [
+        "10",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
     },
     "class_type": "VAEEncode"
   },
   "20": {
     "inputs": {
-      "text": "AkebiChar, 1girl, solo, face focus, smiling, looking at viewer, long hair, bangs, (monochrome:1.3), (white background:1.3), hiro (artist), manga style, lineart, sketch, hatching (texture), delicate lines, sharp lines, (delicate eyelashes:1.2)，masterpiece",
-      "clip": ["5", 1]
+      "text": "AkebiChar, 1girl, solo, face focus, smiling, looking at viewer, long hair, bangs, (monochrome:1.3), (white background:1.3), hiro (artist), manga style, lineart, sketch, hatching (texture), delicate lines, sharp lines, masterpiece",
+      "clip": [
+        "5",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode"
   },
   "21": {
     "inputs": {
       "text": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
-      "clip": ["5", 1]
+      "clip": [
+        "5",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode"
   },
   "40": {
     "inputs": {
-      "seed": 2,
-      "steps": 25,
-      "cfg": 7.0,
+      "seed": 522076159302229,
+      "steps": 8,
+      "cfg": 1,
       "sampler_name": "euler_ancestral",
-      "scheduler": "normal",
-      "denoise": 0.55,
-      "model": ["5", 0],
-      "positive": ["20", 0],
-      "negative": ["21", 0],
-      "latent_image": ["11", 0]
+      "scheduler": "beta",
+      "denoise": 0,
+      "model": [
+        "5",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "21",
+        0
+      ],
+      "latent_image": [
+        "11",
+        0
+      ]
     },
     "class_type": "KSampler"
   },
   "50": {
     "inputs": {
-      "samples": ["40", 0],
-      "vae": ["1", 2]
+      "samples": [
+        "40",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
     },
     "class_type": "VAEDecode"
   },
@@ -73,25 +109,115 @@
   },
   "61": {
     "inputs": {
-      "upscale_model": ["60", 0],
-      "image": ["50", 0]
+      "upscale_model": [
+        "60",
+        0
+      ],
+      "image": [
+        "50",
+        0
+      ]
     },
     "class_type": "ImageUpscaleWithModel"
   },
   "85": {
     "inputs": {
-      "image": ["61", 0],
+      "image": [
+        "61",
+        0
+      ],
       "upscale_method": "lanczos",
-      "width": 768,
-      "height": 432,
+      "width": 512,
+      "height": 512,
       "crop": "center"
     },
     "class_type": "ImageScale"
   },
+  "147": {
+    "inputs": {
+      "image": [
+        "85",
+        0
+      ],
+      "threshold": 180
+    },
+    "class_type": "MVPL: ConvertToGrayscale"
+  },
+  "148": {
+    "inputs": {
+      "images": [
+        "91",
+        0
+      ],
+      "filename_prefix": "mvpl/module_c_end"
+    },
+    "class_type": "SaveImage"
+  },
+  "149": {
+    "inputs": {
+      "images": [
+        "85",
+        0
+      ],
+      "filename_prefix": "mvpl/module_c_end"
+    },
+    "class_type": "SaveImage"
+  },
+  "150": {
+    "inputs": {
+      "image": [
+        "151",
+        0
+      ],
+      "threshold": 180
+    },
+    "class_type": "MVPL: ConvertToGrayscale"
+  },
+  "151": {
+    "inputs": {
+      "image": [
+        "85",
+        0
+      ]
+    },
+    "class_type": "MVPL: ExtractComicAlpha"
+  },
+  "152": {
+    "inputs": {
+      "images": [
+        "150",
+        0
+      ],
+      "filename_prefix": "mvpl/module_c_end"
+    },
+    "class_type": "SaveImage"
+  },
+  "153": {
+    "inputs": {
+      "images": [
+        "151",
+        0
+      ],
+      "filename_prefix": "mvpl/module_c_end"
+    },
+    "class_type": "SaveImage"
+  },
+  "91": {
+    "inputs": {
+      "image": [
+        "147",
+        0
+      ]
+    },
+    "class_type": "MVPL: ExtractComicAlpha"
+  },
   "99": {
     "inputs": {
       "filename_prefix": "mvpl/module_c_end",
-      "images": ["85", 0]
+      "images": [
+        "91",
+        0
+      ]
     },
     "class_type": "SaveImage"
   }

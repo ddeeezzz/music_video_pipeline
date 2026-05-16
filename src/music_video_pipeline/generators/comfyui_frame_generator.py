@@ -56,6 +56,8 @@ class ComfyUIFrameGenerator:
         )
         self._contract_start = load_workflow_contract(app_config.module_c.comfyui.contract_start_file)
         self._contract_end = load_workflow_contract(app_config.module_c.comfyui.contract_end_file)
+        self._contract_prop_start = load_workflow_contract(app_config.module_c.comfyui.contract_prop_start_file)
+        self._contract_prop_end = load_workflow_contract(app_config.module_c.comfyui.contract_prop_end_file)
 
     def prewarm(self) -> None:
         """
@@ -84,9 +86,11 @@ class ComfyUIFrameGenerator:
                 f"missing={missing_assets}"
             )
         self._logger.info(
-            "模块C ComfyUI 预热完成，contract_start=%s，contract_end=%s",
+            "模块C ComfyUI 预热完成，character_start=%s，character_end=%s，prop_start=%s，prop_end=%s",
             self._contract_start.workflow_api_file,
             self._contract_end.workflow_api_file,
+            self._contract_prop_start.workflow_api_file,
+            self._contract_prop_end.workflow_api_file,
         )
 
     def generate_one(
@@ -143,6 +147,8 @@ class ComfyUIFrameGenerator:
 
         output_dir.mkdir(parents=True, exist_ok=True)
         comfyui_cfg = self._config.module_c.comfyui
+        asset_kind = _resolve_asset_kind(shot=shot)
+        contract_start, contract_end = self._resolve_contract_pair(asset_kind=asset_kind)
         checkpoint_name = Path(str(comfyui_cfg.checkpoint_file)).name
         scene_lora_name = _resolve_catalog_asset_name(
             asset_file=str(comfyui_cfg.scene_lora_file),
@@ -154,59 +160,47 @@ class ComfyUIFrameGenerator:
         )
 
         workflow_start = render_workflow_from_contract(
-            contract=self._contract_start,
-            binding_values={
-                "checkpoint_name": checkpoint_name,
-                "scene_lora_name": scene_lora_name,
-                "scene_lora_strength_model": float(comfyui_cfg.scene_lora_strength),
-                "scene_lora_strength_clip": float(comfyui_cfg.scene_lora_strength),
-                "char_lora_name": char_lora_name,
-                "char_lora_strength_model": float(comfyui_cfg.char_lora_strength),
-                "char_lora_strength_clip": float(comfyui_cfg.char_lora_strength),
-                "positive_prompt": prompt_start,
-                "negative_prompt": negative_prompt_start or str(comfyui_cfg.negative_prompt),
-                "width": int(width),
-                "height": int(height),
-                "seed": _resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="start"),
-                "steps": int(comfyui_cfg.steps),
-                "cfg": float(comfyui_cfg.guidance_scale),
-                "sampler_name": str(comfyui_cfg.sampler_name),
-                "scheduler": str(comfyui_cfg.scheduler),
-                "filename_prefix": f"mvpl/module_c/{shot_id}/start",
-            },
+            contract=contract_start,
+            binding_values=self._build_binding_values(
+                asset_kind=asset_kind,
+                checkpoint_name=checkpoint_name,
+                scene_lora_name=scene_lora_name,
+                char_lora_name=char_lora_name,
+                positive_prompt=prompt_start,
+                negative_prompt=negative_prompt_start or str(comfyui_cfg.negative_prompt),
+                width=width,
+                height=height,
+                seed=_resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="start"),
+                filename_prefix=f"mvpl/module_c/{shot_id}/start",
+            ),
         )
         start_outputs = self._client.execute_prompt(
             workflow_prompt=workflow_start,
-            output_node_id=self._contract_start.output_node_id,
+            output_node_id=contract_start.output_node_id,
         )
         if not start_outputs:
             raise RuntimeError(f"模块C ComfyUI 生成失败：首关键帧未返回产物，shot_id={shot_id}")
         staged_init_image = self._client.stage_input_image(start_outputs[0], prefix=f"{shot_id}_start")
         workflow_end = render_workflow_from_contract(
-            contract=self._contract_end,
-            binding_values={
-                "checkpoint_name": checkpoint_name,
-                "scene_lora_name": scene_lora_name,
-                "scene_lora_strength_model": float(comfyui_cfg.scene_lora_strength),
-                "scene_lora_strength_clip": float(comfyui_cfg.scene_lora_strength),
-                "char_lora_name": char_lora_name,
-                "char_lora_strength_model": float(comfyui_cfg.char_lora_strength),
-                "char_lora_strength_clip": float(comfyui_cfg.char_lora_strength),
-                "init_image": staged_init_image,
-                "positive_prompt": prompt_end,
-                "negative_prompt": negative_prompt_end or str(comfyui_cfg.negative_prompt),
-                "seed": _resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="end"),
-                "steps": int(comfyui_cfg.steps),
-                "cfg": float(comfyui_cfg.guidance_scale),
-                "sampler_name": str(comfyui_cfg.sampler_name),
-                "scheduler": str(comfyui_cfg.scheduler),
-                "denoise": float(comfyui_cfg.end_denoise),
-                "filename_prefix": f"mvpl/module_c/{shot_id}/end",
-            },
+            contract=contract_end,
+            binding_values=self._build_binding_values(
+                asset_kind=asset_kind,
+                checkpoint_name=checkpoint_name,
+                scene_lora_name=scene_lora_name,
+                char_lora_name=char_lora_name,
+                positive_prompt=prompt_end,
+                negative_prompt=negative_prompt_end or str(comfyui_cfg.negative_prompt),
+                width=width,
+                height=height,
+                seed=_resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="end"),
+                filename_prefix=f"mvpl/module_c/{shot_id}/end",
+                init_image=staged_init_image,
+                denoise=float(comfyui_cfg.end_denoise),
+            ),
         )
         end_outputs = self._client.execute_prompt(
             workflow_prompt=workflow_end,
-            output_node_id=self._contract_end.output_node_id,
+            output_node_id=contract_end.output_node_id,
         )
         if not end_outputs:
             raise RuntimeError(f"模块C ComfyUI 生成失败：末关键帧未返回产物，shot_id={shot_id}")
@@ -249,11 +243,88 @@ class ComfyUIFrameGenerator:
             "keyframe_negative_prompt_end_en": negative_prompt_end,
             "video_prompt_zh": video_prompt_zh,
             "video_prompt_en": video_prompt_en,
+            "asset_kind": asset_kind,
             "binding_name": "comfyui",
             "base_model_key": Path(str(comfyui_cfg.checkpoint_file)).stem,
             "scene_lora_file": str((self._project_root / str(comfyui_cfg.scene_lora_file)).resolve()),
             "char_lora_file": str((self._project_root / str(comfyui_cfg.char_lora_file)).resolve()),
         }
+
+    def _resolve_contract_pair(self, asset_kind: str):
+        """
+        功能说明：根据素材类型返回对应的 start/end 工作流契约。
+        参数说明：
+        - asset_kind: 素材类型，当前支持 character/prop。
+        返回值：
+        - tuple[object, object]: 依次为 start/end 契约对象。
+        异常说明：无。
+        边界条件：未知值统一按 character 处理。
+        """
+        if asset_kind == "prop":
+            return self._contract_prop_start, self._contract_prop_end
+        return self._contract_start, self._contract_end
+
+    def _build_binding_values(
+        self,
+        *,
+        asset_kind: str,
+        checkpoint_name: str,
+        scene_lora_name: str,
+        char_lora_name: str,
+        positive_prompt: str,
+        negative_prompt: str,
+        width: int,
+        height: int,
+        seed: int,
+        filename_prefix: str,
+        init_image: str | None = None,
+        denoise: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        功能说明：构建一次 ComfyUI workflow 渲染所需的绑定值字典。
+        参数说明：
+        - asset_kind: 素材类型。
+        - checkpoint_name: checkpoint 文件名。
+        - scene_lora_name: 场景 LoRA 相对名。
+        - char_lora_name: 角色 LoRA 相对名。
+        - positive_prompt: 正向提示词。
+        - negative_prompt: 负向提示词。
+        - width/height: 输出宽高。
+        - seed: 稳定种子。
+        - filename_prefix: ComfyUI 输出前缀。
+        - init_image: 可选 img2img 输入图。
+        - denoise: 可选 img2img denoise。
+        返回值：
+        - dict[str, Any]: 契约绑定值字典。
+        异常说明：无。
+        边界条件：prop 路径不注入 char LoRA 绑定。
+        """
+        comfyui_cfg = self._config.module_c.comfyui
+        binding_values: dict[str, Any] = {
+            "checkpoint_name": checkpoint_name,
+            "scene_lora_name": scene_lora_name,
+            "scene_lora_strength_model": float(comfyui_cfg.scene_lora_strength),
+            "scene_lora_strength_clip": float(comfyui_cfg.scene_lora_strength),
+            "positive_prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
+            "seed": int(seed),
+            "steps": int(comfyui_cfg.steps),
+            "cfg": float(comfyui_cfg.guidance_scale),
+            "sampler_name": str(comfyui_cfg.sampler_name),
+            "scheduler": str(comfyui_cfg.scheduler),
+            "filename_prefix": filename_prefix,
+        }
+        if init_image is None:
+            binding_values["width"] = int(width)
+            binding_values["height"] = int(height)
+        else:
+            binding_values["init_image"] = init_image
+            binding_values["denoise"] = float(denoise if denoise is not None else comfyui_cfg.end_denoise)
+        if asset_kind == "character":
+            binding_values["char_lora_name"] = char_lora_name
+            binding_values["char_lora_strength_model"] = float(comfyui_cfg.char_lora_strength)
+            binding_values["char_lora_strength_clip"] = float(comfyui_cfg.char_lora_strength)
+        return binding_values
 
 
 def _resolve_seed_value(shot_id: str, shot_index: int, seed_variant: str) -> int:
@@ -291,3 +362,19 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
         if relative_parts:
             return Path(*relative_parts).as_posix()
     return Path(str(asset_file)).name
+
+
+def _resolve_asset_kind(shot: dict[str, Any]) -> str:
+    """
+    功能说明：解析当前 shot 的素材类型。
+    参数说明：
+    - shot: 模块 B 单元产物字典。
+    返回值：
+    - str: 归一化后的素材类型，当前为 character 或 prop。
+    异常说明：无。
+    边界条件：未知值统一回退为 character。
+    """
+    normalized = str(shot.get("asset_kind", "character")).strip().lower()
+    if normalized == "prop":
+        return "prop"
+    return "character"
