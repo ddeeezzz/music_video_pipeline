@@ -57,6 +57,7 @@ dependencies = [
   "scipy>=1.13.0",
   "simpleeval>=1.0.0",
   "spandrel",
+  "syncedlyrics>=1.0.1",
   "SQLAlchemy>=2.0",
   "tqdm>=4.66.0",
   "yarl>=1.18.0",

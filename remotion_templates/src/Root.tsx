@@ -48,15 +48,7 @@ export const Root = (): ReactElement => {
           fps: props.fps,
           durationInFrames: props.duration_in_frames
         })}
-        defaultProps={{
-          template: "center" as const,
-          fps: 24,
-          duration_in_frames: 48,
-          bpm: 130,
-          background: {kind: "solid" as const, color: "#FFFFFF"},
-          symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42},
-          motion: {breathe: true}
-        }}
+        defaultProps={{"template":"center" as const,"fps":24,"duration_in_frames":48,"bpm":130,"background":{"kind":"solid" as const,"color":"#FFFFFF"},"symbol":{"src":"/fixtures/center-symbol.svg","width_ratio":0.42,"height_ratio":0.42},"motion":{"breathe":true}}}
       />
       <Composition
         id="GridTemplate"

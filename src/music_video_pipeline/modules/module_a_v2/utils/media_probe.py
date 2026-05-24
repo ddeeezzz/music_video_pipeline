@@ -11,9 +11,6 @@ import subprocess
 # 标准库：路径类型
 from pathlib import Path
 
-# 第三方库：读取音频时长
-from mutagen import File as MutagenFile
-
 
 def probe_audio_duration(audio_path: Path, ffprobe_bin: str, logger) -> float:
     """
@@ -28,6 +25,8 @@ def probe_audio_duration(audio_path: Path, ffprobe_bin: str, logger) -> float:
     边界条件：双探测均失败时回退默认 20 秒。
     """
     try:
+        from mutagen import File as MutagenFile
+
         media_obj = MutagenFile(audio_path)
         if media_obj is not None and media_obj.info is not None and getattr(media_obj.info, "length", None):
             return max(0.1, float(media_obj.info.length))

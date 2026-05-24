@@ -445,7 +445,7 @@ def _concat_segment_videos_with_transitions(
     返回值：
     - dict[str, Any]: 拼接阶段执行信息。
     异常说明：ffmpeg 失败时抛 RuntimeError。
-    边界条件：通过对每段尾部做 clone padding，保证转场存在时仍保持总视觉时长不被压短。
+    边界条件：真实转场通过 xfade 叠加，hard_cut/none 通过 concat 直连，并对需要叠加的左侧片段补足 clone padding。
     """
     if not segment_paths:
         raise RuntimeError("模块D终拼失败：segment_paths 为空。")
@@ -455,35 +455,107 @@ def _concat_segment_videos_with_transitions(
         input_args.extend(["-i", str(segment_path)])
     input_args.extend(["-i", str(audio_path)])
 
-    transition_specs = [
+    transition_specs_raw = [
         _resolve_xfade_transition(
             transition_plan=transition_plans[index] if index < len(transition_plans) else {},
         )
         for index in range(len(segment_paths) - 1)
     ]
-    outgoing_pad_durations = [spec[1] for spec in transition_specs] + [0.0]
 
-    filter_parts: list[str] = []
+    # 混合链路中，hard_cut/none 改为真 concat 后，按段压缩模型会让 concat 段在后续真实转场前
+    # 提前损失长度，最终导致 xfade 链断裂。这里先使用更稳的策略：不做预加速压缩，
+    # 真实转场仅通过左侧 clone padding 补足过渡区。
+    total_compressions = [0.0] * len(segment_paths)
+
+    # 预加速当前停用，保留结构便于后续若重新引入更稳的压缩模型时复用。
+    spedup_paths: list[Path] = list(segment_paths)  # 默认用原文件
+    spedup_dir = output_video_path.parent / "artifacts" / "segments_spedup"
+    spedup_dir.mkdir(parents=True, exist_ok=True)
     for index in range(len(segment_paths)):
-        base_filter = f"[{index}:v]fps={int(fps)},format=yuv420p,setsar=1"
+        compression = total_compressions[index]
+        if compression < 0.001:
+            continue
+        speed_factor = (float(durations[index]) - compression) / float(durations[index])
+        if speed_factor >= 0.999:
+            continue
+        spedup_path = spedup_dir / f"{segment_paths[index].stem}_spedup.mp4"
+        if not spedup_path.exists():
+            cmd = [
+                ffmpeg_bin, "-y",
+                "-i", str(segment_paths[index]),
+                "-filter:v", f"setpts={speed_factor:.8f}*PTS,fps={int(fps)}",
+                "-c:v", video_codec, "-preset", video_preset, "-crf", "18",
+                "-pix_fmt", "yuv420p", "-r", str(int(fps)),
+                str(spedup_path),
+            ]
+            logger.info("预加速 segment [%d/%d] (factor=%.4f): %s",
+                        index + 1, len(segment_paths), speed_factor, segment_paths[index].name)
+            _run_ffmpeg_command(command=cmd, command_name="预加速 segment")
+        spedup_paths[index] = spedup_path
+
+    # 重建 input_args（使用加速后的文件）
+    input_args = []
+    for p in spedup_paths:
+        input_args.extend(["-i", str(p)])
+    input_args.extend(["-i", str(audio_path)])
+
+    # 只有真实转场才进入 xfade。
+    # none/hard_cut 改为 filter_complex 内的直接 concat，避免伪一帧 fade 在长链中累计吞掉时长。
+    min_pad = 1.0 / float(fps)
+    # 统一 xfade transition_duration（与 transition_specs 一致）
+    transition_specs: list[tuple[str, float, bool]] = []
+    for name, dur, is_direct_cut_transition in transition_specs_raw:
+        if dur > 0.0:
+            transition_specs.append((name, max(dur, min_pad), is_direct_cut_transition))
+        else:
+            transition_specs.append((name, dur, is_direct_cut_transition))
+
+    # 真实转场需要覆盖到计划边界之后的过渡区；硬切边界无需任何重叠 padding。
+    outgoing_pad_durations: list[float] = []
+    for index in range(len(spedup_paths) - 1):
+        _, T_xfade, is_direct_cut_transition = transition_specs[index]
+        outgoing_pad_durations.append(
+            _build_transition_outgoing_pad_duration(
+                transition_duration=T_xfade,
+                compression=total_compressions[index],
+                is_direct_cut_transition=is_direct_cut_transition,
+            )
+        )
+    outgoing_pad_durations.append(0.0)  # 最后一段无出过渡
+
+    # 原计划边界：sum(原时长) 到每段末尾
+    planned_boundaries = [0.0]
+    s = 0.0
+    for d in durations:
+        s += d
+        planned_boundaries.append(s)
+
+    # 构建混合拼接 filter。当前不在 filter_complex 内联 setpts，避免长链里再引入时基与丢帧问题。
+    filter_parts: list[str] = []
+    for index in range(len(spedup_paths)):
+        base_filter = f"[{index}:v]fps={int(fps)},format=yuv420p,setsar=1,settb=AVTB"
         pad_duration = float(outgoing_pad_durations[index])
-        if pad_duration > 0.0:
+        if pad_duration > 0.001:
             base_filter += f",tpad=stop_mode=clone:stop_duration={pad_duration:.3f}"
         filter_parts.append(f"{base_filter}[v{index}]")
+
     current_label = "v0"
-    current_duration = float(durations[0]) + float(outgoing_pad_durations[0])
-    current_tail_pad = float(outgoing_pad_durations[0])
-    for index in range(1, len(segment_paths)):
-        transition_name, transition_duration = transition_specs[index - 1]
-        offset = max(0.0, current_duration - current_tail_pad)
+    for index in range(1, len(spedup_paths)):
         next_label = f"x{index}"
-        filter_parts.append(
-            f"[{current_label}][v{index}]xfade=transition={transition_name}:duration={transition_duration:.3f}:offset={offset:.3f}[{next_label}]"
-        )
+        transition_name, transition_duration, is_direct_cut_transition = transition_specs[index - 1]
+        if is_direct_cut_transition:
+            filter_parts.append(
+                f"[{current_label}][v{index}]concat=n=2:v=1:a=0[{next_label}]"
+            )
+        else:
+            offset = _build_transition_offset(
+                planned_boundary=planned_boundaries[index],
+                transition_duration=transition_duration,
+            )
+            filter_parts.append(
+                f"[{current_label}][v{index}]xfade=transition={transition_name}:duration={transition_duration:.3f}:offset={offset:.3f}[{next_label}]"
+            )
         current_label = next_label
-        next_tail_pad = float(outgoing_pad_durations[index])
-        current_duration = current_duration + float(durations[index]) + next_tail_pad - current_tail_pad
-        current_tail_pad = next_tail_pad
 
     profile = _resolve_video_encoder_profile(
         ffmpeg_bin=ffmpeg_bin,
@@ -507,7 +579,7 @@ def _concat_segment_videos_with_transitions(
         "-map",
         f"[{current_label}]",
         "-map",
-        f"{len(segment_paths)}:a:0",
+        f"{len(spedup_paths)}:a:0",
         *list(profile["command_args"]),
         "-pix_fmt",
         "yuv420p",
@@ -519,7 +591,7 @@ def _concat_segment_videos_with_transitions(
         f"{audio_duration:.3f}",
         str(output_video_path),
     ]
-    logger.info("模块D检测到非 none 转场，切换到 filter_complex + xfade 终拼路径（已启用尾帧 padding 保持总时长）。")
+    logger.info("模块D检测到真实转场，切换到混合终拼路径：真实转场走 xfade，hard_cut/none 走 concat。")
     _run_ffmpeg_command(command=command, command_name="拼接小片段并混音（xfade）")
     return {"mode": "xfade_reencode", "copy_fallback_triggered": False}
 
@@ -646,46 +718,86 @@ def _has_nontrivial_transitions(transition_plans: list[dict[str, Any]]) -> bool:
     参数说明：
     - transition_plans: 转场计划数组。
     返回值：
-    - bool: 是否存在非 none 转场。
+    - bool: 是否存在需要进入 xfade 路径的真实转场。
     异常说明：无。
     边界条件：空数组返回 false。
     """
     for item in transition_plans:
         if not isinstance(item, dict):
             continue
-        if str(item.get("kind", "none")).strip().lower() != "none":
+        if str(item.get("kind", "none")).strip().lower() not in {"none", "hard_cut"}:
             return True
     return False
 
 
-def _resolve_xfade_transition(transition_plan: dict[str, Any]) -> tuple[str, float]:
+def _resolve_xfade_transition(transition_plan: dict[str, Any]) -> tuple[str, float, bool]:
     """
     功能说明：将 transition_plan 转换为 xfade 参数。
     参数说明：
     - transition_plan: 转场计划对象。
     返回值：
-    - tuple[str, float]: xfade transition 名与持续秒数。
+    - tuple[str, float, bool]: xfade transition 名、持续秒数、是否为直接硬切串接边界。
     异常说明：无。
-    边界条件：none/hard_cut 在混合链路中会被近似为极短 fade。
+    边界条件：none/hard_cut 不进入 xfade，而是走无重叠 concat 串接。
     """
     kind = str(transition_plan.get("kind", "none")).strip().lower()
     try:
         duration_ms = int(transition_plan.get("duration_ms", 0))
     except (TypeError, ValueError):
         duration_ms = 0
-    duration_seconds = max(0.001, float(duration_ms) / 1000.0)
+    duration_seconds = max(0.0, float(duration_ms) / 1000.0)
     mapping = {
-        "none": "fade",
-        "hard_cut": "fade",
         "crossfade": "fade",
         "fade_black": "fadeblack",
         "fade_white": "fadewhite",
         "wipe_left": "wipeleft",
         "wipe_right": "wiperight",
     }
-    if kind in {"none", "hard_cut"}:
-        duration_seconds = 0.001
-    return mapping.get(kind, "fade"), duration_seconds
+    is_direct_cut_transition = kind in {"none", "hard_cut"}
+    if is_direct_cut_transition:
+        return "cut", 0.0, True
+    return mapping.get(kind, "fade"), duration_seconds, False
+
+
+def _build_transition_outgoing_pad_duration(
+    *,
+    transition_duration: float,
+    compression: float,
+    is_direct_cut_transition: bool,
+) -> float:
+    """
+    功能说明：计算单段尾部所需的 clone padding 时长。
+    参数说明：
+    - transition_duration: xfade 实际使用的过渡时长。
+    - compression: 当前段因相邻转场被压缩的总时长。
+    - is_direct_cut_transition: 是否为 none/hard_cut 直接串接边界。
+    返回值：
+    - float: 应写入 tpad 的 stop_duration 秒数。
+    异常说明：无。
+    边界条件：硬切边界不存在重叠，不需要额外 clone padding。
+    """
+    normalized_compression = max(0.0, float(compression))
+    if is_direct_cut_transition:
+        return 0.0
+    return max(0.0, float(transition_duration)) + normalized_compression
+
+
+def _build_transition_offset(
+    *,
+    planned_boundary: float,
+    transition_duration: float,
+) -> float:
+    """
+    功能说明：计算 xfade 在全局时间轴上的起始 offset。
+    参数说明：
+    - planned_boundary: 原计划边界时间。
+    - transition_duration: xfade 实际使用的过渡时长。
+    返回值：
+    - float: 传给 xfade 的 offset 秒数。
+    异常说明：无。
+    边界条件：调用方只应在真实转场场景传入本函数。
+    """
+    return max(0.0, float(planned_boundary))
 
 
 def _build_camera_filter(width: int, height: int, duration: float, camera_plan: dict[str, Any]) -> str:

@@ -19,6 +19,8 @@ from music_video_pipeline.modules.module_a_v2.acoustid_client import build_finge
 from music_video_pipeline.modules.module_a_v2.lrc_parser import parse_synced_lyrics_to_sentence_units
 # 项目内模块：LRCLIB 客户端
 from music_video_pipeline.modules.module_a_v2.lrclib_client import query_lrclib_lyrics
+# 项目内模块：Web 手动联网歌词覆写
+from music_video_pipeline.modules.module_a_v2.network_lyrics_state import build_manual_network_lyrics_result
 # 项目内模块：元数据读取器
 from music_video_pipeline.modules.module_a_v2.metadata_reader import read_embedded_metadata
 
@@ -27,6 +29,7 @@ def resolve_lyrics_with_priority(
     audio_path: Path,
     duration_seconds: float,
     artifacts: ModuleAV2Artifacts,
+    artifacts_dir: Path,
     logger,
     fpcalc_bin: str,
     acoustid_api_key_file: str,
@@ -39,6 +42,7 @@ def resolve_lyrics_with_priority(
     - audio_path: 输入音频路径。
     - duration_seconds: 音频总时长（秒）。
     - artifacts: 模块A V2产物路径对象。
+    - artifacts_dir: 任务 artifacts 根目录。
     - logger: 日志记录器。
     - fpcalc_bin: 指纹命令路径或命令名。
     - acoustid_api_key_file: AcoustID API Key 文件路径。
@@ -49,6 +53,37 @@ def resolve_lyrics_with_priority(
     异常说明：异常在函数内尽量转为 fallback，避免中断模块A主链。
     边界条件：当 LRCLIB 明确标记 instrumental 时，不再进入 FunASR 兜底。
     """
+    manual_result = build_manual_network_lyrics_result(
+        artifacts_dir=artifacts_dir,
+        audio_duration=duration_seconds,
+        logger=logger,
+    )
+    if manual_result is not None:
+        dump_json_artifact(
+            output_path=artifacts.perception_model_lrclib_match_path,
+            payload=manual_result.get("lrclib_result", {}),
+            logger=logger,
+            artifact_name="lrclib_match",
+        )
+        dump_json_artifact(
+            output_path=artifacts.perception_model_lrclib_lyric_sentence_units_path,
+            payload=manual_result.get("lyric_sentence_units", []),
+            logger=logger,
+            artifact_name="lrclib_lyric_sentence_units",
+        )
+        result = {
+            "provider": str(manual_result.get("provider", "lrclib_manual")),
+            "reason": str(manual_result.get("reason", "manual_network_selected")),
+            "lyric_sentence_units": list(manual_result.get("lyric_sentence_units", [])),
+            "sentence_split_stats": dict(manual_result.get("sentence_split_stats", {})),
+            "funasr_raw_result": manual_result.get(
+                "funasr_raw_result",
+                {"skipped": True, "reason": "manual_network_selected"},
+            ),
+        }
+        _dump_selected_provider(artifacts=artifacts, payload=result, logger=logger)
+        return result
+
     metadata_result = read_embedded_metadata(
         audio_path=audio_path,
         duration_seconds=duration_seconds,

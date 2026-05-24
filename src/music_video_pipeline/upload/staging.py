@@ -17,6 +17,9 @@ from pathlib import Path
 # 标准库：用于日志类型
 import logging
 
+# 项目内模块：通用常量
+from music_video_pipeline.constants import TASK_WEB_ENTRY_PAGE_FILE_NAME
+
 # 常量：白名单策略名（当前仅实现 v1）。
 UPLOAD_SELECTION_PROFILE_WHITELIST_V1 = "whitelist_v1"
 # 常量：模块级白名单策略名（按模块完成后上传）。
@@ -53,7 +56,7 @@ def _collect_whitelist_files_v1(task_dir: Path) -> list[Path]:
     """
     exact_rel_files = [
         "final_output.mp4",
-        "task_monitor.html",
+        TASK_WEB_ENTRY_PAGE_FILE_NAME,
         "artifacts/module_a_output.json",
         "artifacts/module_b_output.json",
         "artifacts/module_c_output.json",
@@ -108,7 +111,7 @@ def _collect_module_a_whitelist_files_v1(task_dir: Path) -> list[Path]:
     边界条件：缺失文件按“存在即纳入”策略处理，不报错。
     """
     exact_rel_files = [
-        "task_monitor.html",
+        TASK_WEB_ENTRY_PAGE_FILE_NAME,
         "artifacts/module_a_output.json",
         "artifacts/module_a_work_v2/perception/model/allin1/allin1_raw_response.json",
         "artifacts/module_a_work_v2/perception/model/funasr/funasr_raw_response.json",
@@ -155,7 +158,7 @@ def _collect_module_b_whitelist_files_v1(task_dir: Path) -> list[Path]:
     边界条件：缺失文件按“存在即纳入”策略处理，不报错。
     """
     exact_rel_files = [
-        "task_monitor.html",
+        TASK_WEB_ENTRY_PAGE_FILE_NAME,
         "artifacts/module_a_output.json",
         "artifacts/module_b_output.json",
     ]
@@ -183,7 +186,7 @@ def _collect_module_c_whitelist_files_v1(task_dir: Path) -> list[Path]:
     边界条件：缺失文件按“存在即纳入”策略处理，不报错。
     """
     exact_rel_files = [
-        "task_monitor.html",
+        TASK_WEB_ENTRY_PAGE_FILE_NAME,
         "artifacts/module_c_output.json",
     ]
     include_dirs = [
@@ -210,7 +213,7 @@ def _collect_module_d_whitelist_files_v1(task_dir: Path) -> list[Path]:
     边界条件：缺失文件按“存在即纳入”策略处理，不报错。
     """
     exact_rel_files = [
-        "task_monitor.html",
+        TASK_WEB_ENTRY_PAGE_FILE_NAME,
         "final_output.mp4",
         "artifacts/module_d_output.json",
         "artifacts/segments_concat.txt",
@@ -358,3 +361,5 @@ def build_whitelist_staging_dir(
         staging_dir,
     )
     return staging_dir, selected_files
+# 项目内模块：通用常量
+from music_video_pipeline.constants import TASK_WEB_ENTRY_PAGE_FILE_NAME

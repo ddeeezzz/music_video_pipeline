@@ -14,13 +14,27 @@
 uv run --no-sync mvpl run --task-id wuli_v2 --config configs/wuli_v2.json
 ```
 
-### 手动启动任务监督（按需）
+### 手动启动任务 Web（按需）
 
 ```bash
-uv run --no-sync mvpl monitor --task-id jieranduhuo01 --config configs/music_yby/jieranduhuo_v2.json
+uv run --no-sync mvpl web
 ```
 
-启动后会在 `runs/<task_id>/task_monitor.html` 写入监督入口页，打开该页面即可跳转到本次本地监督服务地址。
+不传 `--task-id` 时，会直接打开任务列表页，不预选任何任务。
+
+若希望启动后直接进入某个任务，可执行：
+
+```bash
+uv run --no-sync mvpl web --task-id jieranduhuo01
+```
+
+传入 `--task-id` 时，还会在 `runs/<task_id>/task_web.html` 写入任务 Web 入口页，打开该页面即可跳转到本次本地监督服务地址。
+
+若任务产物不在默认 `runs/` 目录，可额外指定：
+
+```bash
+uv run --no-sync mvpl web --task-id jieranduhuo01 --runs-dir /path/to/runs
+```
 
 ### 模块A可视化（V2）
 
@@ -90,7 +104,7 @@ uv run --project /home/sod2204/work/zonghe/t1 --no-sync mvpl run --task-id demo_
 - `resume`
 - `run-module`
 - `b-task-status / c-task-status / d-task-status / bcd-task-status`
-- `monitor`
+- `web`
 - `upload-worker`
 
 重跑相关能力（`--force-module`、`*-retry-*`）默认隐藏在“高级菜单”，需二次确认后进入。
@@ -133,7 +147,7 @@ uv run --no-sync mvpl --interactive
 - `resume`
 - `run-module`
 - `b-task-status / c-task-status / d-task-status / bcd-task-status`
-- `monitor`
+- `web`
 - `upload-worker`
 - `显示高级操作`
 - `清除最近输入`
@@ -381,7 +395,7 @@ uv run python scripts/_module_a_v2_visualize.py \
 - `module_d.unit_retry_times`：模块 D 单元失败重试次数。
 - `cross_module.global_render_limit`：模块 C 与模块 D 的共享并发上限。
 - `cross_module.scheduler_tick_ms`：跨模块调度轮询间隔（毫秒）。
-- `monitoring.max_wait_after_terminal_minutes`：历史兼容配置项，当前手动 `monitor` 命令不依赖此超时字段。
+- `monitoring.max_wait_after_terminal_minutes`：历史兼容配置项，当前手动 `web` 命令不依赖此超时字段。
 
 ## 9. 跨模块并行排障命令
 
@@ -415,7 +429,7 @@ uv run mvpl bcd-retry-segment --task-id demo_20s --segment-id seg_0002 --config 
 - 仅重置目标链路对应单元（B 的 `segment_id` + C/D 同 `unit_index`）。
 - 链路补跑成功后若 D 全量单元已完成，会自动统一重建 `final_output.mp4`。
 
-## 10. 运行时任务监督页面（新增）
+## 10. 运行时任务监督页面
 
 监督服务改为手动按需启动，`run/resume` 默认不再自动拉起。
 
@@ -424,24 +438,44 @@ uv run mvpl bcd-retry-segment --task-id demo_20s --segment-id seg_0002 --config 
 先执行：
 
 ```bash
-uv run --no-sync mvpl monitor --task-id demo_20s --config configs/wuli_v2.json
+uv run --no-sync mvpl web
 ```
 
-命令启动后，日志会输出两类地址：
+此时会直接进入任务列表页，不预选任何任务。
+
+若希望启动后直接打开指定任务，可执行：
+
+```bash
+uv run --no-sync mvpl web --task-id demo_20s
+```
+
+若任务产物不在默认 `runs/` 目录，可显式指定产物根目录：
+
+```bash
+uv run --no-sync mvpl web --task-id demo_20s --runs-dir /path/to/runs
+```
+
+无 `--task-id` 启动时，日志会输出任务列表页 URL（示例）：
+
+```text
+http://127.0.0.1:<port>/tasks
+```
+
+传入 `--task-id` 启动时，日志会额外输出两类地址：
 
 - 本地监督服务URL（示例）：
 
 ```text
-http://127.0.0.1:<port>/task-monitor?task_id=<task_id>
+http://127.0.0.1:<port>/tasks/<task_id>/monitor
 ```
 
 - 任务目录入口页（固定位置）：
 
 ```text
-runs/<task_id>/task_monitor.html
+runs/<task_id>/task_web.html
 ```
 
-在浏览器打开 `runs/<task_id>/task_monitor.html` 会自动跳转到本次监督服务URL。
+在浏览器打开 `runs/<task_id>/task_web.html` 会自动跳转到本次监督服务URL。
 
 ### 10.2 页面展示内容
 
@@ -451,7 +485,7 @@ runs/<task_id>/task_monitor.html
 
 ### 10.3 实时通道
 
-- `GET /task-monitor`：监督页面。
+- `GET /tasks/<task_id>/monitor`：监督页面。
 - `WS /ws?task_id=<task_id>`：每秒推送任务快照（JSON）。
 
 快照核心字段：
@@ -463,6 +497,6 @@ runs/<task_id>/task_monitor.html
 
 ### 10.4 生命周期说明
 
-- 监督服务仅在 `monitor` 命令执行期间运行。
+- 监督服务仅在 `web` 命令执行期间运行。
 - 任务进入 `done/failed` 后，服务仍保持运行，便于复盘查看。
-- 停止方式：在运行 `monitor` 的终端按 `Ctrl+C`。
+- 停止方式：在运行 `web` 的终端按 `Ctrl+C`。

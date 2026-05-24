@@ -99,6 +99,7 @@ def run_perception_stage(
     audio_path: Path,
     duration_seconds: float,
     artifacts: ModuleAV2Artifacts,
+    artifacts_dir: Path,
     device: str,
     demucs_model: str,
     funasr_model: str,
@@ -117,6 +118,7 @@ def run_perception_stage(
     - audio_path: 输入音频路径。
     - duration_seconds: 音频总时长（秒）。
     - artifacts: V2产物路径对象。
+    - artifacts_dir: 任务 artifacts 根目录。
     - device: 推理设备标识。
     - demucs_model: Demucs 模型名称。
     - funasr_model: FunASR 模型名称。
@@ -469,6 +471,7 @@ def run_perception_stage(
         audio_path=audio_path,
         duration_seconds=duration_seconds,
         artifacts=artifacts,
+        artifacts_dir=artifacts_dir,
         logger=logger,
         fpcalc_bin=fpcalc_bin,
         acoustid_api_key_file=acoustid_api_key_file,

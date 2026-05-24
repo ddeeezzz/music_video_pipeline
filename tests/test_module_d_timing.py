@@ -187,3 +187,52 @@ def test_concat_segment_videos_should_fallback_to_reencode_when_copy_failed(tmp_
     assert len(commands) == 2
     assert all("-nostdin" in command for command in commands)
     assert output_video_path.exists()
+
+
+def test_build_transition_offset_should_shift_synthetic_zero_transition_before_boundary() -> None:
+    """
+    功能说明：验证 none/hard_cut 的 synthetic 一帧过渡会前移到计划边界之前。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：真实 crossfade 仍应停留在原计划边界。
+    """
+    min_pad = 1.0 / 24.0
+    planned_boundary = 98.63
+
+    shifted_offset = module_d_finalizer._build_transition_offset(
+        planned_boundary=planned_boundary,
+        transition_duration=min_pad,
+        is_synthetic_zero_transition=True,
+    )
+    normal_offset = module_d_finalizer._build_transition_offset(
+        planned_boundary=planned_boundary,
+        transition_duration=0.16,
+        is_synthetic_zero_transition=False,
+    )
+
+    assert shifted_offset == planned_boundary - min_pad
+    assert normal_offset == planned_boundary
+
+
+def test_build_transition_outgoing_pad_duration_should_not_extend_synthetic_zero_transition() -> None:
+    """
+    功能说明：验证 none/hard_cut 的 synthetic 一帧过渡不会把上一段尾帧额外拖到计划边界之后。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：真实 crossfade 仍需补足 transition_duration + compression。
+    """
+    synthetic_pad = module_d_finalizer._build_transition_outgoing_pad_duration(
+        transition_duration=1.0 / 24.0,
+        compression=0.083,
+        is_synthetic_zero_transition=True,
+    )
+    crossfade_pad = module_d_finalizer._build_transition_outgoing_pad_duration(
+        transition_duration=0.16,
+        compression=0.083,
+        is_synthetic_zero_transition=False,
+    )
+
+    assert synthetic_pad == 0.083
+    assert crossfade_pad == 0.243

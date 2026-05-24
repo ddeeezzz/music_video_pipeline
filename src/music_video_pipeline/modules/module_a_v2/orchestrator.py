@@ -57,6 +57,7 @@ def _run_perception_stage(
         audio_path=audio_path,
         duration_seconds=duration_seconds,
         artifacts=artifacts,
+        artifacts_dir=context.artifacts_dir,
         device=context.config.module_a.device,
         demucs_model=context.config.module_a.demucs_model,
         funasr_model=context.config.module_a.funasr_model,

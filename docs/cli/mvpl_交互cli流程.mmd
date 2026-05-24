@@ -14,7 +14,7 @@ flowchart TD
     D -->|resume| M2["采集：task_id / config"]
     D -->|run-module| M3["采集：task_id / module / config / audio(可空)"]
     D -->|b/c/d/bcd-task-status| M4["采集：task_id / config"]
-    D -->|monitor| M5["采集：task_id / config"]
+    D -->|web| M5["采集：task_id / config"]
     D -->|upload-worker| M6["采集：config / once或drain / 可选task_id过滤"]
     D -->|显示高级操作| H0{"二次确认?"}
     D -->|清除最近输入| D1["清空本地会话记忆"] --> D
