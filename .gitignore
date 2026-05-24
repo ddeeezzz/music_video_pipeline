@@ -8,6 +8,8 @@ __pycache__/
 models/
 log/
 .cache/
+.playwright-cli/
+temp/ 
 
 # ComfyUI 运行时目录与本地状态
 ComfyUI/
@@ -19,3 +21,8 @@ ComfyUI/
 remotion_templates/node_modules/
 remotion_templates/browser/
 remotion_templates/out/
+src/music_video_pipeline/web_frontend/node_modules/
+src/music_video_pipeline/monitoring/static/app/
+
+# Vite dev 临时日志
+src/music_video_pipeline/web_frontend/.vite-dev.*.log

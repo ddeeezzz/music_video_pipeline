@@ -1,0 +1,30 @@
+{
+  "name": "mvpl-web-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "music_video_pipeline 的正式 Web 前端工作台。",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173"
+  },
+  "dependencies": {
+    "@ant-design/icons": "latest",
+    "@tanstack/react-query": "latest",
+    "antd": "latest",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^6.30.1",
+    "zod": "^4.3.6",
+    "zustand": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "latest",
+    "typescript": "^6.0.3",
+    "vite": "latest"
+  }
+}
