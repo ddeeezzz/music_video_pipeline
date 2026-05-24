@@ -9,11 +9,36 @@
 # 标准库：用于声明结构化类型
 from typing import Any, Literal, NotRequired, TypedDict
 
-# 项目内模块：复用模块B v2 的 plan 校验器。
-from music_video_pipeline.modules.module_b_v2.parser import validate_camera_plan, validate_transition_plan
-
-
 TaskState = Literal["pending", "running", "done", "failed"]
+
+# 常量：当前模块 B 输出约定中的运镜 mode 合法值集合。
+VALID_CAMERA_PLAN_MODES = {"none", "pan", "zoom"}
+# 常量：当前模块 B 输出约定中的运镜 direction 合法值集合。
+VALID_CAMERA_PLAN_DIRECTIONS = {
+    "center",
+    "left",
+    "right",
+    "up",
+    "down",
+    "up_left",
+    "up_right",
+    "down_left",
+    "down_right",
+}
+# 常量：当前模块 B 输出约定中的运镜强度合法值集合。
+VALID_CAMERA_PLAN_STRENGTHS = {"none", "small", "medium"}
+# 常量：当前模块 B 输出约定中的 easing 合法值集合。
+VALID_EASING_VALUES = {"linear", "ease_in", "ease_out", "ease_in_out"}
+# 常量：当前模块 B 输出约定中的转场类型合法值集合。
+VALID_TRANSITION_KINDS = {
+    "none",
+    "hard_cut",
+    "crossfade",
+    "fade_black",
+    "fade_white",
+    "wipe_left",
+    "wipe_right",
+}
 
 
 class BigSegmentItem(TypedDict):
@@ -171,6 +196,96 @@ class ModuleBOutputItem(TypedDict):
 
 
 ModuleBOutput = list[ModuleBOutputItem]
+
+
+def _normalize_non_empty_text(value: object, field_name: str) -> str:
+    """
+    功能说明：将文本字段标准化为去首尾空白后的非空字符串。
+    参数说明：
+    - value: 待校验值。
+    - field_name: 字段名（用于报错定位）。
+    返回值：
+    - str: 标准化后的非空字符串。
+    异常说明：
+    - TypeError: 输入不是字符串时抛出。
+    - ValueError: 输入为空字符串时抛出。
+    边界条件：仅接受真正的 str，不接受其他可转字符串对象。
+    """
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} 必须是 str")
+    normalized_value = value.strip()
+    if not normalized_value:
+        raise ValueError(f"{field_name} 不能为空字符串")
+    return normalized_value
+
+
+def validate_camera_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """
+    功能说明：校验模块 B 输出中的标准化运镜计划。
+    参数说明：
+    - plan: 运镜对象。
+    返回值：
+    - dict[str, Any]: 通过校验后的标准化对象。
+    异常说明：
+    - TypeError/ValueError: 字段缺失或取值非法时抛出。
+    边界条件：mode=none 时 direction/strength/easing 仍要求显式存在。
+    """
+    if not isinstance(plan, dict):
+        raise TypeError("camera_plan 必须是 dict")
+    preset_id = _normalize_non_empty_text(plan.get("preset_id", ""), "camera_plan.preset_id")
+    mode = _normalize_non_empty_text(plan.get("mode", ""), "camera_plan.mode")
+    direction = _normalize_non_empty_text(plan.get("direction", ""), "camera_plan.direction")
+    strength = _normalize_non_empty_text(plan.get("strength", ""), "camera_plan.strength")
+    easing = _normalize_non_empty_text(plan.get("easing", ""), "camera_plan.easing")
+    if mode not in VALID_CAMERA_PLAN_MODES:
+        raise ValueError(f"camera_plan.mode 非法：{mode}")
+    if direction not in VALID_CAMERA_PLAN_DIRECTIONS:
+        raise ValueError(f"camera_plan.direction 非法：{direction}")
+    if strength not in VALID_CAMERA_PLAN_STRENGTHS:
+        raise ValueError(f"camera_plan.strength 非法：{strength}")
+    if easing not in VALID_EASING_VALUES:
+        raise ValueError(f"camera_plan.easing 非法：{easing}")
+    return {
+        "preset_id": preset_id,
+        "mode": mode,
+        "direction": direction,
+        "strength": strength,
+        "easing": easing,
+    }
+
+
+def validate_transition_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """
+    功能说明：校验模块 B 输出中的标准化转场计划。
+    参数说明：
+    - plan: 转场对象。
+    返回值：
+    - dict[str, Any]: 通过校验后的标准化对象。
+    异常说明：
+    - TypeError/ValueError: 字段缺失或取值非法时抛出。
+    边界条件：duration_ms 允许等于 0，不允许小于 0。
+    """
+    if not isinstance(plan, dict):
+        raise TypeError("transition_plan 必须是 dict")
+    preset_id = _normalize_non_empty_text(plan.get("preset_id", ""), "transition_plan.preset_id")
+    kind = _normalize_non_empty_text(plan.get("kind", ""), "transition_plan.kind")
+    easing = _normalize_non_empty_text(plan.get("easing", ""), "transition_plan.easing")
+    try:
+        duration_ms = int(plan.get("duration_ms", 0))
+    except (TypeError, ValueError) as error:
+        raise TypeError("transition_plan.duration_ms 必须是整数") from error
+    if kind not in VALID_TRANSITION_KINDS:
+        raise ValueError(f"transition_plan.kind 非法：{kind}")
+    if easing not in VALID_EASING_VALUES:
+        raise ValueError(f"transition_plan.easing 非法：{easing}")
+    if duration_ms < 0:
+        raise ValueError("transition_plan.duration_ms 不能小于 0")
+    return {
+        "preset_id": preset_id,
+        "kind": kind,
+        "duration_ms": duration_ms,
+        "easing": easing,
+    }
 
 
 def _safe_float(value: object, field_name: str) -> float:
