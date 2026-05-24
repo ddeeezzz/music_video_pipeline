@@ -17,12 +17,11 @@ from typing import Any, Callable
 from music_video_pipeline.command_service import CommandRequest
 from music_video_pipeline.config import load_config
 from music_video_pipeline.constants import MODULE_ORDER
-from music_video_pipeline.modules.module_b_v2.template_loader import load_storyboard_template
 from music_video_pipeline.state_store import StateStore
 
 
 _BACK = object()
-# 常量：模块B v2 编排模板专属目录。
+# 常量：模块B 编排模板专属目录。
 STORYBOARD_TEMPLATE_DIR = Path("configs/storyboard_templates")
 
 ExecuteRequest = Callable[[CommandRequest], dict]
@@ -74,8 +73,8 @@ ACTION_HINTS: dict[str, tuple[str, ...]] = {
     "bcd-task-status": (
         "用于跨模块排障总览，先定位阻塞点再执行重试。",
     ),
-    "monitor": (
-        "仅手动启动监督服务，不会触发模块重跑。",
+    "web": (
+        "仅手动启动任务 Web 服务，不会触发模块重跑。",
     ),
     "run-force": (
         "会从选定模块开始重跑并影响下游状态。",
@@ -98,12 +97,12 @@ ACTION_HINTS: dict[str, tuple[str, ...]] = {
         "该 segment 的 B 输出会被刷新，后续依赖该输出的链路需要重新衔接。",
     ),
     "b-retry-role": (
-        "仅重试模块B v2 指定 role 起点；不会自动执行 C/D。",
+        "仅重试模块B指定 role 起点；不会自动执行 C/D。",
         "role1/2 为整 role 级重跑；role3/4 会基于已有缓存按 shot 级续跑。",
         "该操作会失效模块B内部对应角色及其下游角色缓存，并刷新全部 B 单元输出。",
     ),
     "b-retry-role-shot": (
-        "仅重试模块B v2 的 role3/role4 中某一个 shot；不会自动执行 C/D。",
+        "仅重试模块B的 role3/role4 中某一个 shot；不会自动执行 C/D。",
         "该操作会失效对应 shot 的角色缓存，并只把对应链路的 C/D 置为待重建。",
         "适合单个 shot 的 role3 编排或 role4 提示词坏掉，但不想整 role 重跑的场景。",
     ),
@@ -146,7 +145,7 @@ MAIN_ACTIONS: tuple[MenuAction, ...] = (
     MenuAction("c-task-status", "查看模块C单元状态"),
     MenuAction("d-task-status", "查看模块D单元状态"),
     MenuAction("bcd-task-status", "查看跨模块B/C/D链路状态"),
-    MenuAction("monitor", "手动启动任务监督"),
+    MenuAction("web", "启动任务 Web"),
 )
 
 ADVANCED_ACTIONS: tuple[MenuAction, ...] = (
@@ -154,8 +153,8 @@ ADVANCED_ACTIONS: tuple[MenuAction, ...] = (
     MenuAction("resume-force", "resume（含 --force-module）", advanced=True),
     MenuAction("run-module-force", "run-module（含 --force）", advanced=True),
     MenuAction("b-retry-segment", "按 segment 重试模块B", advanced=True),
-    MenuAction("b-retry-role", "按 role 重试模块B v2", advanced=True),
-    MenuAction("b-retry-role-shot", "按 role 中 shot 重试模块B v2", advanced=True),
+    MenuAction("b-retry-role", "按 role 重试模块B", advanced=True),
+    MenuAction("b-retry-role-shot", "按 role 中 shot 重试模块B", advanced=True),
     MenuAction("c-retry-shot", "按 shot 重试模块C", advanced=True),
     MenuAction("d-retry-shot", "按 shot 重试模块D", advanced=True),
     MenuAction("bcd-retry-segment", "按 segment 重试跨模块B/C/D", advanced=True),
@@ -390,7 +389,7 @@ def _build_request_for_action(
             workspace_root=workspace_root,
             default_config_path=default_config_path,
         )
-    if action.key in {"b-task-status", "c-task-status", "d-task-status", "bcd-task-status", "monitor"}:
+    if action.key in {"b-task-status", "c-task-status", "d-task-status", "bcd-task-status", "web"}:
         return _collect_task_command_request(
             command=action.key,
             workspace_root=workspace_root,
@@ -424,18 +423,16 @@ def _build_request_for_action(
 
 def _attach_storyboard_template_override_if_needed(*, request: CommandRequest, workspace_root: Path) -> CommandRequest:
     """
-    功能说明：当命令会触发模块B v2时，注入本次编排模板选择或当前模板锁定结果。
+    功能说明：当命令会触发模块B时，注入本次编排模板选择或当前模板锁定结果。
     参数说明：
     - request: 已采集基础参数的命令请求对象。
     - workspace_root: 项目根目录（用于模板发现与任务产物读取）。
     返回值：
     - CommandRequest: 注入模板覆盖值后的请求对象。
     异常说明：无。
-    边界条件：不触发模块B或非 v2 链路时保持原样返回。
+    边界条件：不触发模块B时保持原样返回。
     """
     if not _request_can_trigger_module_b(request=request):
-        return request
-    if not _request_uses_module_b_v2(request=request):
         return request
     if _should_skip_storyboard_template_for_resume(request=request, workspace_root=workspace_root):
         return request
@@ -482,23 +479,6 @@ def _request_can_trigger_module_b(*, request: CommandRequest) -> bool:
             return False
         return True
     return False
-
-
-def _request_uses_module_b_v2(*, request: CommandRequest) -> bool:
-    """
-    功能说明：判断当前请求是否使用模块B v2 链路。
-    参数说明：
-    - request: 命令请求对象。
-    返回值：
-    - bool: True 表示配置可用且模块B走唯一的 v2 链路。
-    异常说明：无。
-    边界条件：配置读取失败时回退为 False。
-    """
-    try:
-        load_config(config_path=request.config_path)
-    except Exception:  # noqa: BLE001
-        return False
-    return True
 
 
 def _request_retries_module_b_after_role1(*, request: CommandRequest) -> bool:
@@ -599,7 +579,7 @@ def _resolve_state_db_path_from_config(*, config_path: Path, workspace_root: Pat
 
 def _prompt_storyboard_template_choice(*, request: CommandRequest, workspace_root: Path) -> str:
     """
-    功能说明：交互采集模块B v2 编排模板文件路径。
+    功能说明：交互采集模块B 编排模板文件路径。
     参数说明：
     - request: 命令请求对象。
     - workspace_root: 项目根目录。
@@ -617,7 +597,7 @@ def _prompt_storyboard_template_choice(*, request: CommandRequest, workspace_roo
         print("未发现专属编排模板，沿用当前配置模板。")
         return default_template_path
 
-    print("\n请选择本次模块B v2 编排模板：")
+    print("\n请选择本次模块B 编排模板：")
     default_index = 1
     for option_index, option in enumerate(template_options, start=1):
         marker = "（当前默认）" if str(option["path"]) == default_template_path else ""
@@ -636,7 +616,7 @@ def _prompt_storyboard_template_choice(*, request: CommandRequest, workspace_roo
 
 def _discover_storyboard_template_options(*, workspace_root: Path) -> list[dict[str, Any]]:
     """
-    功能说明：扫描模块B v2 编排模板专属目录下的全部 Markdown 模板。
+    功能说明：扫描模块B 编排模板专属目录下的全部 Markdown 模板。
     参数说明：
     - workspace_root: 项目根目录。
     返回值：
@@ -650,7 +630,7 @@ def _discover_storyboard_template_options(*, workspace_root: Path) -> list[dict[
     options: list[dict[str, Any]] = []
     for template_path in sorted(template_dir.glob("*.md")):
         try:
-            payload = load_storyboard_template(project_root=workspace_root, template_file=str(template_path))
+            payload = _build_storyboard_template_payload(template_path=template_path)
         except Exception as error:  # noqa: BLE001
             print(f"提示：读取编排模板失败，已跳过：{template_path}，错误={error}")
             continue
@@ -673,19 +653,8 @@ def _resolve_current_storyboard_template_file_for_request(*, request: CommandReq
     返回值：
     - str: 模板文件绝对路径。
     异常说明：无。
-    边界条件：优先使用任务产物 meta 中记录的模板源路径，其次回退配置路径。
+    边界条件：当前直接回退到配置路径，不再读取已删除 bv2 产物目录。
     """
-    task_dir = _resolve_task_dir_from_request(request=request, workspace_root=workspace_root)
-    if task_dir is not None:
-        meta_path = task_dir / "artifacts" / "module_b_v2" / "artifacts" / "module_b_storyboard_template_meta.json"
-        if meta_path.exists():
-            try:
-                meta_data = json.loads(meta_path.read_text(encoding="utf-8"))
-                template_file = str(meta_data.get("template_file", "")).strip()
-                if template_file:
-                    return str(Path(template_file).resolve())
-            except Exception:  # noqa: BLE001
-                pass
     try:
         config = load_config(config_path=request.config_path)
         configured_path = Path(str(config.module_b.storyboard_template_file))
@@ -703,7 +672,7 @@ def _load_current_storyboard_template_payload_for_request(
     template_file: str,
 ) -> dict[str, Any]:
     """
-    功能说明：读取当前请求关联的编排模板内容，优先复用任务产物中的已编译 JSON。
+    功能说明：读取当前请求关联的编排模板内容。
     参数说明：
     - request: 命令请求对象。
     - workspace_root: 项目根目录。
@@ -711,22 +680,31 @@ def _load_current_storyboard_template_payload_for_request(
     返回值：
     - dict[str, Any]: 已解析模板对象；失败时返回空对象。
     异常说明：无。
-    边界条件：读取任务产物失败时回退到源模板重新解析。
+    边界条件：读取失败时返回空对象。
     """
-    task_dir = _resolve_task_dir_from_request(request=request, workspace_root=workspace_root)
-    if task_dir is not None:
-        artifact_path = task_dir / "artifacts" / "module_b_v2" / "artifacts" / "module_b_storyboard_template.json"
-        if artifact_path.exists():
-            try:
-                payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    return payload
-            except Exception:  # noqa: BLE001
-                pass
     try:
-        return load_storyboard_template(project_root=workspace_root, template_file=template_file)
+        return _build_storyboard_template_payload(template_path=Path(template_file))
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _build_storyboard_template_payload(*, template_path: Path) -> dict[str, Any]:
+    """
+    功能说明：为交互页构造轻量模板预览载荷。
+    参数说明：
+    - template_path: 模板 Markdown 路径。
+    返回值：
+    - dict[str, Any]: 仅含路径与原始 Markdown 摘要的轻量对象。
+    异常说明：
+    - OSError: 文件读取失败时向上抛出。
+    边界条件：不再依赖已删除的 bv2 模板解析器。
+    """
+    markdown_text = template_path.read_text(encoding="utf-8").strip()
+    preview_lines = [line.strip() for line in markdown_text.splitlines() if line.strip()][:8]
+    return {
+        "template_file": str(template_path.resolve()),
+        "preview_lines": preview_lines,
+    }
 
 
 def _resolve_task_dir_from_request(*, request: CommandRequest, workspace_root: Path) -> Path | None:
@@ -755,7 +733,7 @@ def _resolve_task_dir_from_request(*, request: CommandRequest, workspace_root: P
 
 def _render_storyboard_template_brief(*, template_payload: dict[str, Any], indent: str = "  ") -> None:
     """
-    功能说明：按固定五个板块输出编排模板摘要。
+    功能说明：输出编排模板的轻量摘要。
     参数说明：
     - template_payload: 已解析模板对象。
     - indent: 输出缩进前缀。
@@ -763,20 +741,16 @@ def _render_storyboard_template_brief(*, template_payload: dict[str, Any], inden
     异常说明：无。
     边界条件：缺字段时以占位文本兜底。
     """
-    style = template_payload.get("style", {}) if isinstance(template_payload, dict) else {}
-    scene_catalog = template_payload.get("scene_catalog", []) if isinstance(template_payload, dict) else []
-    character_catalog = template_payload.get("character_catalog", []) if isinstance(template_payload, dict) else []
-    prop_catalog = template_payload.get("prop_catalog", []) if isinstance(template_payload, dict) else []
-    color_mode = str((style or {}).get("color_mode", "")).strip() or "<空>"
-    render_style = str((style or {}).get("render_style", "")).strip() or "<空>"
-    scene_text = _render_template_catalog_items(scene_catalog)
-    character_text = _render_template_catalog_items(character_catalog)
-    prop_text = _render_template_catalog_items(prop_catalog)
-    print(f"{indent}色彩风格：{color_mode}")
-    print(f"{indent}画风：{render_style}")
-    print(f"{indent}场景：{scene_text}")
-    print(f"{indent}角色：{character_text}")
-    print(f"{indent}道具：{prop_text}")
+    preview_lines = template_payload.get("preview_lines", []) if isinstance(template_payload, dict) else []
+    template_file = str(template_payload.get("template_file", "")).strip() if isinstance(template_payload, dict) else ""
+    if template_file:
+        print(f"{indent}模板文件：{template_file}")
+    if not isinstance(preview_lines, list) or not preview_lines:
+        print(f"{indent}模板预览：<空>")
+        return
+    print(f"{indent}模板预览：")
+    for line in preview_lines[:6]:
+        print(f"{indent}- {line}")
 
 
 def _render_template_catalog_items(items: Any) -> str:
@@ -1089,6 +1063,34 @@ def _collect_task_command_request(
     default_config_path: Path,
     memory: SessionMemory,
 ) -> CommandRequest | None:
+    if command == "web":
+        task_id = ""
+        runs_dir_text = "runs"
+        stage = 0
+
+        while True:
+            if stage == 0:
+                answer = _prompt_optional_text("任务ID（回车进入任务列表）", default_value=task_id)
+                if answer is _BACK:
+                    return None
+                task_id = str(answer).strip()
+                stage = 1
+                continue
+
+            answer = _prompt_optional_text("任务产物根目录", default_value=runs_dir_text)
+            if answer is _BACK:
+                stage = 0
+                continue
+            runs_dir_text = str(answer).strip() or "runs"
+            break
+
+        return CommandRequest(
+            command=command,
+            task_id=task_id or None,
+            config_path=default_config_path,
+            runs_dir=Path(runs_dir_text),
+        )
+
     task_id = str(memory.task_id).strip()
     config_path: Path | None = None
     stage = 0
@@ -1207,7 +1209,7 @@ def _collect_rerun_role_request(
     default_config_path: Path,
 ) -> CommandRequest | None:
     """
-    功能说明：采集模块B v2 角色级重试请求。
+    功能说明：采集模块B 角色级重试请求。
     参数说明：
     - workspace_root: 项目根目录。
     - default_config_path: 默认配置文件路径。
@@ -1237,7 +1239,7 @@ def _collect_rerun_role_shot_request(
     default_config_path: Path,
 ) -> CommandRequest | None:
     """
-    功能说明：采集模块B v2 角色内 shot 级重试请求。
+    功能说明：采集模块B 角色内 shot 级重试请求。
     参数说明：
     - workspace_root: 项目根目录。
     - default_config_path: 默认配置文件路径。
@@ -1350,14 +1352,14 @@ def _prompt_state_db_choice(*, db_paths: list[Path]) -> Path | object:
 
 def _prompt_module_b_role_choice() -> str | object:
     """
-    功能说明：让用户选择模块B v2 的角色级重试起点。
+    功能说明：让用户选择模块B 的角色级重试起点。
     参数说明：无。
     返回值：
     - str | object: 选中的 role 名称；返回 _BACK 表示回退。
     异常说明：无。
     边界条件：当前只暴露 role1/role2/role3/role4 四个固定入口。
     """
-    print("\n请选择模块B v2 role 起点：")
+    print("\n请选择模块B role 起点：")
     print("  [1] role1（视觉编导）")
     print("  [2] role2（大段剧情编导）")
     print("  [3] role3（小段剧情编导）")
@@ -1376,14 +1378,14 @@ def _prompt_module_b_role_choice() -> str | object:
 
 def _prompt_module_b_shot_role_choice() -> str | object:
     """
-    功能说明：让用户选择支持 shot 级重试的模块B v2 角色。
+    功能说明：让用户选择支持 shot 级重试的模块B 角色。
     参数说明：无。
     返回值：
     - str | object: 选中的 role 名称；返回 _BACK 表示回退。
     异常说明：无。
     边界条件：当前仅开放 role3/role4。
     """
-    print("\n请选择模块B v2 shot级 role：")
+    print("\n请选择模块B shot级 role：")
     print("  [1] role3（小段剧情编导）")
     print("  [2] role4（关键帧提示词生成器）")
     choice = _prompt_number_choice(max_index=2, prompt_text="输入序号（输入 q 返回）：")
@@ -1821,6 +1823,14 @@ def _build_command_preview(request: CommandRequest) -> str:
     parts = ["uv run mvpl", request.command]
     if request.task_id:
         parts.extend(["--task-id", request.task_id])
+    if request.command == "web":
+        if request.runs_dir is not None:
+            parts.extend(["--runs-dir", str(request.runs_dir)])
+        if request.monitor_host:
+            parts.extend(["--host", request.monitor_host])
+        if request.monitor_port is not None:
+            parts.extend(["--port", str(request.monitor_port)])
+        return " ".join(parts)
     if request.module:
         parts.extend(["--module", request.module])
     if request.role_name:

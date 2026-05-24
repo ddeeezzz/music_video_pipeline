@@ -10,14 +10,22 @@
 import argparse
 # 标准库：用于HTML转义
 from html import escape
+# 标准库：用于JSON序列化
+import json
 # 标准库：用于 dataclass 局部替换
 from dataclasses import replace
 # 标准库：用于日志对象
 import logging
 # 标准库：用于路径处理
 from pathlib import Path
+# 标准库：用于子进程执行
+import subprocess
 # 标准库：用于系统退出码
 import sys
+# 标准库：用于时间戳
+import time
+# 标准库：用于轻量命名空间对象
+from types import SimpleNamespace
 # 标准库：用于类型提示
 from typing import Any
 
@@ -30,14 +38,96 @@ install_runtime_noise_filters()
 from music_video_pipeline.command_service import CommandRequest, MvplCommandService
 # 项目内模块：配置加载
 from music_video_pipeline.config import AppConfig, load_config
+# 项目内模块：常量定义
+from music_video_pipeline.constants import TASK_WEB_ENTRY_PAGE_FILE_NAME
 # 项目内模块：日志配置
 from music_video_pipeline.logging_utils import setup_logging
-# 项目内模块：交互式 CLI
-from music_video_pipeline.interactive_cli import run_interactive_cli
-
-
+# 项目内模块：任务音频路径回映射
+from music_video_pipeline.task_audio_path import resolve_task_audio_path
 # 任务监督服务类采用延迟导入，避免交互菜单启动时加载重依赖。
 TaskMonitorService: Any | None = None
+
+# 常量：Web 触发的模块 B 重跑子进程状态文件名。
+ACTIVE_MODULE_B_RERUN_PROCESS_FILE_NAME = "active_module_b_rerun_process.json"
+
+
+def _build_active_module_b_rerun_process_path(*, runs_dir: Path, task_id: str) -> Path:
+    """
+    功能说明：构建模块 B 活跃重跑子进程状态文件路径。
+    参数说明：
+    - runs_dir: runs 根目录。
+    - task_id: 任务唯一标识。
+    返回值：
+    - Path: 状态文件绝对路径。
+    异常说明：无。
+    边界条件：文件固定放在 runs/<task_id>/ 目录下。
+    """
+    return (runs_dir / str(task_id).strip() / ACTIVE_MODULE_B_RERUN_PROCESS_FILE_NAME).resolve()
+
+
+def _persist_active_module_b_rerun_process(
+    *,
+    runs_dir: Path,
+    task_id: str,
+    mode: str,
+    role_name: str,
+    pid: int,
+    shot_id: str = "",
+) -> Path:
+    """
+    功能说明：持久化 Web 触发的模块 B 活跃重跑子进程元信息。
+    参数说明：
+    - runs_dir: runs 根目录。
+    - task_id: 任务唯一标识。
+    - mode: 重跑模式（role/segment）。
+    - role_name: 角色名。
+    - pid: 子进程 PID。
+    - shot_id: 可选 shot_id。
+    返回值：
+    - Path: 写入后的状态文件路径。
+    异常说明：目录不可写时透传异常。
+    边界条件：每次新进程启动都会覆盖旧文件。
+    """
+    process_file_path = _build_active_module_b_rerun_process_path(runs_dir=runs_dir, task_id=task_id)
+    process_file_path.parent.mkdir(parents=True, exist_ok=True)
+    submitted_at_ms = int(time.time() * 1000)
+    payload = {
+        "task_id": str(task_id).strip(),
+        "mode": str(mode).strip(),
+        "role_name": str(role_name).strip(),
+        "shot_id": str(shot_id).strip(),
+        "pid": int(pid),
+        "submitted_at_ms": submitted_at_ms,
+        "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
+    }
+    process_file_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return process_file_path
+
+
+def _clear_active_module_b_rerun_process(*, runs_dir: Path, task_id: str, pid: int) -> None:
+    """
+    功能说明：按 PID 清理模块 B 活跃重跑子进程状态文件。
+    参数说明：
+    - runs_dir: runs 根目录。
+    - task_id: 任务唯一标识。
+    - pid: 当前结束的子进程 PID。
+    返回值：无。
+    异常说明：无；清理失败时静默忽略。
+    边界条件：若文件中的 PID 已被新进程覆盖，则不删除。
+    """
+    process_file_path = _build_active_module_b_rerun_process_path(runs_dir=runs_dir, task_id=task_id)
+    if not process_file_path.exists():
+        return
+    try:
+        payload = json.loads(process_file_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if int(payload.get("pid", 0) or 0) != int(pid):
+        return
+    try:
+        process_file_path.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def main() -> None:
@@ -54,6 +144,8 @@ def main() -> None:
     args = parser.parse_args()
 
     if _should_enter_interactive_mode(args=args):
+        from music_video_pipeline.interactive_cli import run_interactive_cli
+
         interactive_exit_code = run_interactive_cli(
             workspace_root=workspace_root,
             default_config_path=default_config_path,
@@ -66,36 +158,28 @@ def main() -> None:
             sys.exit(interactive_exit_code)
         return
 
-    config_path = _resolve_path(workspace_root=workspace_root, input_path=Path(args.config))
-    config = load_config(config_path=config_path)
-    logger = setup_logging(level=config.logging.level)
-
-    runner = _build_pipeline_runner(
-        workspace_root=workspace_root,
-        config=config,
-        logger=logger,
-    )
     command_failed = False
     try:
+        config_path = _resolve_request_config_path(
+            args=args,
+            workspace_root=workspace_root,
+            default_config_path=default_config_path,
+        )
         request = _build_command_request(
             args=args,
             config_path=config_path,
         )
-        config = _apply_storyboard_template_override(config=config, request=request)
-        summary = _execute_request(
-            request=request,
-            runner=runner,
+        summary = _execute_request_with_loaded_runtime(
             workspace_root=workspace_root,
-            config=config,
-            logger=logger,
+            request=request,
         )
-        logger.info("任务执行摘要：%s", summary)
+        logging.getLogger("SYS").info("任务执行摘要：%s", summary)
     except KeyboardInterrupt:
         command_failed = True
-        logger.warning("命令已被用户中断。")
+        logging.getLogger("SYS").warning("命令已被用户中断。")
     except Exception as error:  # noqa: BLE001
         command_failed = True
-        logger.error("命令执行失败：%s", error)
+        logging.getLogger("SYS").error("命令执行失败：%s", error)
     if command_failed:
         sys.exit(1)
 
@@ -176,26 +260,26 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     b_retry_parser.add_argument("--segment-id", required=True, help="模块B单元标识（等价segment_id）")
     b_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
-    b_role_retry_parser = subparsers.add_parser("b-retry-role", help="按 role 起点重试模块B v2（不自动重建C/D）")
+    b_role_retry_parser = subparsers.add_parser("b-retry-role", help="按 role 起点重试模块B（不自动重建C/D）")
     b_role_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     b_role_retry_parser.add_argument(
         "--role-name",
         required=True,
         choices=["role1", "role2", "role3", "role4"],
-        help="模块B v2 角色名",
+        help="模块B 角色名",
     )
     b_role_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
     b_role_shot_retry_parser = subparsers.add_parser(
         "b-retry-role-shot",
-        help="按 role 内 shot 重试模块B v2（不自动重建C/D）",
+        help="按 role 内 shot 重试模块B（不自动重建C/D）",
     )
     b_role_shot_retry_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     b_role_shot_retry_parser.add_argument(
         "--role-name",
         required=True,
         choices=["role3", "role4"],
-        help="模块B v2 角色名（仅支持 shot 级角色）",
+        help="模块B 角色名（仅支持 shot 级角色）",
     )
     b_role_shot_retry_parser.add_argument("--shot-id", required=True, help="目标 shot_id")
     b_role_shot_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
@@ -218,12 +302,14 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     bcd_retry_parser.add_argument("--segment-id", required=True, help="目标链路segment_id")
     bcd_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
-    monitor_parser = subparsers.add_parser(
-        "monitor",
-        help="手动启动任务监督服务（按需，可省略 --task-id 自动选择最新任务）",
+    web_parser = subparsers.add_parser(
+        "web",
+        help="启动任务 Web 服务（可省略 --task-id 直接进入任务列表）",
     )
-    monitor_parser.add_argument("--task-id", help="任务唯一标识（可选；缺省时自动选择最新任务）")
-    monitor_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
+    web_parser.add_argument("--task-id", help="任务唯一标识（可选；传入时直接打开对应任务）")
+    web_parser.add_argument("--runs-dir", default="runs", help="任务产物根目录（默认: runs）")
+    web_parser.add_argument("--host", default="127.0.0.1", help="Web 服务监听地址（默认: 127.0.0.1）")
+    web_parser.add_argument("--port", type=int, default=45705, help="Web 服务起始监听端口（默认: 45705；占用时自动顺延）")
 
     template_render_parser = subparsers.add_parser(
         "template-render",
@@ -393,9 +479,12 @@ def _build_command_request(
             config_path=config_path,
         )
 
-    if args.command == "monitor":
+    if args.command == "web":
         return CommandRequest(
-            command="monitor",
+            command="web",
+            runs_dir=Path(args.runs_dir),
+            monitor_host=args.host,
+            monitor_port=args.port,
             task_id=args.task_id,
             config_path=config_path,
         )
@@ -437,10 +526,10 @@ def _execute_request(
     返回值：
     - dict: 执行摘要。
     异常说明：下游执行失败时透传异常。
-    边界条件：monitor 命令会走专用 handler。
+    边界条件：web 命令会走专用 handler。
     """
     service_logger = logger if logger is not None else logging.getLogger("SYS")
-    if str(request.command).strip() == "monitor":
+    if str(request.command).strip() == "web":
         return _run_task_monitor_command(
             args=argparse.Namespace(task_id=request.task_id),
             runner=runner,
@@ -456,16 +545,16 @@ def _execute_request(
     return service.execute(request)
 
 
-def _monitor_handler_for_service(task_id: str, runner: Any, logger: Any) -> dict:
+def _monitor_handler_for_service(task_id: str | None, runner: Any, logger: Any) -> dict:
     """
-    功能说明：为命令服务层提供 monitor 兼容桥接。
+    功能说明：为命令服务层提供 web 命令桥接。
     参数说明：
-    - task_id: 任务标识。
+    - task_id: 任务标识；为空时启动通用任务列表页。
     - runner: 流水线调度器。
     - logger: 日志对象。
     返回值：
-    - dict: monitor 执行摘要。
-    异常说明：透传 monitor 执行异常。
+    - dict: web 执行摘要。
+    异常说明：透传 web 执行异常。
     边界条件：通过旧签名函数调用，兼容 monkeypatch 钩子。
     """
     return _run_task_monitor_command(
@@ -486,13 +575,9 @@ def _execute_request_with_loaded_runtime(*, workspace_root: Path, request: Comma
     异常说明：配置加载或执行失败时抛出异常。
     边界条件：每次执行按请求配置独立初始化 logger/runner。
     """
-    config = load_config(config_path=request.config_path)
-    config = _apply_storyboard_template_override(config=config, request=request)
-    logger = setup_logging(level=config.logging.level)
-    runner = _build_pipeline_runner(
+    config, logger, runner = _build_runtime_for_request(
         workspace_root=workspace_root,
-        config=config,
-        logger=logger,
+        request=request,
     )
     return _execute_request(
         request=request,
@@ -501,6 +586,37 @@ def _execute_request_with_loaded_runtime(*, workspace_root: Path, request: Comma
         config=config,
         logger=logger,
     )
+
+
+def _build_runtime_for_request(*, workspace_root: Path, request: CommandRequest) -> tuple[Any, Any, Any]:
+    """
+    功能说明：按命令类型加载运行时对象，供 CLI 与交互式入口复用。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - request: 结构化命令请求。
+    返回值：
+    - tuple[Any, Any, Any]: (config_like, logger, runner_like)。
+    异常说明：配置加载或运行时构建失败时透传异常。
+    边界条件：web 命令走轻量运行时，其余命令走完整 PipelineRunner。
+    """
+    if str(request.command).strip() == "web":
+        logger = setup_logging(level="INFO")
+        runner = _build_web_command_runtime(
+            workspace_root=workspace_root,
+            request=request,
+            logger=logger,
+        )
+        config = getattr(runner, "config", SimpleNamespace())
+    else:
+        config = load_config(config_path=request.config_path)
+        config = _apply_storyboard_template_override(config=config, request=request)
+        logger = setup_logging(level=config.logging.level)
+        runner = _build_pipeline_runner(
+            workspace_root=workspace_root,
+            config=config,
+            logger=logger,
+        )
+    return config, logger, runner
 
 
 def _apply_storyboard_template_override(*, config: AppConfig, request: CommandRequest) -> AppConfig:
@@ -559,7 +675,7 @@ def _run_task_monitor_command(
     logger: Any,
 ) -> dict:
     """
-    功能说明：手动启动任务监督服务（兼容旧签名）。
+    功能说明：手动启动任务 Web 服务（兼容旧签名）。
     参数说明：
     - args: 命令行参数对象。
     - runner: 流水线调度器（提供状态库与 runs_dir）。
@@ -567,8 +683,8 @@ def _run_task_monitor_command(
     返回值：
     - dict: 监督服务摘要信息。
     异常说明：
-    - RuntimeError: task_id 不存在或服务启动失败时抛出。
-    边界条件：服务默认持续运行，直到用户中断（Ctrl+C）或显式停止。
+    - RuntimeError: 显式 task_id 不存在或服务启动失败时抛出。
+    边界条件：未传 task_id 时进入任务列表，不预选具体任务。
     """
     task_id = _resolve_monitor_target_task_id(args=args, runner=runner, logger=logger)
     return _run_task_monitor_command_by_task(
@@ -584,32 +700,19 @@ def _resolve_monitor_target_task_id(
     logger: Any,
 ) -> str:
     """
-    功能说明：解析 monitor 命令实际应监督的任务ID。
+    功能说明：解析 web 命令实际应预选的任务ID。
     参数说明：
     - args: 命令行参数对象。
     - runner: 流水线调度器（提供状态库访问）。
     - logger: 日志对象。
     返回值：
-    - str: 最终用于启动监督服务的任务ID。
-    异常说明：
-    - RuntimeError: 状态库为空且未显式指定 task_id 时抛出。
-    边界条件：未传 task_id 时默认使用 updated_at 最新任务。
+    - str: 最终用于启动服务的任务ID；空字符串表示进入任务列表。
+    异常说明：无。
+    边界条件：未传 task_id 时不自动选择最新任务。
     """
     raw_task_id = getattr(args, "task_id", "")
-    explicit_task_id = str(raw_task_id).strip() if raw_task_id is not None else ""
-    if explicit_task_id:
-        return explicit_task_id
-
-    task_rows = runner.state_store.list_tasks()
-    if not task_rows:
-        raise RuntimeError("monitor 启动失败：当前状态库没有任何任务，请先创建任务或显式指定 --task-id。")
-
-    latest_task_id = str(task_rows[0].get("task_id", "")).strip()
-    if not latest_task_id:
-        raise RuntimeError("monitor 启动失败：最新任务记录缺少有效 task_id，请显式指定 --task-id。")
-
-    logger.info("monitor 未显式指定 task_id，已自动选择最新任务，task_id=%s", latest_task_id)
-    return latest_task_id
+    _ = (runner, logger)
+    return str(raw_task_id).strip() if raw_task_id is not None else ""
 
 
 def _run_task_monitor_command_by_task(
@@ -618,42 +721,49 @@ def _run_task_monitor_command_by_task(
     logger: Any,
 ) -> dict:
     """
-    功能说明：按 task_id 手动启动任务监督服务，并生成任务目录入口页。
+    功能说明：按 task_id 手动启动任务 Web 服务；缺省时进入任务列表页。
     参数说明：
-    - task_id: 任务标识。
+    - task_id: 任务标识；空字符串表示不预选任务。
     - runner: 流水线调度器（提供状态库与 runs_dir）。
     - logger: 日志对象。
     返回值：
     - dict: 监督服务摘要信息。
     异常说明：
-    - RuntimeError: task_id 不存在或服务启动失败时抛出。
-    边界条件：服务默认持续运行，直到用户中断（Ctrl+C）或显式停止。
+    - RuntimeError: 显式 task_id 不存在或服务启动失败时抛出。
+    边界条件：仅在传入 task_id 时写任务目录入口页。
     """
-    if not task_id:
-        raise RuntimeError("monitor 命令缺少 task_id。")
-    if not runner.state_store.get_task(task_id=task_id):
-        raise RuntimeError(f"任务不存在，无法启动监督服务：task_id={task_id}")
+    normalized_task_id = str(task_id).strip()
+    if normalized_task_id and not runner.state_store.get_task(task_id=normalized_task_id):
+        raise RuntimeError(f"任务不存在，无法启动监督服务：task_id={normalized_task_id}")
     monitor_host, monitor_port = _resolve_monitor_host_port(runner=runner)
 
     monitor_service_class = _get_task_monitor_service_class()
     monitor_service = monitor_service_class(
         state_store=runner.state_store,
-        task_id=task_id,
+        task_id=normalized_task_id,
         logger=logger,
-        rerun_handler=runner._rerun_task_from_module_a_for_monitor,
+        rerun_handler=getattr(runner, "_rerun_task_from_module_a_for_monitor", None),
+        module_b_role_rerun_handler=getattr(runner, "_rerun_module_b_role_for_monitor", None),
+        module_b_role_segment_rerun_handler=getattr(runner, "_rerun_module_b_role_segment_for_monitor", None),
+        app_config=getattr(runner, "config", None),
         host=monitor_host,
         port=monitor_port,
         auto_stop_on_terminal=False,
     )
     monitor_service.start()
-    launch_page_path = _write_task_monitor_launch_page(
-        task_dir=runner.runs_dir / task_id,
-        task_id=task_id,
-        monitor_url=monitor_service.monitor_url,
-    )
-    logger.info("任务监督服务已开启（手动模式），task_id=%s，地址=%s", task_id, monitor_service.monitor_url)
-    logger.info("监督入口页已写入：%s", launch_page_path)
-    logger.info("请在浏览器打开任务目录下页面：%s", launch_page_path)
+    launch_page_path: Path | None = None
+    if normalized_task_id:
+        launch_page_path = _write_task_web_entry_page(
+            task_dir=runner.runs_dir / normalized_task_id,
+            task_id=normalized_task_id,
+            monitor_url=monitor_service.monitor_url,
+        )
+        logger.info("任务监督服务已开启（手动模式），task_id=%s，地址=%s", normalized_task_id, monitor_service.monitor_url)
+        logger.info("任务 Web 入口页已写入：%s", launch_page_path)
+        logger.info("请在浏览器打开任务目录下页面：%s", launch_page_path)
+    else:
+        logger.info("任务 Web 服务已开启（手动模式，无默认任务），地址=%s", monitor_service.monitor_url)
+        logger.info("未指定 task_id，当前打开的是任务列表页。")
     logger.info("停止监督服务请按 Ctrl+C")
 
     interrupted_by_user = False
@@ -664,27 +774,30 @@ def _run_task_monitor_command_by_task(
                 break
     except KeyboardInterrupt:
         interrupted_by_user = True
-        logger.info("收到中断信号，正在停止任务监督服务，task_id=%s", task_id)
+        logger.info(
+            "收到中断信号，正在停止任务监督服务，task_id=%s",
+            normalized_task_id if normalized_task_id else "<none>",
+        )
     finally:
         monitor_service.stop()
 
     return {
-        "task_id": task_id,
+        "task_id": normalized_task_id,
         "monitor_url": monitor_service.monitor_url,
-        "launch_page_path": str(launch_page_path),
+        "launch_page_path": str(launch_page_path) if launch_page_path is not None else "",
         "interrupted_by_user": interrupted_by_user,
     }
 
 
 def _resolve_monitor_host_port(*, runner: Any) -> tuple[str, int]:
     """
-    功能说明：解析任务监督服务监听 host/port（优先读取运行配置，缺失时回退默认值）。
+    功能说明：解析任务监督服务监听 host/起始 port（优先读取运行配置，缺失时回退默认值）。
     参数说明：
     - runner: 流水线调度器对象。
     返回值：
-    - tuple[str, int]: (host, port)。
+    - tuple[str, int]: (host, start_port)。
     异常说明：无。
-    边界条件：非法端口值回退到 45705。
+    边界条件：非法端口值回退到 45705，实际绑定时若被占用会自动顺延。
     """
     default_host = "127.0.0.1"
     default_port = 45705
@@ -715,6 +828,268 @@ def _build_pipeline_runner(*, workspace_root: Path, config: AppConfig, logger: A
     return PipelineRunner(workspace_root=workspace_root, config=config, logger=logger)
 
 
+def _build_web_command_runtime(*, workspace_root: Path, request: CommandRequest, logger: Any) -> Any:
+    """
+    功能说明：为 web 命令构建轻量运行时，避免启动时导入完整流水线。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - request: web 命令请求对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 具备 state_store / runs_dir / config / rerun_handler 的轻量对象。
+    异常说明：状态库初始化或回调构建失败时透传异常。
+    边界条件：仅满足任务 Web 服务所需能力。
+    """
+    from music_video_pipeline.state_store import StateStore
+
+    raw_runs_dir = request.runs_dir if request.runs_dir is not None else Path("runs")
+    runs_dir = _resolve_path(workspace_root=workspace_root, input_path=Path(raw_runs_dir))
+    state_store = StateStore(db_path=runs_dir / "pipeline_state.sqlite3")
+    config = load_config(config_path=request.config_path)
+    monitor_host = str(request.monitor_host or "127.0.0.1").strip() or "127.0.0.1"
+    monitor_port = int(request.monitor_port if request.monitor_port is not None else 45705)
+    rerun_handler = _build_web_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
+    module_b_role_rerun_handler = _build_web_module_b_role_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
+    module_b_role_segment_rerun_handler = _build_web_module_b_role_segment_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
+    return SimpleNamespace(
+        config=replace(
+            config,
+            monitoring=replace(
+                config.monitoring,
+                host=monitor_host,
+                port=monitor_port,
+            ),
+        ),
+        runs_dir=runs_dir,
+        state_store=state_store,
+        _rerun_task_from_module_a_for_monitor=rerun_handler,
+        _rerun_module_b_role_for_monitor=module_b_role_rerun_handler,
+        _rerun_module_b_role_segment_for_monitor=module_b_role_segment_rerun_handler,
+    )
+
+
+def _build_web_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """
+    功能说明：为 web 服务中的“生成”按钮构建后台重跑回调。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - state_store: 状态库对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 可被监督服务调用的 task_id -> dict 回调。
+    异常说明：任务缺少必要字段或子进程失败时抛出 RuntimeError。
+    边界条件：实际生成通过独立 CLI 子进程执行，避免阻塞当前服务启动导入链。
+    """
+
+    def _rerun_task_from_module_a_for_web(task_id: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行强制重跑：task_id={task_id}")
+        audio_path_text = str(task_record.get("audio_path", "")).strip()
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not audio_path_text or not config_path_text:
+            raise RuntimeError(f"任务缺少 audio_path 或 config_path，无法执行强制重跑：task_id={task_id}")
+        resolved_audio_path = resolve_task_audio_path(
+            raw_audio_path=audio_path_text,
+            config_path=config_path_text,
+            workspace_roots=[workspace_root],
+        )
+        if str(resolved_audio_path) != audio_path_text:
+            state_store.init_task(task_id=task_id, audio_path=str(resolved_audio_path), config_path=config_path_text)
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "run",
+            "--task-id",
+            task_id,
+            "--audio-path",
+            str(resolved_audio_path),
+            "--config",
+            config_path_text,
+            "--force-module",
+            "A",
+        ]
+        logger.info("Web 服务触发任务强制重跑，task_id=%s，from_module=A，command=%s", task_id, command)
+        completed = subprocess.run(
+            command,
+            cwd=str(workspace_root),
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"任务强制重跑子进程执行失败，task_id={task_id}，exit_code={completed.returncode}")
+        return {
+            "task_id": task_id,
+            "exit_code": completed.returncode,
+            "force_module": "A",
+        }
+
+    return _rerun_task_from_module_a_for_web
+
+
+def _build_web_module_b_role_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """
+    功能说明：为 web 服务中的模块 B role 重跑构建后台回调。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - state_store: 状态库对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 可被监督服务调用的 (task_id, role_name) -> dict 回调。
+    异常说明：任务缺少必要字段或子进程失败时抛出 RuntimeError。
+    边界条件：实际执行通过独立 CLI 子进程完成。
+    """
+
+    def _rerun_module_b_role_for_web(task_id: str, role_name: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行模块B role 重跑：task_id={task_id}")
+        runs_dir = state_store.db_path.parent.resolve()
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            raise RuntimeError(f"任务缺少 config_path，无法执行模块B role 重跑：task_id={task_id}")
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "b-retry-role",
+            "--task-id",
+            task_id,
+            "--role-name",
+            str(role_name).strip(),
+            "--config",
+            config_path_text,
+        ]
+        logger.info("Web 服务触发模块B role 重跑，task_id=%s，role_name=%s，command=%s", task_id, role_name, command)
+        process = subprocess.Popen(
+            command,
+            cwd=str(workspace_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        _persist_active_module_b_rerun_process(
+            runs_dir=runs_dir,
+            task_id=task_id,
+            mode="role",
+            role_name=str(role_name).strip(),
+            pid=int(process.pid),
+        )
+        stdout_text, stderr_text = process.communicate()
+        returncode = process.returncode
+        _clear_active_module_b_rerun_process(runs_dir=runs_dir, task_id=task_id, pid=int(process.pid))
+        if returncode != 0:
+            detail_parts: list[str] = [
+                f"模块B role 重跑子进程执行失败，task_id={task_id}，role_name={role_name}，exit_code={returncode}"
+            ]
+            if stderr_text.strip():
+                detail_parts.append(f"stderr:\n{stderr_text.strip()}")
+            if stdout_text.strip():
+                detail_parts.append(f"stdout:\n{stdout_text.strip()}")
+            raise RuntimeError("\n".join(detail_parts))
+        return {
+            "task_id": task_id,
+            "role_name": str(role_name).strip(),
+            "exit_code": returncode,
+            "pid": int(process.pid),
+        }
+
+    return _rerun_module_b_role_for_web
+
+
+def _build_web_module_b_role_segment_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """
+    功能说明：为 web 服务中的模块 B role 内 shot 重跑构建后台回调。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - state_store: 状态库对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 可被监督服务调用的 (task_id, role_name, shot_id) -> dict 回调。
+    异常说明：任务缺少必要字段或子进程失败时抛出 RuntimeError。
+    边界条件：实际执行通过独立 CLI 子进程完成。
+    """
+
+    def _rerun_module_b_role_segment_for_web(task_id: str, role_name: str, shot_id: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行模块B shot 重跑：task_id={task_id}")
+        runs_dir = state_store.db_path.parent.resolve()
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            raise RuntimeError(f"任务缺少 config_path，无法执行模块B shot 重跑：task_id={task_id}")
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "b-retry-role-shot",
+            "--task-id",
+            task_id,
+            "--role-name",
+            str(role_name).strip(),
+            "--shot-id",
+            str(shot_id).strip(),
+            "--config",
+            config_path_text,
+        ]
+        logger.info(
+            "Web 服务触发模块B shot 重跑，task_id=%s，role_name=%s，shot_id=%s，command=%s",
+            task_id,
+            role_name,
+            shot_id,
+            command,
+        )
+        process = subprocess.Popen(
+            command,
+            cwd=str(workspace_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        _persist_active_module_b_rerun_process(
+            runs_dir=runs_dir,
+            task_id=task_id,
+            mode="segment",
+            role_name=str(role_name).strip(),
+            shot_id=str(shot_id).strip(),
+            pid=int(process.pid),
+        )
+        stdout_text, stderr_text = process.communicate()
+        returncode = process.returncode
+        _clear_active_module_b_rerun_process(runs_dir=runs_dir, task_id=task_id, pid=int(process.pid))
+        if returncode != 0:
+            detail_parts: list[str] = [
+                "模块B shot 重跑子进程执行失败，"
+                f"task_id={task_id}，role_name={role_name}，shot_id={shot_id}，exit_code={returncode}"
+            ]
+            if stderr_text.strip():
+                detail_parts.append(f"stderr:\n{stderr_text.strip()}")
+            if stdout_text.strip():
+                detail_parts.append(f"stdout:\n{stdout_text.strip()}")
+            raise RuntimeError("\n".join(detail_parts))
+        return {
+            "task_id": task_id,
+            "role_name": str(role_name).strip(),
+            "shot_id": str(shot_id).strip(),
+            "exit_code": returncode,
+            "pid": int(process.pid),
+        }
+
+    return _rerun_module_b_role_segment_for_web
+
+
 def _get_task_monitor_service_class() -> Any:
     """
     功能说明：按需加载 TaskMonitorService，兼容测试中的 monkeypatch。
@@ -732,9 +1107,9 @@ def _get_task_monitor_service_class() -> Any:
     return TaskMonitorService
 
 
-def _write_task_monitor_launch_page(task_dir: Path, task_id: str, monitor_url: str) -> Path:
+def _write_task_web_entry_page(task_dir: Path, task_id: str, monitor_url: str) -> Path:
     """
-    功能说明：在任务根目录写入监督入口页，打开后自动跳转到本地监督服务URL。
+    功能说明：在任务根目录写入任务 Web 入口页，打开后自动跳转到本地监督服务URL。
     参数说明：
     - task_dir: 任务目录路径（runs/<task_id>）。
     - task_id: 任务唯一标识。
@@ -742,10 +1117,10 @@ def _write_task_monitor_launch_page(task_dir: Path, task_id: str, monitor_url: s
     返回值：
     - Path: 写入后的入口页路径。
     异常说明：无。
-    边界条件：每次 monitor 启动都会覆盖写入，确保URL端口与当前服务一致。
+    边界条件：每次 web 启动都会覆盖写入，确保URL端口与当前服务一致。
     """
     task_dir.mkdir(parents=True, exist_ok=True)
-    launch_page_path = task_dir / "task_monitor.html"
+    launch_page_path = task_dir / TASK_WEB_ENTRY_PAGE_FILE_NAME
     raw_monitor_url = str(monitor_url)
     safe_task_id = escape(str(task_id), quote=True)
     safe_monitor_url = escape(raw_monitor_url, quote=True)
@@ -754,11 +1129,11 @@ def _write_task_monitor_launch_page(task_dir: Path, task_id: str, monitor_url: s
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>任务监督入口 - {safe_task_id}</title>
+  <title>任务 Web 入口 - {safe_task_id}</title>
   <meta http-equiv="refresh" content="0;url={safe_monitor_url}">
 </head>
 <body>
-  <p>任务监督服务正在跳转中：<a href="{safe_monitor_url}">{safe_monitor_url}</a></p>
+  <p>任务 Web 页面正在跳转中：<a href="{safe_monitor_url}">{safe_monitor_url}</a></p>
   <script>
     (function () {{
       var targetUrl = {raw_monitor_url!r};
@@ -788,3 +1163,27 @@ def _resolve_path(workspace_root: Path, input_path: Path) -> Path:
     if input_path.is_absolute():
         return input_path.resolve()
     return (workspace_root / input_path).resolve()
+
+
+def _resolve_request_config_path(*, args: argparse.Namespace, workspace_root: Path, default_config_path: Path) -> Path:
+    """
+    功能说明：解析命令请求实际使用的配置路径。
+    参数说明：
+    - args: 命令行解析结果。
+    - workspace_root: 项目根目录。
+    - default_config_path: 默认配置文件路径。
+    返回值：
+    - Path: 已解析的配置文件绝对路径。
+    异常说明：无。
+    边界条件：web 命令不依赖配置文件，返回默认配置路径占位即可。
+    """
+    if str(getattr(args, "command", "")).strip() == "web":
+        return default_config_path.resolve()
+    config_text = str(getattr(args, "config", "")).strip()
+    if not config_text:
+        return default_config_path.resolve()
+    return _resolve_path(workspace_root=workspace_root, input_path=Path(config_text))
+
+
+if __name__ == "__main__":
+    main()

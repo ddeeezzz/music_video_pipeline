@@ -104,20 +104,20 @@ def test_command_service_should_use_default_audio_from_config(tmp_path: Path) ->
     result = service.execute(request)
     assert result["kind"] == "run"
     assert runner.calls[0][0] == "run"
-    assert runner.calls[0][1]["audio_path"].endswith("workspace/resources/default_audio.mp3")
+    assert runner.calls[0][1]["audio_path"].replace("\\", "/").endswith("workspace/resources/default_audio.mp3")
 
 
-def test_command_service_should_call_monitor_handler(tmp_path: Path) -> None:
+def test_command_service_should_call_web_handler(tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir(parents=True, exist_ok=True)
     config = _build_test_config(runs_dir=str(tmp_path / "runs"), default_audio="resources/default_audio.mp3")
     runner = _FakeRunner()
 
-    called: list[tuple[str, object, object]] = []
+    called: list[tuple[str | None, object, object]] = []
 
-    def _monitor_handler(task_id: str, monitor_runner, logger) -> dict:  # noqa: ANN001
+    def _monitor_handler(task_id: str | None, monitor_runner, logger) -> dict:  # noqa: ANN001
         called.append((task_id, monitor_runner, logger))
-        return {"kind": "monitor", "task_id": task_id}
+        return {"kind": "web", "task_id": task_id}
 
     service = MvplCommandService(
         runner=runner,  # type: ignore[arg-type]
@@ -127,14 +127,46 @@ def test_command_service_should_call_monitor_handler(tmp_path: Path) -> None:
         monitor_handler=_monitor_handler,
     )
     request = CommandRequest(
-        command="monitor",
+        command="web",
         task_id="task_monitor_001",
         config_path=(workspace_root / "configs" / "default.json").resolve(),
     )
 
     result = service.execute(request)
-    assert result["kind"] == "monitor"
+    assert result["kind"] == "web"
     assert called[0][0] == "task_monitor_001"
+    assert called[0][1] is runner
+    assert called[0][2] == "logger_obj"
+
+
+def test_command_service_should_allow_web_handler_without_task_id(tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    config = _build_test_config(runs_dir=str(tmp_path / "runs"), default_audio="resources/default_audio.mp3")
+    runner = _FakeRunner()
+
+    called: list[tuple[str | None, object, object]] = []
+
+    def _monitor_handler(task_id: str | None, monitor_runner, logger) -> dict:  # noqa: ANN001
+        called.append((task_id, monitor_runner, logger))
+        return {"kind": "web", "task_id": task_id or ""}
+
+    service = MvplCommandService(
+        runner=runner,  # type: ignore[arg-type]
+        workspace_root=workspace_root,
+        config=config,
+        logger="logger_obj",
+        monitor_handler=_monitor_handler,
+    )
+    request = CommandRequest(
+        command="web",
+        task_id=None,
+        config_path=(workspace_root / "configs" / "default.json").resolve(),
+    )
+
+    result = service.execute(request)
+    assert result["kind"] == "web"
+    assert called[0][0] is None
     assert called[0][1] is runner
     assert called[0][2] == "logger_obj"
 

@@ -13,10 +13,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from music_video_pipeline.config import AppConfig
-from music_video_pipeline.template_render_cli import render_center_template
 
 
-MonitorHandler = Callable[[str, Any, Any], dict]
+MonitorHandler = Callable[[str | None, Any, Any], dict]
 
 
 @dataclass(slots=True)
@@ -25,6 +24,9 @@ class CommandRequest:
 
     command: str
     config_path: Path
+    runs_dir: Path | None = None
+    monitor_host: str | None = None
+    monitor_port: int | None = None
     task_id: str | None = None
     audio_path: Path | None = None
     module: str | None = None
@@ -158,16 +160,18 @@ class MvplCommandService:
             segment_id = self._require_text(request.segment_id, field_name="segment_id")
             return self.runner.retry_bcd_segment(task_id=task_id, segment_id=segment_id, config_path=request.config_path)
 
-        if command == "monitor":
+        if command == "web":
             if self.monitor_handler is None:
-                raise RuntimeError("monitor 命令未配置 monitor_handler。")
-            task_id = self._require_text(request.task_id, field_name="task_id")
+                raise RuntimeError("web 命令未配置 monitor_handler。")
             dispatch_logger = self.logger
             if dispatch_logger is None:
-                raise RuntimeError("monitor 命令缺少日志对象。")
-            return self.monitor_handler(task_id, self.runner, dispatch_logger)
+                raise RuntimeError("web 命令缺少日志对象。")
+            normalized_task_id = str(request.task_id or "").strip() or None
+            return self.monitor_handler(normalized_task_id, self.runner, dispatch_logger)
 
         if command == "template-render":
+            from music_video_pipeline.template_render_cli import render_center_template
+
             template_name = str(request.template_name or "").strip() or "center"
             if template_name == "grid":
                 from music_video_pipeline.template_render_cli import render_grid_template

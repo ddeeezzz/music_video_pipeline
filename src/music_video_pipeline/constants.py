@@ -12,3 +12,4 @@ from typing import Final
 MODULE_ORDER: Final[list[str]] = ["A", "B", "C", "D"]
 VALID_MODULES: Final[set[str]] = set(MODULE_ORDER)
 TASK_STATES: Final[set[str]] = {"pending", "running", "done", "failed"}
+TASK_WEB_ENTRY_PAGE_FILE_NAME: Final[str] = "task_web.html"

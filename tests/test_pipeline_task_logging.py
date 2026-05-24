@@ -56,7 +56,7 @@ def test_pipeline_should_write_task_log_for_run_and_resume(tmp_path: Path) -> No
     assert (log_dir / "run_1.log").exists()
     assert "模块A准备执行" in run_logs[-1].read_text(encoding="utf-8")
     run_log_text = run_logs[-1].read_text(encoding="utf-8")
-    assert "任务监督入口页链接=file://" in run_log_text
+    assert "任务 Web 入口页链接=file://" in run_log_text
 
     runner.resume(task_id="task_log_resume", config_path=tmp_path / "config.json")
     resume_logs = sorted(log_dir.glob("resume_*.log"))
@@ -64,7 +64,7 @@ def test_pipeline_should_write_task_log_for_run_and_resume(tmp_path: Path) -> No
     assert (log_dir / "resume_1.log").exists()
     resume_log_text = resume_logs[-1].read_text(encoding="utf-8")
     assert "模块C准备执行" in resume_log_text
-    assert "任务监督入口页链接=file://" in resume_log_text
+    assert "任务 Web 入口页链接=file://" in resume_log_text
 
 
 def test_pipeline_should_write_task_log_for_run_single_module(tmp_path: Path) -> None:
@@ -106,7 +106,7 @@ def test_pipeline_should_write_task_log_for_run_single_module(tmp_path: Path) ->
     assert (log_dir / "run_module_a_1.log").exists()
     single_log_text = single_logs[-1].read_text(encoding="utf-8")
     assert "模块A准备执行" in single_log_text
-    assert "任务监督入口页链接=file://" in single_log_text
+    assert "任务 Web 入口页链接=file://" in single_log_text
 
 
 def test_pipeline_should_generate_incremental_log_name_and_ignore_non_numeric_suffix(tmp_path: Path) -> None:
