@@ -378,13 +378,9 @@ def test_load_config_should_fill_module_b_llm_defaults(tmp_path: Path) -> None:
     assert app_config.module_b.llm.model == "deepseek-ai/DeepSeek-V3.2"
     assert app_config.module_b.llm.api_key_file == ".secrets/siliconflow_api_key.txt"
     assert app_config.module_b.llm.timeout_seconds == 60.0
-    assert app_config.module_b.llm.request_retry_times == 2
-    assert app_config.module_b.llm.json_retry_times is None
-    assert app_config.module_b.llm.get_output_retry_times() == 2
+    assert app_config.module_b.llm.retry_times == 1
     assert app_config.module_b.llm.temperature == 0.30
     assert app_config.module_b.llm.top_p == 0.90
-    assert app_config.module_b.llm.max_tokens == 350
-    assert app_config.module_b.llm.use_response_format_json_object is True
     assert app_config.module_b.llm.scene_desc_max_chars == 120
     assert app_config.module_b.llm.keyframe_prompt_max_chars == 400
     assert app_config.module_b.llm.video_prompt_max_chars == 500
@@ -415,7 +411,6 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
                         "api_key_file": ".secrets/custom_key.txt",
                         "temperature": 0.15,
                         "top_p": 0.85,
-                        "json_retry_times": 4,
                         "scene_desc_max_chars": 80,
                         "prompt_template_file": "configs/prompts/custom_prompt.v1.json",
                         "user_custom_prompt": "赛博朋克女孩",
@@ -433,11 +428,42 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
     assert app_config.module_b.llm.api_key_file == ".secrets/custom_key.txt"
     assert app_config.module_b.llm.temperature == 0.15
     assert app_config.module_b.llm.top_p == 0.85
-    assert app_config.module_b.llm.json_retry_times == 4
     assert app_config.module_b.llm.scene_desc_max_chars == 80
     assert app_config.module_b.llm.video_prompt_max_chars == 500
     assert app_config.module_b.llm.prompt_template_file == "configs/prompts/custom_prompt.v1.json"
     assert app_config.module_b.llm.user_custom_prompt == "赛博朋克女孩"
+
+
+def test_load_config_should_reject_removed_module_b_llm_max_tokens(tmp_path: Path) -> None:
+    """
+    功能说明：验证 module_b.llm.max_tokens 已全局移除，旧配置应明确报错。
+    参数说明：
+    - tmp_path: pytest 提供的临时目录。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：即使其余字段合法，也不能继续兼容该旧字段。
+    """
+    config_path = tmp_path / "config_removed_module_b_llm_max_tokens.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "module_a": {
+                    "funasr_language": "auto",
+                },
+                "module_b": {
+                    "llm": {
+                        "max_tokens": 600,
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TypeError, match="module_b\\.llm\\.max_tokens 已删除"):
+        load_config(config_path=config_path)
 
 
 def test_load_config_should_reject_removed_mode_config(tmp_path: Path) -> None:

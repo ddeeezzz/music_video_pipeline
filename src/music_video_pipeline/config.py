@@ -127,64 +127,46 @@ class ModuleBLlmConfig:
     - prompt_template_file: Prompt模板文件路径（支持相对路径）。
     - user_custom_prompt: 用户自定义提示词（仅用于 user prompt，默认空字符串）。
     - timeout_seconds: 单次请求超时（秒）。
-    - request_retry_times: HTTP 请求重试次数。
-    - output_retry_times: 输出不符合约束时的补救重试次数。
-    - json_retry_times: 旧配置兼容字段，仅用于迁移历史 JSON 输出链路配置。
+    - retry_times: LLM 请求重试次数（网络错误/超时/输出格式不符均走同一重试）。
     - temperature: 采样温度。
     - top_p: 采样 top_p。
-    - max_tokens: 单次输出 token 上限。
-    - use_response_format_json_object: 是否启用 response_format=json_object。
     - scene_desc_max_chars: scene_desc 最大字符数。
     - keyframe_prompt_max_chars: keyframe_prompt 最大字符数。
     - video_prompt_max_chars: video_prompt 最大字符数。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：仅供旧模块 B LLM 工具链复用；主链固定走多角色 v2。
+    边界条件：当前正式链路按自由文本/Markdown 消费模型输出。
     """
 
     provider: str = "siliconflow"
     base_url: str = "https://api.siliconflow.cn/v1"
-    model: str = "deepseek-ai/DeepSeek-V3.2"
+    model: str = "Qwen/Qwen2.5-14B-Instruct"
     api_key_file: str = ".secrets/siliconflow_api_key.txt"
     prompt_template_file: str = ""
     user_custom_prompt: str = ""
     timeout_seconds: float = 60.0
-    request_retry_times: int = 2
-    output_retry_times: int = 2
-    json_retry_times: int | None = None
-    temperature: float = 0.30
+    first_chunk_timeout_seconds: float = 10.0
+    retry_times: int = 1
+    temperature: float = 0.50
     top_p: float = 0.90
-    max_tokens: int = 350
-    use_response_format_json_object: bool = True
+    stream: bool = True
+    enable_thinking: bool = False
     scene_desc_max_chars: int = 120
     keyframe_prompt_max_chars: int = 400
     video_prompt_max_chars: int = 500
 
-    def get_output_retry_times(self) -> int:
-        """
-        功能说明：统一解析输出重试次数，兼容历史 JSON 配置字段。
-        参数说明：无。
-        返回值：
-        - int: 非负整数重试次数。
-        异常说明：无。
-        边界条件：旧字段存在时优先取旧字段，便于老配置平滑迁移。
-        """
-        legacy_retry_times = self.json_retry_times
-        if legacy_retry_times is not None:
-            return max(0, int(legacy_retry_times))
-        return max(0, int(self.output_retry_times))
 
 
 @dataclass(frozen=True)
 class ModuleBConfig:
     """
-    功能说明：定义模块 B v2 的核心配置。
+    功能说明：定义模块 B 的核心配置。
     参数说明：
-    - storyboard_template_file: 模块B v2 编排模板文件路径。
+    - storyboard_template_file: 模块B 编排模板文件路径。
     - llm: 模块 B 真实 LLM 分镜参数。
     返回值：不适用。
     异常说明：不适用。
-    边界条件：模块 B 已固定为 v2 多角色链路，不再暴露旧单元并发/重试配置。
+    边界条件：模块 B 当前由 role1 真实链路与后续占位角色组成。
     """
 
     storyboard_template_file: str = "configs/storyboard_templates/storyboard_template.v1.md"
@@ -397,7 +379,7 @@ class MonitoringConfig:
     功能说明：定义运行时任务监督服务参数。
     参数说明：
     - host: 任务监督服务监听地址。
-    - port: 任务监督服务监听端口（固定端口，默认 45705）。
+    - port: 任务监督服务起始监听端口（默认 45705；占用时自动顺延）。
     - max_wait_after_terminal_minutes: 任务进入终态后，CLI等待监督服务退出的最长分钟数。
     返回值：不适用。
     异常说明：不适用。
@@ -610,12 +592,10 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "prompt_template_file": "",
                 "user_custom_prompt": "",
                 "timeout_seconds": 60.0,
-                "request_retry_times": 2,
-                "output_retry_times": 2,
+                "retry_times": 1,
                 "temperature": 0.30,
                 "top_p": 0.90,
-                "max_tokens": 350,
-                "use_response_format_json_object": True,
+                "stream": True,
                 "scene_desc_max_chars": 120,
                 "keyframe_prompt_max_chars": 400,
                 "video_prompt_max_chars": 500,
@@ -824,6 +804,9 @@ def load_config(config_path: Path) -> AppConfig:
     module_b_llm_data = module_b_data.pop("llm", {})
     if not isinstance(module_b_llm_data, dict):
         raise TypeError("配置错误：module_b.llm 必须是对象。")
+    raw_module_b_llm_data = raw_module_b_data.get("llm", {}) if isinstance(raw_module_b_data.get("llm", {}), dict) else {}
+    if "max_tokens" in raw_module_b_llm_data:
+        raise TypeError("配置错误：module_b.llm.max_tokens 已删除；请从配置文件中移除该字段。")
     storyboard_template_file = str(module_b_data.get("storyboard_template_file", "")).strip()
     if not storyboard_template_file:
         storyboard_template_file = "configs/storyboard_templates/storyboard_template.v1.md"
@@ -836,8 +819,6 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(user_custom_prompt, str):
         user_custom_prompt = str(user_custom_prompt)
     module_b_llm_data["user_custom_prompt"] = user_custom_prompt
-    if "json_retry_times" in module_b_llm_data and "output_retry_times" not in module_b_llm_data:
-        module_b_llm_data["output_retry_times"] = module_b_llm_data.get("json_retry_times", 2)
     module_c_data = dict(merged["module_c"])
     module_c_comfyui_data = module_c_data.pop("comfyui", {})
     if not isinstance(module_c_comfyui_data, dict):
