@@ -9,7 +9,10 @@
 # 标准库：用于日志构造。
 import logging
 # 标准库：用于项目根路径解析。
+import json
 from pathlib import Path
+# 标准库：用于临时目录。
+import tempfile
 
 # 第三方库：用于异常断言。
 import pytest
@@ -65,8 +68,8 @@ def test_role1_generate_should_send_full_user_template_and_return_validated_item
         "- pos_en: slender black cat, pointed ears, thin tail, short fur, tense back line\n"
     )
 
-    def _fake_call_module_b_llm_chat(*, logger, llm_config, messages, project_root):  # type: ignore[no-untyped-def]
-        del logger, llm_config, project_root
+    def _fake_call_module_b_llm_chat(*, logger, llm_config, messages, project_root, **kwargs):  # type: ignore[no-untyped-def]
+        del logger, llm_config, project_root, kwargs
         captured["messages"] = messages
         return response_markdown
 
@@ -102,26 +105,17 @@ def test_role1_generate_should_send_full_user_template_and_return_validated_item
     ]
 
 
-def test_role1_generate_should_retry_when_response_markdown_breaks_contract(monkeypatch) -> None:
+def test_role1_generate_should_raise_on_unparseable_markdown(monkeypatch) -> None:
     """
-    功能说明：验证 role1 在模型返回的 Markdown 不符合契约时会触发重试。
+    功能说明：验证 role1 在模型返回完全不可提取的 Markdown 时直接报错（重试委托给 llm_client 层）。
     参数说明：无。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：第一次返回缺字段、第二次返回合法时应成功收敛。
+    边界条件：generate 不再有内部重试循环，格式失败应直接抛出 RuntimeError。
     """
-    call_count = {"value": 0}
-
-    def _fake_call_module_b_llm_chat(*, logger, llm_config, messages, project_root):  # type: ignore[no-untyped-def]
-        del logger, llm_config, messages, project_root
-        call_count["value"] += 1
-        if call_count["value"] == 1:
-            return "## 少女\n- pos_zh: 水手服少女，黑长直发，细瘦身形，百褶裙\n"
-        return (
-            "## 少女\n"
-            "- pos_zh: 水手服少女，黑长直发，细瘦身形，百褶裙\n"
-            "- pos_en: sailor uniform girl, long straight black hair, slim figure, pleated skirt\n"
-        )
+    def _fake_call_module_b_llm_chat(*, logger, llm_config, messages, project_root, **kwargs):  # type: ignore[no-untyped-def]
+        del logger, llm_config, messages, project_root, kwargs
+        return "只有一段普通文本，没有 ## 标题。"
 
     monkeypatch.setattr(
         "music_video_pipeline.modules.module_b.role1_imagery_describer.call_module_b_llm_chat",
@@ -134,11 +128,8 @@ def test_role1_generate_should_retry_when_response_markdown_breaks_contract(monk
         project_root=project_root,
     )
 
-    result = describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
-
-    assert call_count["value"] == 2
-    assert len(result) == 1
-    assert result[0].imagery_name == "少女"
+    with pytest.raises(RuntimeError, match="role1 执行失败"):
+        describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
 
 
 def test_role1_generate_should_reject_empty_user_template_markdown() -> None:
@@ -158,3 +149,106 @@ def test_role1_generate_should_reject_empty_user_template_markdown() -> None:
 
     with pytest.raises(ValueError, match="user_template_markdown"):
         describer.generate("   ")
+
+
+def test_role1_generate_should_persist_failed_markdown_when_contract_validation_fails(monkeypatch) -> None:
+    """
+    功能说明：验证 role1 完全不可提取时会保留原始 Markdown 与失败原因文件。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：当 retry_times=0 时，首次返回无 ## 条目应直接报错并完成落盘。
+    """
+    response_markdown = "只有一段普通文本，没有任何 ## 标题。"
+
+    def _fake_call_module_b_llm_chat(*, logger, llm_config, messages, project_root, **kwargs):  # type: ignore[no-untyped-def]
+        del logger, llm_config, messages, project_root, kwargs
+        return response_markdown
+
+    monkeypatch.setattr(
+        "music_video_pipeline.modules.module_b.role1_imagery_describer.call_module_b_llm_chat",
+        _fake_call_module_b_llm_chat,
+    )
+    project_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        artifacts_dir = Path(temporary_dir).resolve()
+        describer = Role1ImageryDescriber(
+            logger=logging.getLogger("test_module_b_role1"),
+            llm_config=ModuleBLlmConfig(retry_times=0),
+            project_root=project_root,
+            artifacts_dir=artifacts_dir,
+        )
+
+        with pytest.raises(RuntimeError, match="执行失败"):
+            describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
+
+        raw_output_path = artifacts_dir / "module_b_role1_visual_output.failed.md"
+        reason_path = artifacts_dir / "module_b_role1_visual_output.failed.reason.txt"
+        assert raw_output_path.exists()
+        assert reason_path.exists()
+        assert raw_output_path.read_text(encoding="utf-8").strip() == response_markdown
+        assert "至少包含一个" in reason_path.read_text(encoding="utf-8")
+
+
+def test_role1_generate_should_persist_stream_preview_during_streaming(monkeypatch) -> None:
+    """
+    功能说明：验证 role1 在流式生成时会持续把已收到的文本写入 streaming 预览文件。
+    参数说明：无。
+    返回值：无。
+    异常说明：断言失败时抛 AssertionError。
+    边界条件：当前仅验证单次成功尝试的流式写盘。
+    """
+    response_markdown = (
+        "## 少女\n"
+        "- pos_zh: 水手服少女，黑长直发，细瘦身形，百褶裙\n"
+        "- pos_en: sailor uniform girl, long straight black hair, slim figure, pleated skirt\n"
+    )
+    streamed_chunks = [
+        "## 少女\n",
+        "- pos_zh: 水手服少女，黑长直发，细瘦身形，百褶裙\n",
+        "- pos_en: sailor uniform girl, long straight black hair, slim figure, pleated skirt\n",
+    ]
+
+    def _fake_call_module_b_llm_chat(
+        *,
+        logger,
+        llm_config,
+        messages,
+        project_root,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        del logger, llm_config, messages, project_root
+        on_stream_chunk = kwargs.get("on_stream_chunk")
+        assert callable(on_stream_chunk)
+        aggregated_text = ""
+        for chunk in streamed_chunks:
+            aggregated_text += chunk
+            on_stream_chunk(aggregated_text, chunk)
+        return response_markdown
+
+    monkeypatch.setattr(
+        "music_video_pipeline.modules.module_b.role1_imagery_describer.call_module_b_llm_chat",
+        _fake_call_module_b_llm_chat,
+    )
+    project_root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as temporary_dir:
+        artifacts_dir = Path(temporary_dir).resolve()
+        describer = Role1ImageryDescriber(
+            logger=logging.getLogger("test_module_b_role1"),
+            llm_config=ModuleBLlmConfig(),
+            project_root=project_root,
+            artifacts_dir=artifacts_dir,
+        )
+
+        result = describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
+
+        assert len(result) == 1
+        preview_path = artifacts_dir / "module_b_role1_visual_output.streaming.md"
+        preview_meta_path = artifacts_dir / "module_b_role1_visual_output.streaming.meta.json"
+        assert preview_path.exists()
+        assert preview_meta_path.exists()
+        assert preview_path.read_text(encoding="utf-8") == response_markdown
+        preview_meta = json.loads(preview_meta_path.read_text(encoding="utf-8"))
+        assert preview_meta["current_attempt"] == 1
+        assert int(preview_meta["first_chunk_at_ms"]) > 0
+        assert int(preview_meta["last_chunk_at_ms"]) >= int(preview_meta["first_chunk_at_ms"])

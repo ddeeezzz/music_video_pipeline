@@ -9,6 +9,7 @@
 __all__ = [
     "MultiRoleScriptGenerator",
     "run_module_b",
+    "run_module_b_role1",
     "_enrich_shots_with_segment_meta",
 ]
 
@@ -24,12 +25,17 @@ def __getattr__(name: str):
     - AttributeError: 属性不存在时抛出。
     边界条件：仅支持 __all__ 中声明的导出符号。
     """
-    if name in {"MultiRoleScriptGenerator", "run_module_b"}:
-        from music_video_pipeline.modules.module_b.orchestrator import MultiRoleScriptGenerator, run_module_b
+    if name in {"MultiRoleScriptGenerator", "run_module_b", "run_module_b_role1"}:
+        from music_video_pipeline.modules.module_b.orchestrator import (
+            MultiRoleScriptGenerator,
+            run_module_b,
+            run_module_b_role1,
+        )
 
         exports = {
             "MultiRoleScriptGenerator": MultiRoleScriptGenerator,
             "run_module_b": run_module_b,
+            "run_module_b_role1": run_module_b_role1,
         }
         return exports[name]
     if name == "_enrich_shots_with_segment_meta":
