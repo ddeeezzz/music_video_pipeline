@@ -9,7 +9,7 @@
 # 标准库：用于时间戳生成
 from datetime import datetime, timedelta, timezone
 # 标准库：用于读取模块C单元扩展JSON
-import json
+
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于 SQLite 持久化
@@ -129,6 +129,28 @@ class StateStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (task_id, module_name, unit_id)
                 )
+                """
+            )
+            # migration: 添加帧状态列与 segment_id 列（幂等）
+            for column_name, column_type in [
+                ("frame_status_start", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("frame_status_end", "TEXT NOT NULL DEFAULT 'pending'"),
+                ("segment_id", "TEXT NOT NULL DEFAULT ''"),
+            ]:
+                try:
+                    connection.execute(
+                        f"ALTER TABLE module_unit_runs ADD COLUMN {column_name} {column_type}"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            # backfill: 旧数据从 status 推导帧状态
+            connection.execute(
+                """
+                UPDATE module_unit_runs
+                SET frame_status_start = CASE WHEN status = 'done' THEN 'done' ELSE 'pending' END,
+                    frame_status_end = CASE WHEN status = 'done' THEN 'done' ELSE 'pending' END
+                WHERE frame_status_start = 'pending' AND frame_status_end = 'pending'
+                  AND status = 'done'
                 """
             )
             connection.commit()
@@ -598,7 +620,7 @@ class StateStore:
             raise ValueError(f"非法模块名: {module_name}")
         now_text = _local_now_text()
 
-        normalized_units: list[tuple[str, int, float, float, float]] = []
+        normalized_units: list[tuple[str, int, float, float, float, str]] = []
         for default_index, unit in enumerate(units):
             unit_id = str(unit.get("unit_id", "")).strip()
             if not unit_id:
@@ -607,27 +629,29 @@ class StateStore:
             start_time = float(unit.get("start_time", 0.0))
             end_time = max(start_time, float(unit.get("end_time", start_time)))
             duration = max(0.0, float(unit.get("duration", max(0.5, end_time - start_time))))
-            normalized_units.append((unit_id, unit_index, start_time, end_time, duration))
+            segment_id = str(unit.get("segment_id", "")).strip()
+            normalized_units.append((unit_id, unit_index, start_time, end_time, duration, segment_id))
 
         with self._connect() as connection:
-            for unit_id, unit_index, start_time, end_time, duration in normalized_units:
+            for unit_id, unit_index, start_time, end_time, duration, segment_id in normalized_units:
                 connection.execute(
                     """
                     INSERT INTO module_unit_runs(
-                        task_id, module_name, unit_id, unit_index, start_time, end_time, duration, status, updated_at
+                        task_id, module_name, unit_id, unit_index, start_time, end_time, duration, status, updated_at, segment_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                     ON CONFLICT(task_id, module_name, unit_id) DO UPDATE SET
                         unit_index=excluded.unit_index,
                         start_time=excluded.start_time,
                         end_time=excluded.end_time,
                         duration=excluded.duration,
+                        segment_id=excluded.segment_id,
                         updated_at=excluded.updated_at
                     """,
-                    (task_id, module_name, unit_id, unit_index, start_time, end_time, duration, now_text),
+                    (task_id, module_name, unit_id, unit_index, start_time, end_time, duration, now_text, segment_id),
                 )
 
-            unit_ids = [unit_id for unit_id, _, _, _, _ in normalized_units]
+            unit_ids = [unit_id for unit_id, _, _, _, _, _ in normalized_units]
             if unit_ids:
                 placeholders = ",".join("?" for _ in unit_ids)
                 connection.execute(
@@ -760,6 +784,58 @@ class StateStore:
             )
             connection.commit()
 
+    def set_module_unit_frame_status(
+        self, task_id: str, module_name: str, unit_id: str, frame_type: str, status: str
+    ) -> None:
+        """
+        功能说明：更新模块单元的首帧或尾帧状态，并联动推导 unit 整体 status。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - module_name: 模块名。
+        - unit_id: 单元唯一标识。
+        - frame_type: "start" 或 "end"。
+        - status: pending/running/done/failed。
+        返回值：无。
+        异常说明：
+        - ValueError: frame_type 或 status 非法时抛出。
+        边界条件：两帧都 done → unit done；任一帧 failed → unit failed；其他 → unit running。
+        """
+        if frame_type not in {"start", "end"}:
+            raise ValueError(f"非法 frame_type: {frame_type}")
+        if status not in TASK_STATES:
+            raise ValueError(f"非法帧状态: {status}")
+        now_text = _local_now_text()
+        column_name = f"frame_status_{frame_type}"
+        with self._connect() as connection:
+            connection.execute(
+                f"UPDATE module_unit_runs SET {column_name} = ?, updated_at = ? WHERE task_id = ? AND module_name = ? AND unit_id = ?",
+                (status, now_text, task_id, module_name, unit_id),
+            )
+            # 读取两帧状态推导 unit status
+            row = connection.execute(
+                "SELECT frame_status_start, frame_status_end FROM module_unit_runs WHERE task_id = ? AND module_name = ? AND unit_id = ?",
+                (task_id, module_name, unit_id),
+            ).fetchone()
+            if row is None:
+                connection.commit()
+                return
+            start_status = str(row["frame_status_start"]).strip()
+            end_status = str(row["frame_status_end"]).strip()
+            if start_status == "done" and end_status == "done":
+                derived_status = "done"
+            elif start_status == "failed" or end_status == "failed":
+                derived_status = "failed"
+            elif start_status == "running" or end_status == "running":
+                derived_status = "running"
+            else:
+                derived_status = "pending"
+            finished_at = now_text if derived_status in {"done", "failed"} else ""
+            connection.execute(
+                "UPDATE module_unit_runs SET status = ?, finished_at = CASE WHEN ? = '' THEN finished_at ELSE ? END, updated_at = ? WHERE task_id = ? AND module_name = ? AND unit_id = ?",
+                (derived_status, finished_at, finished_at, now_text, task_id, module_name, unit_id),
+            )
+            connection.commit()
+
     def get_module_unit_record(self, task_id: str, module_name: str, unit_id: str) -> dict[str, Any] | None:
         """
         功能说明：查询单个模块单元的完整状态记录。
@@ -862,6 +938,15 @@ class StateStore:
                 (task_id, module_name),
             ).fetchall()
 
+        # 排除 meta 单元（如 role1-4），不计入业务单元统计
+        detailed_rows = [r for r in detailed_rows if not str(r["unit_id"]).startswith("role")]
+        total_units = len(detailed_rows)
+        status_counts = {status: 0 for status in TASK_STATES}
+        for row in detailed_rows:
+            s = str(row["status"])
+            if s in status_counts:
+                status_counts[s] += 1
+
         pending_unit_ids: list[str] = []
         running_unit_ids: list[str] = []
         failed_unit_ids: list[str] = []
@@ -915,7 +1000,7 @@ class StateStore:
             segment_id = str(b_row.get("unit_id", "")).strip()
             c_shot_id = str(c_row.get("unit_id", "")).strip()
             d_shot_id = str(d_row.get("unit_id", "")).strip()
-            shot_id = c_shot_id or d_shot_id or f"shot_{unit_index + 1:03d}"
+            shot_id = c_shot_id or d_shot_id or segment_id
             b_status = str(b_row.get("status", "pending"))
             c_status = str(c_row.get("status", "pending"))
             d_status = str(d_row.get("status", "pending"))
@@ -1216,24 +1301,25 @@ class StateStore:
                 raise RuntimeError(f"模块单元不存在，无法重置：task_id={task_id}，module={module_name}，unit_id={unit_id}")
             connection.commit()
 
-    def list_module_c_done_frame_items(self, task_id: str) -> list[dict[str, Any]]:
+    def list_module_c_done_frame_items(self, task_id: str, frames_dir: Path | None = None) -> list[dict[str, Any]]:
         """
-        功能说明：读取模块 C 已完成单元并转换为 frame_items 结构。
+        功能说明：读取模块 C 已完成单元并转换为 frame_items 结构（不再依赖 sidecar）。
         参数说明：
         - task_id: 任务唯一标识。
+        - frames_dir: 可选，帧输出目录；未传时从 artifact_path 推导。
         返回值：
         - list[dict[str, Any]]: 按 unit_index 升序排列的 frame_items。
         异常说明：查询失败时抛出 sqlite3.Error。
         边界条件：
-        - 仅返回状态为 done 且有 artifact_path 的单元。
-        - 强制要求每个 done 单元存在 module_c_units sidecar 且满足双关键帧契约。
+        - 仅返回状态为 done 的单元。
+        - 帧路径从 shot_id 命名规范推导：{shot_id}_start.png / {shot_id}_end.png。
         """
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT unit_id, unit_index, artifact_path, start_time, end_time, duration
                 FROM module_unit_runs
-                WHERE task_id = ? AND module_name = 'C' AND status = 'done' AND artifact_path != ''
+                WHERE task_id = ? AND module_name = 'C' AND status = 'done'
                 ORDER BY unit_index ASC
                 """,
                 (task_id,),
@@ -1246,111 +1332,34 @@ class StateStore:
                 end_time = float(row["end_time"])
                 duration = float(row["duration"])
 
-                payload_item = self._load_module_c_unit_payload_item(
-                    artifact_path=artifact_path,
-                    unit_id=shot_id,
-                )
-                if payload_item is None:
-                    raise RuntimeError(
-                        "模块C产物读取失败：缺失双关键帧 sidecar，"
-                        f"task_id={task_id}，shot_id={shot_id}，artifact_path={artifact_path}。"
-                    )
+                if frames_dir is not None:
+                    resolved_frames_dir = frames_dir
+                elif artifact_path:
+                    resolved_frames_dir = Path(artifact_path).parent
+                else:
+                    resolved_frames_dir = None
 
-                frame_path_start = str(payload_item.get("frame_path_start", "")).strip()
-                frame_path_end = str(payload_item.get("frame_path_end", "")).strip()
-                if (not frame_path_start) or (not frame_path_end):
+                if resolved_frames_dir is None:
                     raise RuntimeError(
-                        "模块C产物读取失败：缺失双关键帧字段，"
+                        "模块C产物读取失败：无法定位帧目录，"
                         f"task_id={task_id}，shot_id={shot_id}。"
                     )
-                control_frame_paths_payload = payload_item.get("control_frame_paths")
-                if isinstance(control_frame_paths_payload, list):
-                    normalized_control_frame_paths = [
-                        str(item).strip() for item in control_frame_paths_payload if str(item).strip()
-                    ]
-                else:
-                    normalized_control_frame_paths = []
-                if len(normalized_control_frame_paths) < 2:
-                    raise RuntimeError(
-                        "模块C产物读取失败：control_frame_paths 双锚点数量不足，"
-                        f"task_id={task_id}，shot_id={shot_id}，count={len(normalized_control_frame_paths)}。"
-                    )
-                if (
-                    str(normalized_control_frame_paths[0]) != frame_path_start
-                    or str(normalized_control_frame_paths[-1]) != frame_path_end
-                ):
-                    raise RuntimeError(
-                        "模块C产物读取失败：双关键帧字段不一致，"
-                        f"task_id={task_id}，shot_id={shot_id}，"
-                        f"frame_path_start={frame_path_start}，frame_path_end={frame_path_end}，"
-                        f"control_frame_paths={normalized_control_frame_paths}。"
-                    )
-                frame_path = str(payload_item.get("frame_path", "")).strip() or frame_path_start
 
-                try:
-                    merged_start_time = float(payload_item.get("start_time", start_time))
-                except (TypeError, ValueError):
-                    merged_start_time = start_time
-                try:
-                    merged_end_time = float(payload_item.get("end_time", end_time))
-                except (TypeError, ValueError):
-                    merged_end_time = end_time
-                try:
-                    merged_duration = float(payload_item.get("duration", duration))
-                except (TypeError, ValueError):
-                    merged_duration = duration
+                frame_path_start = str(resolved_frames_dir / f"{shot_id}_start.png")
+                frame_path_end = str(resolved_frames_dir / f"{shot_id}_end.png")
+                frame_path = frame_path_start
 
-                merged_item = {
-                    **payload_item,
+                frame_items.append({
                     "shot_id": shot_id,
                     "frame_path": frame_path,
                     "frame_path_start": frame_path_start,
                     "frame_path_end": frame_path_end,
-                    "control_frame_paths": [
-                        str(normalized_control_frame_paths[0]),
-                        str(normalized_control_frame_paths[-1]),
-                    ],
-                    "start_time": merged_start_time,
-                    "end_time": merged_end_time,
-                    "duration": merged_duration,
-                }
-                frame_items.append(merged_item)
+                    "control_frame_paths": [frame_path_start, frame_path_end],
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "duration": duration,
+                })
             return frame_items
-
-    def _load_module_c_unit_payload_item(self, artifact_path: str, unit_id: str) -> dict[str, Any] | None:
-        """
-        功能说明：根据模块C产物路径定位并读取单元 sidecar payload。
-        参数说明：
-        - artifact_path: module_unit_runs 中记录的产物路径（通常为起始帧）。
-        - unit_id: 模块C单元ID（shot_id）。
-        返回值：
-        - dict[str, Any] | None: 读取成功返回 payload 字典，失败返回 None。
-        异常说明：无，内部吞并解析异常并回退为 None。
-        边界条件：仅当路径层级存在 artifacts 目录时可解析 sidecar 位置。
-        """
-        normalized_artifact_path = str(artifact_path).strip()
-        normalized_unit_id = str(unit_id).strip()
-        if not normalized_artifact_path or not normalized_unit_id:
-            return None
-        artifact_file_path = Path(normalized_artifact_path)
-        artifact_path_parts = artifact_file_path.parts
-        if "artifacts" not in artifact_path_parts:
-            return None
-        artifacts_index = max(
-            index for index, part_text in enumerate(artifact_path_parts) if part_text == "artifacts"
-        )
-        artifacts_dir = Path(*artifact_path_parts[: artifacts_index + 1])
-        payload_path = artifacts_dir / "module_c_units" / f"{normalized_unit_id}.json"
-        if not payload_path.exists():
-            return None
-        try:
-            with payload_path.open("r", encoding="utf-8") as file_obj:
-                payload_data = json.load(file_obj)
-        except Exception:  # noqa: BLE001
-            return None
-        if not isinstance(payload_data, dict):
-            return None
-        return payload_data
 
     def list_module_b_done_shot_items(self, task_id: str) -> list[dict[str, Any]]:
         """

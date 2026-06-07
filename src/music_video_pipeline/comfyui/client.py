@@ -8,6 +8,8 @@
 
 # 标准库：用于数据类声明。
 from dataclasses import dataclass
+# 标准库：用于日志输出。
+import logging
 # 标准库：用于文件复制。
 import shutil
 # 标准库：用于时间轮询。
@@ -21,6 +23,9 @@ from typing import Any
 
 # 第三方库：用于 HTTP 请求。
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -77,9 +82,11 @@ class ComfyUIClient:
         边界条件：只做轻量 GET 探测，不触发执行。
         """
         target_url = f"{self._options.server_url.rstrip('/')}/system_stats"
+        logger.info("ComfyUI 探活开始，url=%s timeout=%.1fs", target_url, self._options.request_timeout_seconds)
         try:
             response = self._session.get(target_url, timeout=self._options.request_timeout_seconds)
             response.raise_for_status()
+            logger.info("ComfyUI 探活成功，status=%s", response.status_code)
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(
                 "ComfyUI 服务不可用，请先启动 ComfyUI API 服务，"
@@ -132,6 +139,13 @@ class ComfyUIClient:
         """
         self.ensure_service_ready()
         prompt_url = f"{self._options.server_url.rstrip('/')}/prompt"
+        logger.info(
+            "ComfyUI prompt 提交开始，url=%s output_node_id=%s timeout=%.1fs node_count=%s",
+            prompt_url,
+            output_node_id,
+            self._options.request_timeout_seconds,
+            len(workflow_prompt),
+        )
         try:
             response = self._session.post(
                 prompt_url,
@@ -140,11 +154,18 @@ class ComfyUIClient:
             )
             response.raise_for_status()
             payload = response.json()
+            logger.info("ComfyUI prompt 提交成功，status=%s payload_keys=%s", response.status_code, sorted(payload.keys()))
+        except requests.exceptions.HTTPError as error:
+            response_body = error.response.text if error.response is not None else ""
+            raise RuntimeError(
+                f"ComfyUI prompt 提交失败：错误={error}，响应体={response_body[:2000]}"
+            ) from error
         except Exception as error:  # noqa: BLE001
             raise RuntimeError(f"ComfyUI prompt 提交失败：错误={error}") from error
         prompt_id = str(payload.get("prompt_id", "")).strip()
         if not prompt_id:
             raise RuntimeError(f"ComfyUI prompt 响应缺失 prompt_id：payload={payload}")
+        logger.info("ComfyUI prompt_id=%s，开始轮询 history", prompt_id)
         return self._wait_for_output_files(prompt_id=prompt_id, output_node_id=output_node_id)
 
     def _wait_for_output_files(self, prompt_id: str, output_node_id: str) -> list[Path]:
@@ -162,12 +183,22 @@ class ComfyUIClient:
         history_url = f"{self._options.server_url.rstrip('/')}/history/{prompt_id}"
         deadline = time.time() + max(self._options.execution_timeout_seconds, 1.0)
         last_payload: Any = None
+        poll_count = 0
         while time.time() < deadline:
+            poll_count += 1
             try:
                 response = self._session.get(history_url, timeout=self._options.request_timeout_seconds)
                 response.raise_for_status()
                 payload = response.json()
                 last_payload = payload
+                if poll_count == 1 or poll_count % 5 == 0:
+                    logger.info(
+                        "ComfyUI history 轮询中，prompt_id=%s poll=%s status=%s payload_type=%s",
+                        prompt_id,
+                        poll_count,
+                        response.status_code,
+                        type(payload).__name__,
+                    )
             except Exception as error:  # noqa: BLE001
                 raise RuntimeError(f"ComfyUI history 查询失败：prompt_id={prompt_id}，错误={error}") from error
 
@@ -178,8 +209,21 @@ class ComfyUIClient:
                     node_output = outputs_payload.get(str(output_node_id))
                     image_files = self._extract_image_files(node_output=node_output)
                     if image_files:
+                        logger.info(
+                            "ComfyUI history 命中输出，prompt_id=%s poll=%s image_count=%s",
+                            prompt_id,
+                            poll_count,
+                            len(image_files),
+                        )
                         return image_files
             time.sleep(max(self._options.poll_interval_seconds, 0.2))
+        logger.error(
+            "ComfyUI history 超时，prompt_id=%s output_node_id=%s poll_count=%s last_payload=%s",
+            prompt_id,
+            output_node_id,
+            poll_count,
+            last_payload,
+        )
         raise RuntimeError(
             "ComfyUI 执行超时或未产生输出，"
             f"prompt_id={prompt_id}，output_node_id={output_node_id}，last_payload={last_payload}"

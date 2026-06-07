@@ -103,8 +103,10 @@ export type CenterTemplateRequest = {
   duration_in_frames: number;
   bpm: number;
   background: BackgroundRequest;
-  symbol: SymbolRequest;
+  frames: SymbolRequest[];
   motion: CenterMotionRequest;
+  energy_level?: "low" | "mid" | "high";
+  rhythm_tension?: number;
 };
 
 /**
@@ -144,7 +146,7 @@ export type GridTemplateRequest = {
   duration_in_frames: number;
   bpm: number;
   background: BackgroundRequest;
-  symbols: [SymbolRequest, SymbolRequest, SymbolRequest];
+  slots: Array<{frames: SymbolRequest[]}>;
   layout: GridLayoutRequest;
   motion: GridMotionRequest;
 };
@@ -185,7 +187,78 @@ export type ScrollTemplateRequest = {
   duration_in_frames: number;
   bpm: number;
   background: BackgroundRequest;
-  symbols: [SymbolRequest, SymbolRequest, SymbolRequest];
+  slots: Array<{frames: SymbolRequest[]}>;
   layout: ScrollLayoutRequest;
   motion: ScrollMotionRequest;
+};
+
+/**
+ * 功能说明：定义转场中的一个场景（独立背景 + 独立符号）。
+ */
+export type TransitionSceneRequest = {
+  background: BackgroundRequest;
+  symbol: SymbolRequest;
+};
+
+/**
+ * 功能说明：定义镜头推移类模板的运动参数。
+ * 参数说明：无。
+ * 返回值：不适用。
+ * 异常说明：不适用。
+ * 边界条件：travel_px 控制镜头移动的像素距离；easing 控制缓动曲线类型。
+ */
+export type PanMotionRequest = {
+  travel_px: number;
+  easing: "ease_in_out" | "ease_out" | "ease_in";
+};
+
+/**
+ * 功能说明：定义 TiltUpTemplate 的正式请求结构（镜头上移，地面→天空）。
+ * 镜头向上移动 → 旧场景下移出画、新场景从上方进入。
+ */
+export type TiltUpTemplateRequest = {
+  template: "tilt_up";
+  fps: number;
+  duration_in_frames: number;
+  bpm: number;
+  scene_before: TransitionSceneRequest;
+  scene_after: TransitionSceneRequest;
+  motion: PanMotionRequest;
+  frames?: SymbolRequest[];
+  energy_level?: "low" | "mid" | "high";
+  rhythm_tension?: number;
+};
+
+/**
+ * 功能说明：定义 TiltDownTemplate 的正式请求结构（镜头下移，天空→地面）。
+ * 镜头向下移动 → 旧场景上移出画、新场景从下方进入。
+ */
+export type TiltDownTemplateRequest = {
+  template: "tilt_down";
+  fps: number;
+  duration_in_frames: number;
+  bpm: number;
+  scene_before: TransitionSceneRequest;
+  scene_after: TransitionSceneRequest;
+  motion: PanMotionRequest;
+  frames?: SymbolRequest[];
+  energy_level?: "low" | "mid" | "high";
+  rhythm_tension?: number;
+};
+
+/**
+ * 功能说明：定义 PanRightTemplate 的正式请求结构（镜头右移，"下一个"）。
+ * 镜头向右移动 → 旧场景左移出画、新场景从右方进入。
+ */
+export type PanRightTemplateRequest = {
+  template: "pan_right";
+  fps: number;
+  duration_in_frames: number;
+  bpm: number;
+  scene_before: TransitionSceneRequest;
+  scene_after: TransitionSceneRequest;
+  motion: PanMotionRequest;
+  frames?: SymbolRequest[];
+  energy_level?: "low" | "mid" | "high";
+  rhythm_tension?: number;
 };

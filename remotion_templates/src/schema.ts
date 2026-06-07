@@ -44,10 +44,12 @@ export const centerTemplateSchema = z.object({
   duration_in_frames: z.number().int().positive(),
   bpm: z.number().positive(),
   background: backgroundRequestSchema,
-  symbol: symbolRequestSchema,
+  frames: z.array(symbolRequestSchema),
   motion: z.object({
     breathe: z.boolean()
-  })
+  }),
+  energy_level: z.enum(["low", "mid", "high"]).optional(),
+  rhythm_tension: z.number().min(0).max(1).optional(),
 });
 
 /**
@@ -63,7 +65,9 @@ export const gridTemplateSchema = z.object({
   duration_in_frames: z.number().int().positive(),
   bpm: z.number().positive(),
   background: backgroundRequestSchema,
-  symbols: z.tuple([symbolRequestSchema, symbolRequestSchema, symbolRequestSchema]),
+  slots: z.array(z.object({
+    frames: z.array(symbolRequestSchema),
+  })),
   layout: z.object({
     visible_cell_count: z.number().int().positive()
   }),
@@ -71,7 +75,7 @@ export const gridTemplateSchema = z.object({
     active_ratio: z.number().gt(0).lte(1),
     overshoot_ratio: z.number().min(0),
     enter_distance: z.number().min(0)
-  })
+  }),
 });
 
 /**
@@ -87,7 +91,9 @@ export const scrollTemplateSchema = z.object({
   duration_in_frames: z.number().int().positive(),
   bpm: z.number().positive(),
   background: backgroundRequestSchema,
-  symbols: z.tuple([symbolRequestSchema, symbolRequestSchema, symbolRequestSchema]),
+  slots: z.array(z.object({
+    frames: z.array(symbolRequestSchema),
+  })),
   layout: z.object({
     visible_cell_count: z.number().int().positive()
   }),
@@ -101,5 +107,69 @@ export const scrollTemplateSchema = z.object({
         message: "loop=false 时不应传入 loop_beats。"
       });
     }
-  })
+  }),
+});
+
+/**
+ * 功能说明：定义转场场景的通用 schema（独立背景 + 独立符号）。
+ */
+const transitionSceneSchema = z.object({
+  background: backgroundRequestSchema,
+  symbol: symbolRequestSchema
+});
+
+/**
+ * 功能说明：定义镜头推移类模板的通用 motion schema。
+ */
+const panMotionSchema = z.object({
+  travel_px: z.number().min(0).default(80),
+  easing: z.enum(["ease_in_out", "ease_out", "ease_in"]).default("ease_in_out")
+});
+
+/**
+ * 功能说明：定义 TiltUpTemplate 的 props schema（镜头上移）。
+ */
+export const tiltUpTemplateSchema = z.object({
+  template: z.literal("tilt_up"),
+  fps: z.number().int().positive(),
+  duration_in_frames: z.number().int().positive(),
+  bpm: z.number().positive(),
+  scene_before: transitionSceneSchema,
+  scene_after: transitionSceneSchema,
+  motion: panMotionSchema,
+  frames: z.array(symbolRequestSchema).optional(),
+  energy_level: z.enum(["low", "mid", "high"]).optional(),
+  rhythm_tension: z.number().min(0).max(1).optional(),
+});
+
+/**
+ * 功能说明：定义 TiltDownTemplate 的 props schema（镜头下移）。
+ */
+export const tiltDownTemplateSchema = z.object({
+  template: z.literal("tilt_down"),
+  fps: z.number().int().positive(),
+  duration_in_frames: z.number().int().positive(),
+  bpm: z.number().positive(),
+  scene_before: transitionSceneSchema,
+  scene_after: transitionSceneSchema,
+  motion: panMotionSchema,
+  frames: z.array(symbolRequestSchema).optional(),
+  energy_level: z.enum(["low", "mid", "high"]).optional(),
+  rhythm_tension: z.number().min(0).max(1).optional(),
+});
+
+/**
+ * 功能说明：定义 PanRightTemplate 的 props schema（镜头右移）。
+ */
+export const panRightTemplateSchema = z.object({
+  template: z.literal("pan_right"),
+  fps: z.number().int().positive(),
+  duration_in_frames: z.number().int().positive(),
+  bpm: z.number().positive(),
+  scene_before: transitionSceneSchema,
+  scene_after: transitionSceneSchema,
+  motion: panMotionSchema,
+  frames: z.array(symbolRequestSchema).optional(),
+  energy_level: z.enum(["low", "mid", "high"]).optional(),
+  rhythm_tension: z.number().min(0).max(1).optional(),
 });

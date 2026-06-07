@@ -48,23 +48,12 @@ const getTranslateX = (
   return -travelDistance * progress;
 };
 
-/**
- * 功能说明：构建双份连续条带的符号列表。
- * 参数说明：
- * - props: ScrollTemplate 正式请求。
- * 返回值：
- * - string[]：展开后的双份符号路径数组。
- * 异常说明：无。
- * 边界条件：当前固定为三元素，两份拼接形成无缝循环的最小实现。
- */
-const getLoopedSymbolSrcList = (props: ScrollTemplateRequest): string[] => {
-  return [...props.symbols, ...props.symbols].map((symbol) => symbol.src);
-};
-
 // 常量：模板画布固定宽度，和 Tooncrafter 推荐分辨率对齐。
 const TEMPLATE_WIDTH = 512;
 // 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
 const TEMPLATE_HEIGHT = 320;
+// 常量：模板自然动画帧数（保持不变速）。
+const NATURAL_FRAMES = 144;
 // 常量：循环模式默认单轮跨越拍数，后续可继续改为音频特征直接驱动。
 const DEFAULT_LOOP_BEATS = 4;
 
@@ -79,28 +68,42 @@ const DEFAULT_LOOP_BEATS = 4;
  */
 export const ScrollTemplate = (props: ScrollTemplateRequest): ReactElement => {
   const frame = useCurrentFrame();
-  const symbolSrcList = getLoopedSymbolSrcList(props);
+  // 保持自然速度：动画帧 clamped 到 NATURAL_FRAMES，之后维持末帧
+  const animFrame = Math.min(frame, NATURAL_FRAMES - 1);
+
+  // 每个 slot 独立从 frames 数组按进度取当前帧
+  const currentSrcAt = (index: number): string => {
+    const slotFrames = props.slots[index]?.frames ?? [];
+    if (slotFrames.length <= 1) return slotFrames[0]?.src ?? "";
+    const progress = animFrame / Math.max(1, props.duration_in_frames);
+    return slotFrames[Math.min(Math.floor(progress * slotFrames.length), slotFrames.length - 1)].src;
+  };
+
   const visibleCellCount = Math.max(1, props.layout.visible_cell_count);
   const cellWidth = TEMPLATE_WIDTH / visibleCellCount;
   const slotWidth = cellWidth;
   const step = slotWidth;
-  const firstStripWidth = step * props.symbols.length;
-  const totalWidth = step * symbolSrcList.length;
+  const firstStripWidth = step * props.slots.length;
+  const loopedSrcList = [
+    ...props.slots.map((_, i) => currentSrcAt(i)),
+    ...props.slots.map((_, i) => currentSrcAt(i)),
+  ];
+  const totalWidth = step * loopedSrcList.length;
   const baseLeft = (TEMPLATE_WIDTH - firstStripWidth) / 2;
-  const topList = props.symbols.map(
-    (symbol) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * symbol.height_ratio) / 2
+  const topList = props.slots.map(
+    (slot) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52)) / 2
   );
-  const widthList = props.symbols.map((symbol) => TEMPLATE_WIDTH * symbol.width_ratio);
-  const heightList = props.symbols.map((symbol) => TEMPLATE_HEIGHT * symbol.height_ratio);
-  const leftList = symbolSrcList.map((_, index) => baseLeft + index * step);
+  const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.26));
+  const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52));
+  const leftList = loopedSrcList.map((_, index) => baseLeft + index * step);
   const loopBeats = props.motion.loop_beats ?? DEFAULT_LOOP_BEATS;
   const loopDurationInFrames = Math.max(
     1,
     Math.round((loopBeats * 60 * props.fps) / Math.max(0.001, props.bpm))
   );
   const translateX = getTranslateX(
-    frame,
-    props.duration_in_frames,
+    animFrame,
+    NATURAL_FRAMES,
     firstStripWidth,
     props.motion.loop,
     loopDurationInFrames
@@ -111,7 +114,8 @@ export const ScrollTemplate = (props: ScrollTemplateRequest): ReactElement => {
       style={{
         width: TEMPLATE_WIDTH,
         height: TEMPLATE_HEIGHT,
-        overflow: "hidden"
+        overflow: "hidden",
+        filter: "grayscale(100%)"
       }}
     >
       <BackgroundLayer background={props.background} />
@@ -123,7 +127,7 @@ export const ScrollTemplate = (props: ScrollTemplateRequest): ReactElement => {
         }}
       >
         <SymbolStripLayer
-          symbolSrcList={symbolSrcList}
+          symbolSrcList={loopedSrcList}
           leftList={leftList}
           top={0}
           width={slotWidth}

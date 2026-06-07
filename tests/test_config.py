@@ -375,17 +375,15 @@ def test_load_config_should_fill_module_b_llm_defaults(tmp_path: Path) -> None:
     app_config = load_config(config_path=config_path)
     assert app_config.module_b.llm.provider == "siliconflow"
     assert app_config.module_b.llm.base_url == "https://api.siliconflow.cn/v1"
-    assert app_config.module_b.llm.model == "deepseek-ai/DeepSeek-V3.2"
+    assert app_config.module_b.llm.model == "Qwen/Qwen2.5-32B-Instruct"
     assert app_config.module_b.llm.api_key_file == ".secrets/siliconflow_api_key.txt"
     assert app_config.module_b.llm.timeout_seconds == 60.0
     assert app_config.module_b.llm.retry_times == 1
-    assert app_config.module_b.llm.temperature == 0.30
+    assert app_config.module_b.llm.temperature == 0.70
     assert app_config.module_b.llm.top_p == 0.90
-    assert app_config.module_b.llm.scene_desc_max_chars == 120
-    assert app_config.module_b.llm.keyframe_prompt_max_chars == 400
-    assert app_config.module_b.llm.video_prompt_max_chars == 500
     assert app_config.module_b.llm.prompt_template_file == ""
     assert app_config.module_b.llm.user_custom_prompt == ""
+    assert app_config.module_b.llm.max_tokens == 8192
 
 
 def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> None:
@@ -411,7 +409,6 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
                         "api_key_file": ".secrets/custom_key.txt",
                         "temperature": 0.15,
                         "top_p": 0.85,
-                        "scene_desc_max_chars": 80,
                         "prompt_template_file": "configs/prompts/custom_prompt.v1.json",
                         "user_custom_prompt": "赛博朋克女孩",
                     },
@@ -428,22 +425,20 @@ def test_load_config_should_accept_module_b_llm_overrides(tmp_path: Path) -> Non
     assert app_config.module_b.llm.api_key_file == ".secrets/custom_key.txt"
     assert app_config.module_b.llm.temperature == 0.15
     assert app_config.module_b.llm.top_p == 0.85
-    assert app_config.module_b.llm.scene_desc_max_chars == 80
-    assert app_config.module_b.llm.video_prompt_max_chars == 500
     assert app_config.module_b.llm.prompt_template_file == "configs/prompts/custom_prompt.v1.json"
     assert app_config.module_b.llm.user_custom_prompt == "赛博朋克女孩"
 
 
-def test_load_config_should_reject_removed_module_b_llm_max_tokens(tmp_path: Path) -> None:
+def test_load_config_should_accept_module_b_llm_max_tokens(tmp_path: Path) -> None:
     """
-    功能说明：验证 module_b.llm.max_tokens 已全局移除，旧配置应明确报错。
+    功能说明：验证 module_b.llm.max_tokens 可正常配置并被解析。
     参数说明：
     - tmp_path: pytest 提供的临时目录。
     返回值：无。
     异常说明：断言失败时抛 AssertionError。
-    边界条件：即使其余字段合法，也不能继续兼容该旧字段。
+    边界条件：未显式配置时使用默认值 8192。
     """
-    config_path = tmp_path / "config_removed_module_b_llm_max_tokens.json"
+    config_path = tmp_path / "config_module_b_llm_max_tokens.json"
     config_path.write_text(
         json.dumps(
             {
@@ -462,8 +457,9 @@ def test_load_config_should_reject_removed_module_b_llm_max_tokens(tmp_path: Pat
         encoding="utf-8",
     )
 
-    with pytest.raises(TypeError, match="module_b\\.llm\\.max_tokens 已删除"):
-        load_config(config_path=config_path)
+    app_config = load_config(config_path=config_path)
+    assert app_config.module_b.llm.max_tokens == 600
+    assert app_config.module_b.llm.model == "Qwen/Qwen2.5-32B-Instruct"  # 未指定则用默认
 
 
 def test_load_config_should_reject_removed_mode_config(tmp_path: Path) -> None:

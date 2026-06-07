@@ -30,4 +30,4 @@ if (-not (Test-Path -LiteralPath $mainPath)) {
 }
 
 Set-Location -LiteralPath $comfyRootResolved
-& $pythonPath $mainPath --listen 127.0.0.1 --port $Port
+& $pythonPath $mainPath --listen 127.0.0.1 --port $Port --normalvram

@@ -21,6 +21,11 @@ import pytest
 from music_video_pipeline.config import ModuleBLlmConfig
 # 项目内模块：提供 prompt 模板 section 解析函数。
 from music_video_pipeline.modules.module_b.prompt_templates import parse_prompt_sections
+# 项目内模块：提供模块 B role 路径辅助。
+from music_video_pipeline.modules.module_b.artifact_paths import (
+    get_module_b_role_dir,
+    get_module_b_streaming_dir,
+)
 # 项目内模块：提供 role1 视觉描述生成器。
 from music_video_pipeline.modules.module_b.role1_imagery_describer import Role1ImageryDescriber
 
@@ -182,8 +187,9 @@ def test_role1_generate_should_persist_failed_markdown_when_contract_validation_
         with pytest.raises(RuntimeError, match="执行失败"):
             describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
 
-        raw_output_path = artifacts_dir / "module_b_role1_visual_output.failed.md"
-        reason_path = artifacts_dir / "module_b_role1_visual_output.failed.reason.txt"
+        role1_dir = get_module_b_role_dir(artifacts_dir, "role1")
+        raw_output_path = role1_dir / "module_b_role1_visual_output.failed.md"
+        reason_path = role1_dir / "module_b_role1_visual_output.failed.reason.txt"
         assert raw_output_path.exists()
         assert reason_path.exists()
         assert raw_output_path.read_text(encoding="utf-8").strip() == response_markdown
@@ -243,8 +249,9 @@ def test_role1_generate_should_persist_stream_preview_during_streaming(monkeypat
         result = describer.generate("## 故事\n故事\n\n## 意象\n少女：水手服少女。")
 
         assert len(result) == 1
-        preview_path = artifacts_dir / "module_b_role1_visual_output.streaming.md"
-        preview_meta_path = artifacts_dir / "module_b_role1_visual_output.streaming.meta.json"
+        streaming_dir = get_module_b_streaming_dir(artifacts_dir, "role1")
+        preview_path = streaming_dir / "module_b_role1_visual_output.streaming.md"
+        preview_meta_path = streaming_dir / "module_b_role1_visual_output.streaming.meta.json"
         assert preview_path.exists()
         assert preview_meta_path.exists()
         assert preview_path.read_text(encoding="utf-8") == response_markdown

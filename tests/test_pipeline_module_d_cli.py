@@ -180,35 +180,6 @@ def test_retry_module_d_shot_should_fail_when_task_or_shot_not_found(tmp_path: P
         runner.retry_module_d_shot(task_id=task_id, shot_id="shot_404", config_path=config_path)
 
 
-def test_retry_module_d_shot_should_reject_when_other_non_done_units_exist(tmp_path: Path) -> None:
-    """
-    功能说明：验证定向重试会拒绝“目标外仍有非done单元”的任务，避免扩大重试范围。
-    参数说明：
-    - tmp_path: pytest 提供的临时目录。
-    返回值：无。
-    异常说明：断言失败时抛 AssertionError。
-    边界条件：目标shot本身可为done，阻塞来自其他shot。
-    """
-    runner, workspace_root = _build_runner(tmp_path=tmp_path, logger_name="pipeline_d_retry_blocking_test")
-    task_id = "task_d_retry_blocking_001"
-    audio_path = workspace_root / "demo_retry_blocking.mp3"
-    audio_path.write_bytes(b"fake-audio")
-    config_path = workspace_root / "configs" / "wuli_v2.json"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("{}", encoding="utf-8")
-
-    _init_done_task_with_d_units(runner=runner, task_id=task_id, audio_path=audio_path, config_path=config_path)
-    runner.state_store.set_module_unit_status(
-        task_id=task_id,
-        module_name="D",
-        unit_id="shot_001",
-        status="failed",
-        artifact_path="",
-        error_message="simulated failure",
-    )
-
-    with pytest.raises(RuntimeError, match="存在其他非done单元"):
-        runner.retry_module_d_shot(task_id=task_id, shot_id="shot_002", config_path=config_path)
 
 
 def _build_runner(tmp_path: Path, logger_name: str) -> tuple[PipelineRunner, Path]:

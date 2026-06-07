@@ -19,6 +19,7 @@ class ModuleCUnit:
     参数说明：
     - unit_id: 单元唯一标识（等价 shot_id）。
     - unit_index: 单元顺序索引（0 基）。
+    - segment_id: 所属大段标识。
     - shot: 原始分镜数据。
     - start_time: 分镜起始时间（秒）。
     - end_time: 分镜结束时间（秒）。
@@ -30,6 +31,7 @@ class ModuleCUnit:
 
     unit_id: str
     unit_index: int
+    segment_id: str
     shot: dict[str, Any]
     start_time: float
     end_time: float
@@ -60,10 +62,12 @@ def build_module_c_units(shots: list[dict[str, Any]]) -> list[ModuleCUnit]:
         start_time = float(shot["start_time"])
         end_time = float(shot["end_time"])
         duration = round(max(0.5, end_time - start_time), 3)
+        segment_id = str(shot.get("segment_id", "")).strip()
         units.append(
             ModuleCUnit(
                 unit_id=unit_id,
                 unit_index=shot_index,
+                segment_id=segment_id,
                 shot=dict(shot),
                 start_time=start_time,
                 end_time=end_time,
@@ -87,6 +91,7 @@ def build_unit_sync_payload(units: list[ModuleCUnit]) -> list[dict[str, Any]]:
         {
             "unit_id": unit.unit_id,
             "unit_index": unit.unit_index,
+            "segment_id": unit.segment_id,
             "start_time": unit.start_time,
             "end_time": unit.end_time,
             "duration": unit.duration,

@@ -662,18 +662,6 @@ class PipelineRunner:
                     f"模块B定向重试失败：segment_id 不存在或尚未建立单元状态，task_id={task_id}，segment_id={normalized_segment_id}"
                 )
 
-            non_done_units = self.state_store.list_module_units_by_status(
-                task_id=task_id,
-                module_name="B",
-                statuses=["pending", "running", "failed"],
-            )
-            blocking_unit_ids = [str(item["unit_id"]) for item in non_done_units if str(item["unit_id"]) != normalized_segment_id]
-            if blocking_unit_ids:
-                raise RuntimeError(
-                    "模块B定向重试被拒绝：存在其他非done单元，请先清理后再重试。"
-                    f"task_id={task_id}，blocking_unit_ids={blocking_unit_ids}"
-                )
-
             self.state_store.reset_module_unit(
                 task_id=task_id,
                 module_name="B",
@@ -711,8 +699,6 @@ class PipelineRunner:
         normalized_role_name = str(role_name).strip().lower()
         if not normalized_role_name:
             raise RuntimeError("role_name 不能为空。")
-        if normalized_role_name != "role1":
-            raise RuntimeError(f"模块B角色级重试当前仅接通 role1，暂不支持 {normalized_role_name}。")
         task_record = self.state_store.get_task(task_id=task_id)
         if not task_record:
             raise RuntimeError(f"任务不存在，无法重试模块B角色：task_id={task_id}")
@@ -731,21 +717,52 @@ class PipelineRunner:
                     f"模块B角色级重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
                 )
 
-            from music_video_pipeline.modules.module_b import run_module_b_role1
+            if normalized_role_name == "role1":
+                from music_video_pipeline.modules.module_b import run_module_b_role1
 
-            role1_output_path = run_module_b_role1(context)
+                role_output_path = run_module_b_role1(context)
+                self.state_store.set_module_unit_status(
+                    task_id=task_id, module_name="B", unit_id="role1", status="done"
+                )
+            elif normalized_role_name == "role2":
+                from music_video_pipeline.modules.module_b import run_module_b_role2
+
+                role_output_path = run_module_b_role2(context)
+                self.state_store.set_module_unit_status(
+                    task_id=task_id, module_name="B", unit_id="role2", status="done"
+                )
+            elif normalized_role_name == "role3":
+                from music_video_pipeline.modules.module_b import run_module_b_role3
+
+                role_output_path = run_module_b_role3(context)
+                self.state_store.set_module_unit_status(
+                    task_id=task_id, module_name="B", unit_id="role3", status="done"
+                )
+            elif normalized_role_name == "role4":
+                from music_video_pipeline.modules.module_b import run_module_b_role4
+
+                role_output_path = run_module_b_role4(context)
+                self.state_store.set_module_unit_status(
+                    task_id=task_id, module_name="B", unit_id="role4", status="done"
+                )
+                self.state_store.set_module_status(
+                    task_id=task_id, module_name="B", status="done", artifact_path=str(role_output_path)
+                )
+            else:
+                raise RuntimeError(f"未知模块B角色：{normalized_role_name}")
+
             self.logger.info(
                 "模块B角色级重试完成，未触发模块B聚合输出刷新，task_id=%s，role_name=%s，artifact=%s",
                 task_id,
                 normalized_role_name,
-                role1_output_path,
+                role_output_path,
             )
 
             latest_task_record = self.state_store.get_task(task_id=task_id) or {}
             output_video_path = Path(str(latest_task_record.get("output_video_path", "")))
             summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
             summary["retry_role_name"] = normalized_role_name
-            summary["role_artifact_path"] = str(role1_output_path)
+            summary["role_artifact_path"] = str(role_output_path)
             summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
             summary["downstream_rebuild_required"] = False
             summary["rebuild_from_module"] = ""
@@ -788,6 +805,45 @@ class PipelineRunner:
                     f"模块B角色内 shot 重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
                 )
 
+            if normalized_role_name == "role4":
+                from music_video_pipeline.modules.module_b import run_module_b_role4_shot
+
+                shot_output_path = run_module_b_role4_shot(context, normalized_shot_id)
+                self.logger.info(
+                    "模块B role4 shot 重试完成，task_id=%s，shot_id=%s，artifact=%s",
+                    task_id,
+                    normalized_shot_id,
+                    shot_output_path,
+                )
+                summary = self._build_summary(task_id=task_id, output_video_path=Path(""))
+                summary["retry_role_name"] = normalized_role_name
+                summary["retry_shot_id"] = normalized_shot_id
+                summary["retry_segment_id"] = ""
+                summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
+                summary["downstream_rebuild_required"] = False
+                summary["rebuild_from_module"] = ""
+                return summary
+
+            if normalized_role_name == "role3":
+                from music_video_pipeline.modules.module_b import run_module_b_role3_big_segment
+
+                big_segment_id = normalized_shot_id
+                shot_output_path = run_module_b_role3_big_segment(context, big_segment_id)
+                self.logger.info(
+                    "模块B role3 big_segment 重试完成，task_id=%s，big_segment_id=%s，artifact=%s",
+                    task_id,
+                    big_segment_id,
+                    shot_output_path,
+                )
+                summary = self._build_summary(task_id=task_id, output_video_path=Path(""))
+                summary["retry_role_name"] = normalized_role_name
+                summary["retry_shot_id"] = big_segment_id
+                summary["retry_segment_id"] = ""
+                summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
+                summary["downstream_rebuild_required"] = False
+                summary["rebuild_from_module"] = ""
+                return summary
+
             chain_rows = self.state_store.list_bcd_chain_status(task_id=task_id)
             matched_rows = [row for row in chain_rows if str(row.get("shot_id", "")).strip() == normalized_shot_id]
             if not matched_rows:
@@ -799,18 +855,6 @@ class PipelineRunner:
             if not target_segment_id:
                 raise RuntimeError(
                     f"模块B角色内 shot 重试失败：目标 shot 缺少 segment_id，task_id={task_id}，shot_id={normalized_shot_id}"
-                )
-
-            non_done_units = self.state_store.list_module_units_by_status(
-                task_id=task_id,
-                module_name="B",
-                statuses=["pending", "running", "failed"],
-            )
-            blocking_unit_ids = [str(item["unit_id"]) for item in non_done_units if str(item["unit_id"]) != target_segment_id]
-            if blocking_unit_ids:
-                raise RuntimeError(
-                    "模块B角色内 shot 重试被拒绝：存在其他非done单元，请先清理后再重试。"
-                    f"task_id={task_id}，blocking_unit_ids={blocking_unit_ids}"
                 )
 
             self.state_store.reset_module_unit(
@@ -848,15 +892,15 @@ class PipelineRunner:
 
     def retry_module_c_shot(self, task_id: str, shot_id: str, config_path: Path) -> dict:
         """
-        功能说明：按 shot 粒度重试模块 C 单元，并在成功后执行模块 D 生成最新成片。
+        功能说明：按 shot 粒度重试模块 C 的 start 和 end 双帧，并重置下游 D。
         参数说明：
         - task_id: 任务唯一标识。
         - shot_id: 模块 C 单元标识（等价模块 B 的 shot_id）。
         - config_path: 配置文件路径。
         返回值：
         - dict: 任务执行摘要，并附带本次重试 shot 与模块 C 单元摘要。
-        异常说明：任务不存在、上游未完成、单元不存在或模块执行失败时抛 RuntimeError。
-        边界条件：仅允许定向重试一个单元，不重跑 A/B。
+        异常说明：任务不存在、单元不存在或帧执行失败时抛 RuntimeError。
+        边界条件：仅重定向目标 shot 的双帧，不重跑其他 shot。
         """
         normalized_shot_id = str(shot_id).strip()
         if not normalized_shot_id:
@@ -874,12 +918,6 @@ class PipelineRunner:
         context = self._prepare_context(task_id=task_id, audio_path=audio_path)
         with self._bind_task_log_file(task_dir=context.task_dir, command_name="c_retry_shot", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
-            module_status_map = self.state_store.get_module_status_map(task_id=task_id)
-            if module_status_map.get("B") != "done":
-                raise RuntimeError(
-                    f"模块C定向重试被拒绝：上游模块B未完成，task_id={task_id}，status={module_status_map.get('B')}"
-                )
-
             unit_record = self.state_store.get_module_unit_record(
                 task_id=task_id,
                 module_name="C",
@@ -887,19 +925,7 @@ class PipelineRunner:
             )
             if not unit_record:
                 raise RuntimeError(
-                    f"模块C定向重试失败：shot_id 不存在或尚未建立单元状态，task_id={task_id}，shot_id={normalized_shot_id}"
-                )
-
-            non_done_units = self.state_store.list_module_units_by_status(
-                task_id=task_id,
-                module_name="C",
-                statuses=["pending", "running", "failed"],
-            )
-            blocking_unit_ids = [str(item["unit_id"]) for item in non_done_units if str(item["unit_id"]) != normalized_shot_id]
-            if blocking_unit_ids:
-                raise RuntimeError(
-                    "模块C定向重试被拒绝：存在其他非done单元，请先清理后再重试。"
-                    f"task_id={task_id}，blocking_unit_ids={blocking_unit_ids}"
+                    f"模块C定向重试失败：shot_id 不存在，task_id={task_id}，shot_id={normalized_shot_id}"
                 )
 
             self.state_store.reset_module_unit(
@@ -907,18 +933,192 @@ class PipelineRunner:
                 module_name="C",
                 unit_id=normalized_shot_id,
             )
-            self.logger.info("模块C定向重试已重置目标单元，task_id=%s，shot_id=%s", task_id, normalized_shot_id)
+            # 重置下游 D 对应 segment
+            parts = normalized_shot_id.split("_")
+            d_unit_id = f"seg_{parts[1]}" if len(parts) >= 2 and parts[0] == "shot" else normalized_shot_id
+            d_unit_record = self.state_store.get_module_unit_record(
+                task_id=task_id,
+                module_name="D",
+                unit_id=d_unit_id,
+            )
+            if d_unit_record:
+                self.state_store.reset_module_unit(
+                    task_id=task_id,
+                    module_name="D",
+                    unit_id=d_unit_id,
+                )
+            self.logger.info(
+                "模块C shot 重试已重置 C/D 目标单元，task_id=%s，shot_id=%s，d_unit_id=%s",
+                task_id, normalized_shot_id, d_unit_id,
+            )
+
+            from music_video_pipeline.modules.module_c.orchestrator import run_module_c_frame
 
             self.state_store.update_task_status(task_id=task_id, status="running")
-            self._execute_one_module(context=context, module_name="C")
-            self._execute_one_module(context=context, module_name="D")
+            self.state_store.set_module_status(task_id=context.task_id, module_name="C", status="running")
+
+            errors: list[str] = []
+            for frame_type in ("start", "end"):
+                try:
+                    run_module_c_frame(context=context, shot_id=normalized_shot_id, frame_type=frame_type)
+                except Exception as error:  # noqa: BLE001
+                    errors.append(f"{frame_type}: {error}")
+
+            if errors:
+                self.state_store.set_module_unit_status(
+                    task_id=context.task_id,
+                    module_name="C",
+                    unit_id=normalized_shot_id,
+                    status="failed",
+                    error_message="；".join(errors),
+                )
+                self.state_store.set_module_status(
+                    task_id=context.task_id,
+                    module_name="C",
+                    status="failed",
+                    artifact_path="",
+                    error_message="；".join(errors),
+                )
+                self.state_store.update_task_status(task_id=context.task_id, status="failed", error_message="；".join(errors))
+                raise RuntimeError(f"模块C shot 重试执行失败，shot_id={normalized_shot_id}，错误={'；'.join(errors)}")
+
+            self.logger.info("模块C shot 重试成功，shot_id=%s", normalized_shot_id)
+            self.state_store.set_module_status(
+                task_id=context.task_id,
+                module_name="C",
+                status="done",
+                artifact_path="",
+                error_message="",
+            )
+            self.state_store.reset_from_module(task_id=task_id, module_name="D")
 
             module_d_record = self.state_store.get_module_record(task_id=task_id, module_name="D")
             output_video_path = Path(module_d_record["artifact_path"]) if module_d_record and module_d_record["artifact_path"] else Path("")
-            self.state_store.mark_task_done_if_possible(task_id=task_id, output_video_path=str(output_video_path))
             summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
             summary["retry_shot_id"] = normalized_shot_id
             summary["module_c_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="C")
+            summary["downstream_rebuild_required"] = True
+            summary["rebuild_from_module"] = "D"
+            return summary
+
+    def retry_module_c_frame(self, task_id: str, shot_id: str, frame_type: str, config_path: Path) -> dict:
+        """
+        功能说明：按 shot+frame_type 粒度重试模块 C 单帧，并在成功后重建模块 C 输出清单。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - shot_id: 模块 C 单元标识。
+        - frame_type: "start" 或 "end"。
+        - config_path: 配置文件路径。
+        返回值：
+        - dict: 任务执行摘要，并附带本次重试 shot/frame 信息。
+        异常说明：任务不存在、单元不存在或模块执行失败时抛 RuntimeError。
+        边界条件：只重跑单帧，不重跑另一帧。
+        """
+        normalized_shot_id = str(shot_id).strip()
+        normalized_frame_type = str(frame_type).strip().lower()
+        if not normalized_shot_id:
+            raise RuntimeError("shot_id 不能为空。")
+        if normalized_frame_type not in {"start", "end"}:
+            raise RuntimeError(f"frame_type 非法：{frame_type}")
+
+        task_record = self.state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法重试模块C单帧：task_id={task_id}")
+
+        audio_path = self._resolve_task_audio_path_from_record(
+            task_id=task_id,
+            task_record=task_record,
+            config_path_override=config_path,
+        )
+        context = self._prepare_context(task_id=task_id, audio_path=audio_path)
+        with self._bind_task_log_file(task_dir=context.task_dir, command_name=f"c_retry_frame_{normalized_frame_type}", config_path=config_path):
+            self.state_store.init_task(task_id=task_id, audio_path=str(audio_path), config_path=str(config_path))
+            self.logger.info(
+                "模块C单帧重试开始，task_id=%s，shot_id=%s，frame_type=%s",
+                task_id,
+                normalized_shot_id,
+                normalized_frame_type,
+            )
+            unit_record = self.state_store.get_module_unit_record(
+                task_id=task_id,
+                module_name="C",
+                unit_id=normalized_shot_id,
+            )
+            if not unit_record:
+                raise RuntimeError(
+                    f"模块C单帧重试失败：shot_id 不存在或尚未建立单元状态，task_id={task_id}，shot_id={normalized_shot_id}"
+                )
+
+            self.state_store.set_module_unit_status(
+                task_id=task_id,
+                module_name="C",
+                unit_id=normalized_shot_id,
+                status="running",
+                artifact_path="",
+                error_message="",
+            )
+            self.logger.info(
+                "模块C单帧重试已重置目标单元，task_id=%s，shot_id=%s，frame_type=%s",
+                task_id,
+                normalized_shot_id,
+                normalized_frame_type,
+            )
+
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            from music_video_pipeline.modules.module_c.orchestrator import run_module_c_frame
+
+            self.state_store.set_module_status(task_id=context.task_id, module_name="C", status="running")
+            try:
+                artifact_path = run_module_c_frame(
+                    context=context,
+                    shot_id=normalized_shot_id,
+                    frame_type=normalized_frame_type,
+                )
+            except Exception as error:  # noqa: BLE001
+                self.state_store.set_module_unit_status(
+                    task_id=context.task_id,
+                    module_name="C",
+                    unit_id=normalized_shot_id,
+                    status="failed",
+                    artifact_path="",
+                    error_message=str(error),
+                )
+                self.state_store.set_module_status(
+                    task_id=context.task_id,
+                    module_name="C",
+                    status="failed",
+                    artifact_path="",
+                    error_message=str(error),
+                )
+                self.state_store.update_task_status(task_id=context.task_id, status="failed", error_message=str(error))
+                raise RuntimeError(f"模块 C 单帧执行失败: {error}") from error
+
+            self.state_store.set_module_status(
+                task_id=context.task_id,
+                module_name="C",
+                status="done",
+                artifact_path=str(artifact_path),
+                error_message="",
+            )
+            self.logger.info(
+                "模块C单帧重试成功，task_id=%s，shot_id=%s，frame_type=%s，artifact=%s",
+                task_id,
+                normalized_shot_id,
+                normalized_frame_type,
+                artifact_path,
+            )
+
+            # 本轮仅做下游占位，不自动重建 D。
+            self.state_store.reset_from_module(task_id=task_id, module_name="D")
+
+            module_d_record = self.state_store.get_module_record(task_id=task_id, module_name="D")
+            output_video_path = Path(module_d_record["artifact_path"]) if module_d_record and module_d_record["artifact_path"] else Path("")
+            summary = self._build_summary(task_id=task_id, output_video_path=output_video_path)
+            summary["retry_shot_id"] = normalized_shot_id
+            summary["retry_frame_type"] = normalized_frame_type
+            summary["module_c_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="C")
+            summary["downstream_rebuild_required"] = True
+            summary["rebuild_from_module"] = "D"
             return summary
 
     def get_module_d_status_summary(self, task_id: str, config_path: Path) -> dict:
@@ -1005,18 +1205,6 @@ class PipelineRunner:
             if not unit_record:
                 raise RuntimeError(
                     f"模块D定向重试失败：shot_id 不存在或尚未建立单元状态，task_id={task_id}，shot_id={normalized_shot_id}"
-                )
-
-            non_done_units = self.state_store.list_module_units_by_status(
-                task_id=task_id,
-                module_name="D",
-                statuses=["pending", "running", "failed"],
-            )
-            blocking_unit_ids = [str(item["unit_id"]) for item in non_done_units if str(item["unit_id"]) != normalized_shot_id]
-            if blocking_unit_ids:
-                raise RuntimeError(
-                    "模块D定向重试被拒绝：存在其他非done单元，请先清理后再重试。"
-                    f"task_id={task_id}，blocking_unit_ids={blocking_unit_ids}"
                 )
 
             self.state_store.reset_module_unit(
@@ -1298,19 +1486,21 @@ class PipelineRunner:
             self.state_store.update_task_status(task_id=context.task_id, status="running")
         return output_video_path
 
-    def _execute_one_module(self, context: RuntimeContext, module_name: str) -> None:
+    def _execute_one_module(self, context: RuntimeContext, module_name: str, force: bool = False) -> None:
         """
         功能说明：执行单个模块并写入 running/done/failed 状态。
         参数说明：
         - context: 任务上下文。
         - module_name: 模块名。
+        - force: 跳过上游依赖检查（用于定向单元重试场景）。
         返回值：无。
         异常说明：模块异常时封装为 RuntimeError 抛出。
-        边界条件：上游未 done 时拒绝执行。
+        边界条件：上游未 done 时拒绝执行（force=True 时跳过）。
         """
-        can_run, reason = self.state_store.can_run_module(task_id=context.task_id, module_name=module_name)
-        if not can_run:
-            raise RuntimeError(f"模块 {module_name} 无法执行：{reason}")
+        if not force:
+            can_run, reason = self.state_store.can_run_module(task_id=context.task_id, module_name=module_name)
+            if not can_run:
+                raise RuntimeError(f"模块 {module_name} 无法执行：{reason}")
 
         module_logger = logging.getLogger(module_name)
         if module_logger.getEffectiveLevel() > self.logger.getEffectiveLevel():

@@ -212,101 +212,53 @@ def _run_c_chain_unit(
     )
 
 
-def _resolve_module_c_sidecar_path(artifact_path: str, unit_id: str) -> Path:
-    """
-    功能说明：根据模块C单元 artifact_path 解析对应 sidecar JSON 路径。
-    参数说明：
-    - artifact_path: module_unit_runs 中记录的模块C产物路径。
-    - unit_id: 模块C单元ID（shot_id）。
-    返回值：
-    - Path: sidecar JSON 路径。
-    异常说明：
-    - RuntimeError: 路径非法或无法定位 artifacts 根目录时抛出。
-    边界条件：兼容相对/绝对路径，但必须包含 artifacts 目录层级。
-    """
-    normalized_artifact_path = str(artifact_path).strip()
-    normalized_unit_id = str(unit_id).strip()
-    if not normalized_artifact_path:
-        raise RuntimeError("跨模块调度失败：模块C单元产物路径为空。")
-    if not normalized_unit_id:
-        raise RuntimeError("跨模块调度失败：模块C单元ID为空，无法解析双关键帧 sidecar。")
-    artifact_obj = Path(normalized_artifact_path)
-    path_parts = artifact_obj.parts
-    if "artifacts" not in path_parts:
-        raise RuntimeError(
-            "跨模块调度失败：模块C产物路径不在 artifacts 目录下，"
-            f"artifact_path={normalized_artifact_path}。"
-        )
-    artifacts_index = max(index for index, part_text in enumerate(path_parts) if part_text == "artifacts")
-    artifacts_dir = Path(*path_parts[: artifacts_index + 1])
-    return artifacts_dir / "module_c_units" / f"{normalized_unit_id}.json"
-
-
 def _load_strict_dual_frame_item_for_d(
     *,
     blueprint: ModuleDUnitBlueprint,
     c_row: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    功能说明：从模块C sidecar 读取并校验双关键帧契约，构建模块D输入 frame_item。
+    功能说明：从模块C SQL 状态 + shot_id 命名规范推导双关键帧，构建模块D输入 frame_item。
     参数说明：
     - blueprint: 模块D单元蓝图。
     - c_row: 状态库中的模块C单元记录。
     返回值：
     - dict[str, Any]: 可直接用于 materialize_module_d_unit 的 frame_item。
     异常说明：
-    - RuntimeError: sidecar 缺失、结构非法或双关键帧字段不完整时抛出。
+    - RuntimeError: 帧文件缺失或关键帧字段不完整时抛出。
     边界条件：不再接受仅 frame_path 的单帧输入。
     """
     unit_id = str(c_row.get("unit_id", "")).strip() or str(blueprint.unit_id)
     artifact_path = str(c_row.get("artifact_path", "")).strip()
-    sidecar_path = _resolve_module_c_sidecar_path(artifact_path=artifact_path, unit_id=unit_id)
-    if not sidecar_path.exists():
+    if not artifact_path:
         raise RuntimeError(
-            "跨模块调度失败：缺失模块C双关键帧 sidecar，"
-            f"unit_id={unit_id}，sidecar={sidecar_path}。"
+            "跨模块调度失败：模块C单元产物路径为空，"
+            f"unit_id={unit_id}。"
         )
-    payload = read_json(sidecar_path)
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"跨模块调度失败：模块C sidecar 结构非法，sidecar={sidecar_path}")
+    frames_dir = Path(artifact_path).parent
+    frame_path_start = str(frames_dir / f"{unit_id}_start.png")
+    frame_path_end = str(frames_dir / f"{unit_id}_end.png")
 
-    frame_path_start = str(payload.get("frame_path_start", "")).strip()
-    frame_path_end = str(payload.get("frame_path_end", "")).strip()
-    if (not frame_path_start) or (not frame_path_end):
+    if not Path(frame_path_start).exists():
         raise RuntimeError(
-            "跨模块调度失败：模块C sidecar 缺失双关键帧字段，"
-            f"unit_id={unit_id}，sidecar={sidecar_path}。"
+            "跨模块调度失败：模块C首帧文件缺失，"
+            f"unit_id={unit_id}，frame_path_start={frame_path_start}。"
         )
-    control_frame_paths_payload = payload.get("control_frame_paths")
-    if isinstance(control_frame_paths_payload, list):
-        normalized_control_frame_paths = [str(item).strip() for item in control_frame_paths_payload if str(item).strip()]
-    else:
-        normalized_control_frame_paths = []
-    if len(normalized_control_frame_paths) < 2:
+    if not Path(frame_path_end).exists():
         raise RuntimeError(
-            "跨模块调度失败：模块C sidecar 缺失 control_frame_paths 双锚点，"
-            f"unit_id={unit_id}，sidecar={sidecar_path}。"
-        )
-    if (
-        str(normalized_control_frame_paths[0]) != frame_path_start
-        or str(normalized_control_frame_paths[-1]) != frame_path_end
-    ):
-        raise RuntimeError(
-            "跨模块调度失败：模块C sidecar 双关键帧字段不一致，"
-            f"unit_id={unit_id}，frame_path_start={frame_path_start}，"
-            f"frame_path_end={frame_path_end}，control_frame_paths={normalized_control_frame_paths}。"
+            "跨模块调度失败：模块C尾帧文件缺失，"
+            f"unit_id={unit_id}，frame_path_end={frame_path_end}。"
         )
 
     return {
-        **payload,
         "shot_id": str(blueprint.unit_id),
-        "frame_path": str(payload.get("frame_path", "")).strip() or frame_path_start,
+        "frame_path": frame_path_start,
         "frame_path_start": frame_path_start,
         "frame_path_end": frame_path_end,
-        "control_frame_paths": [str(normalized_control_frame_paths[0]), str(normalized_control_frame_paths[-1])],
-        "start_time": float(payload.get("start_time", c_row.get("start_time", blueprint.start_time))),
-        "end_time": float(payload.get("end_time", c_row.get("end_time", blueprint.end_time))),
-        "duration": float(payload.get("duration", c_row.get("duration", blueprint.duration))),
+        "control_frame_paths": [frame_path_start, frame_path_end],
+        "start_time": float(c_row.get("start_time", blueprint.start_time)),
+        "end_time": float(c_row.get("end_time", blueprint.end_time)),
+        "duration": float(c_row.get("duration", blueprint.duration)),
     }
 
 

@@ -66,7 +66,7 @@ def test_run_module_d_should_retry_failed_unit_and_keep_output_order(tmp_path: P
             "frame_count_used": int(unit.exact_frames),
         }
 
-    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _fake_render_one_unit_comfyui)
+    monkeypatch.setattr(module_d_executor, "_render_unit_via_remotion", _fake_render_one_unit_comfyui)
     monkeypatch.setattr(module_d_orchestrator, "_probe_media_duration", lambda media_path, ffprobe_bin: 3.0)
 
     def _fake_concat_segment_videos(**kwargs) -> dict[str, object]:
@@ -125,7 +125,7 @@ def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_p
         unit.segment_path.write_bytes(f"segment:{unit.unit_id}".encode("utf-8"))
         return {"segment_path": str(unit.segment_path)}
 
-    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _always_fail_shot_002)
+    monkeypatch.setattr(module_d_executor, "_render_unit_via_remotion", _always_fail_shot_002)
 
     with pytest.raises(RuntimeError, match="shot_002"):
         module_d_orchestrator.run_module_d(context)
@@ -157,7 +157,7 @@ def test_run_module_d_should_resume_only_failed_units_after_strict_failure(tmp_p
         output_video_path.write_bytes(b"fake-video")
         return {"mode": "copy", "copy_fallback_triggered": False}
 
-    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _success_on_resume)
+    monkeypatch.setattr(module_d_executor, "_render_unit_via_remotion", _success_on_resume)
     monkeypatch.setattr(module_d_orchestrator, "_concat_segment_videos", _fake_concat_segment_videos)
 
     output_path = module_d_orchestrator.run_module_d(context)
@@ -209,7 +209,7 @@ def test_execute_one_unit_with_retry_should_retry_comfyui_renderer_once(tmp_path
         unit.segment_path.write_bytes(b"ok")
         return {"segment_path": str(unit.segment_path)}
 
-    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _fail_once_then_succeed)
+    monkeypatch.setattr(module_d_executor, "_render_unit_via_remotion", _fail_once_then_succeed)
 
     output_path = module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
 
@@ -250,7 +250,7 @@ def test_execute_one_unit_with_retry_should_raise_after_retry_exhausted(tmp_path
     def _always_fail(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, object]:
         raise RuntimeError(f"always fail:{unit.unit_id}")
 
-    monkeypatch.setattr(module_d_executor, "render_one_unit_comfyui", _always_fail)
+    monkeypatch.setattr(module_d_executor, "_render_unit_via_remotion", _always_fail)
 
     with pytest.raises(RuntimeError, match="always fail"):
         module_d_executor.execute_one_unit_with_retry(context=context, unit=unit)
@@ -364,6 +364,7 @@ def _write_module_c_output(context: RuntimeContext) -> None:
         context.artifacts_dir / "module_c_output.json",
         {
             "task_id": context.task_id,
+            "contract_version": 2,
             "frames_dir": str(frames_dir),
             "frame_items": frame_items,
         },

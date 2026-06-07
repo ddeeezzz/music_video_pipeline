@@ -3,7 +3,7 @@ import path from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
-const defaultMonitorOrigin = "http://127.0.0.1:45705";
+const defaultMonitorOrigin = "http://127.0.0.1:47351";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");

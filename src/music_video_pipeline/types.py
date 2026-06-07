@@ -489,8 +489,6 @@ def validate_module_b_output(data: list[dict]) -> None:
         "keyframe_prompt_end_en",
         "video_prompt_zh",
         "video_prompt_en",
-        "camera_plan",
-        "transition_plan",
     }
     forbidden_keys = {
         "camera_motion",
@@ -515,13 +513,6 @@ def validate_module_b_output(data: list[dict]) -> None:
         if legacy_keys:
             raise KeyError(f"ModuleBOutput[{index}] 含已废弃字段: {legacy_keys}")
 
-        if not isinstance(item["camera_plan"], dict):
-            raise TypeError(f"ModuleBOutput[{index}].camera_plan 必须是 dict")
-        if not isinstance(item["transition_plan"], dict):
-            raise TypeError(f"ModuleBOutput[{index}].transition_plan 必须是 dict")
-        validate_camera_plan(item["camera_plan"])
-        validate_transition_plan(item["transition_plan"])
-
         for prompt_key in [
             "scene_desc",
             "keyframe_prompt_start_zh",
@@ -533,8 +524,6 @@ def validate_module_b_output(data: list[dict]) -> None:
         ]:
             if not isinstance(item[prompt_key], str):
                 raise TypeError(f"ModuleBOutput[{index}].{prompt_key} 必须是 str")
-            if not str(item[prompt_key]).strip():
-                raise ValueError(f"ModuleBOutput[{index}].{prompt_key} 不能为空字符串")
 
         for optional_prompt_key in [
             "keyframe_negative_prompt_start_zh",
@@ -545,8 +534,6 @@ def validate_module_b_output(data: list[dict]) -> None:
             if optional_prompt_key in item:
                 if not isinstance(item[optional_prompt_key], str):
                     raise TypeError(f"ModuleBOutput[{index}].{optional_prompt_key} 必须是 str")
-                if not str(item[optional_prompt_key]).strip():
-                    raise ValueError(f"ModuleBOutput[{index}].{optional_prompt_key} 不能为空字符串")
 
         if "lyric_text" in item and not isinstance(item["lyric_text"], str):
             raise TypeError(f"ModuleBOutput[{index}].lyric_text 必须是 str")

@@ -210,8 +210,8 @@ a {
 }
 
 .module-b-segment-select {
-  min-width: min(100%, 420px);
-  flex: 1 1 320px;
+  min-width: min(100%, 720px);
+  flex: 1 1 560px;
 }
 
 .module-b-segment-summary {
@@ -219,9 +219,89 @@ a {
   gap: 6px;
 }
 
+.module-b-streaming-content {
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid #dbe1ea;
+  border-radius: 6px;
+  background: #f8fafc;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+/* StreamViewerModal 中按 big segment 堆叠展示 */
+.stream-viewer-big-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.stream-viewer-big-section {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #dbe1ea;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.stream-viewer-big-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stream-viewer-big-title {
+  font-size: 14px;
+}
+
+.stream-viewer-big-content {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #dbe1ea;
+  border-radius: 6px;
+  background: #f8fafc;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+
 .module-b-prompt-modal {
   display: grid;
   gap: 16px;
+  overflow-x: hidden;
+}
+
+.module-b-prompt-modal .ant-select {
+  min-width: 160px;
+  max-width: 100%;
+}
+
+.module-b-prompt-modal .ant-select .ant-select-selection-item {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.module-b-prompt-modal .ant-descriptions-item-content {
+  word-break: break-all;
+}
+
+.module-b-prompt-select-dropdown {
+  max-width: 90vw;
+}
+
+.module-b-prompt-select-dropdown .ant-select-item {
+  white-space: normal;
+  word-break: break-word;
 }
 
 .module-b-prompt-pre {
@@ -232,6 +312,8 @@ a {
   background: #f8fafc;
   min-height: 240px;
   max-height: 62vh;
+  max-width: 100%;
+  box-sizing: border-box;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;

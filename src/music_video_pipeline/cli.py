@@ -251,6 +251,12 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     c_retry_parser.add_argument("--shot-id", required=True, help="模块C单元标识（等价shot_id）")
     c_retry_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
 
+    c_retry_frame_parser = subparsers.add_parser("c-retry-frame", help="按shot_id+frame_type重试模块C单帧，并在成功后重建视频")
+    c_retry_frame_parser.add_argument("--task-id", required=True, help="任务唯一标识")
+    c_retry_frame_parser.add_argument("--shot-id", required=True, help="模块C单元标识（等价shot_id）")
+    c_retry_frame_parser.add_argument("--frame-type", required=True, choices=["start", "end"], help="目标帧类型")
+    c_retry_frame_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
+
     b_status_parser = subparsers.add_parser("b-task-status", help="查看模块B单元状态摘要")
     b_status_parser.add_argument("--task-id", required=True, help="任务唯一标识")
     b_status_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
@@ -414,6 +420,15 @@ def _build_command_request(
             command="c-retry-shot",
             task_id=args.task_id,
             shot_id=args.shot_id,
+            config_path=config_path,
+        )
+
+    if args.command == "c-retry-frame":
+        return CommandRequest(
+            command="c-retry-frame",
+            task_id=args.task_id,
+            shot_id=args.shot_id,
+            frame_type=args.frame_type,
             config_path=config_path,
         )
 
@@ -745,6 +760,8 @@ def _run_task_monitor_command_by_task(
         rerun_handler=getattr(runner, "_rerun_task_from_module_a_for_monitor", None),
         module_b_role_rerun_handler=getattr(runner, "_rerun_module_b_role_for_monitor", None),
         module_b_role_segment_rerun_handler=getattr(runner, "_rerun_module_b_role_segment_for_monitor", None),
+        module_c_shot_rerun_handler=getattr(runner, "_rerun_module_c_shot_for_monitor", None),
+        module_c_frame_rerun_handler=getattr(runner, "_rerun_module_c_frame_for_monitor", None),
         app_config=getattr(runner, "config", None),
         host=monitor_host,
         port=monitor_port,
@@ -863,6 +880,16 @@ def _build_web_command_runtime(*, workspace_root: Path, request: CommandRequest,
         state_store=state_store,
         logger=logger,
     )
+    module_c_shot_rerun_handler = _build_web_module_c_shot_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
+    module_c_frame_rerun_handler = _build_web_module_c_frame_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
     return SimpleNamespace(
         config=replace(
             config,
@@ -877,6 +904,8 @@ def _build_web_command_runtime(*, workspace_root: Path, request: CommandRequest,
         _rerun_task_from_module_a_for_monitor=rerun_handler,
         _rerun_module_b_role_for_monitor=module_b_role_rerun_handler,
         _rerun_module_b_role_segment_for_monitor=module_b_role_segment_rerun_handler,
+        _rerun_module_c_shot_for_monitor=module_c_shot_rerun_handler,
+        _rerun_module_c_frame_for_monitor=module_c_frame_rerun_handler,
     )
 
 
@@ -1088,6 +1117,166 @@ def _build_web_module_b_role_segment_rerun_handler(*, workspace_root: Path, stat
         }
 
     return _rerun_module_b_role_segment_for_web
+
+
+def _build_web_module_c_shot_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """
+    功能说明：为 web 服务中的模块 C shot 重跑构建后台回调。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - state_store: 状态库对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 可被监督服务调用的 (task_id, shot_id) -> dict 回调。
+    异常说明：任务缺少必要字段或子进程失败时抛出 RuntimeError。
+    边界条件：实际执行通过独立 CLI 子进程完成。
+    """
+
+    def _rerun_module_c_shot_for_web(task_id: str, shot_id: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行模块C shot 重跑：task_id={task_id}")
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            raise RuntimeError(f"任务缺少 config_path，无法执行模块C shot 重跑：task_id={task_id}")
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "c-retry-shot",
+            "--task-id",
+            task_id,
+            "--shot-id",
+            str(shot_id).strip(),
+            "--config",
+            config_path_text,
+        ]
+        logger.info("Web 服务触发模块C shot 重跑，task_id=%s，shot_id=%s，command=%s", task_id, shot_id, command)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(workspace_root),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"模块C shot 重跑子进程执行超时，task_id={task_id}，shot_id={shot_id}，timeout_seconds=600"
+            ) from error
+        if completed.returncode != 0:
+            error_excerpt = (
+                str(completed.stderr or "").strip()
+                or str(completed.stdout or "").strip()
+            )
+            if error_excerpt:
+                error_excerpt = error_excerpt.splitlines()[-1].strip()
+            raise RuntimeError(
+                "模块C shot 重跑子进程执行失败，"
+                f"task_id={task_id}，shot_id={shot_id}，exit_code={completed.returncode}"
+                + (f"，原因={error_excerpt}" if error_excerpt else "")
+            )
+        return {
+            "task_id": task_id,
+            "shot_id": str(shot_id).strip(),
+            "exit_code": completed.returncode,
+        }
+
+    return _rerun_module_c_shot_for_web
+
+
+def _build_web_module_c_frame_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """
+    功能说明：为 web 服务中的模块 C 单帧重跑构建后台回调。
+    参数说明：
+    - workspace_root: 项目根目录。
+    - state_store: 状态库对象。
+    - logger: 日志对象。
+    返回值：
+    - Any: 可被监督服务调用的 (task_id, shot_id, frame_type) -> dict 回调。
+    异常说明：任务缺少必要字段或子进程失败时抛出 RuntimeError。
+    边界条件：实际执行通过独立 CLI 子进程完成。
+    """
+
+    def _rerun_module_c_frame_for_web(task_id: str, shot_id: str, frame_type: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行模块C单帧重跑：task_id={task_id}")
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            raise RuntimeError(f"任务缺少 config_path，无法执行模块C单帧重跑：task_id={task_id}")
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "c-retry-frame",
+            "--task-id",
+            task_id,
+            "--shot-id",
+            str(shot_id).strip(),
+            "--frame-type",
+            str(frame_type).strip(),
+            "--config",
+            config_path_text,
+        ]
+        logger.info(
+            "Web 服务触发模块C单帧重跑，task_id=%s，shot_id=%s，frame_type=%s，command=%s",
+            task_id,
+            shot_id,
+            frame_type,
+            command,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(workspace_root),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"模块C单帧重跑子进程执行超时，task_id={task_id}，shot_id={shot_id}，frame_type={frame_type}，timeout_seconds=600"
+            ) from error
+        if completed.returncode != 0:
+            error_output = (
+                str(completed.stderr or "").strip()
+                or str(completed.stdout or "").strip()
+            )
+            error_excerpt = ""
+            if error_output:
+                error_lines = [line.strip() for line in error_output.splitlines() if line.strip()]
+                error_excerpt = "；".join(error_lines[-5:]) or error_output[:500]
+            logger.error(
+                "模块C单帧重跑子进程执行失败，task_id=%s，shot_id=%s，frame_type=%s，exit_code=%s，完整错误=%s",
+                task_id,
+                shot_id,
+                frame_type,
+                completed.returncode,
+                error_output[:2000],
+            )
+            raise RuntimeError(
+                "模块C单帧重跑子进程执行失败，"
+                f"task_id={task_id}，shot_id={shot_id}，frame_type={frame_type}，exit_code={completed.returncode}"
+                + (f"，原因={error_excerpt}" if error_excerpt else "")
+            )
+        logger.info(
+            "Web 服务触发模块C单帧重跑执行成功，task_id=%s，shot_id=%s，frame_type=%s，exit_code=%s",
+            task_id,
+            shot_id,
+            frame_type,
+            completed.returncode,
+        )
+        return {
+            "task_id": task_id,
+            "shot_id": str(shot_id).strip(),
+            "frame_type": str(frame_type).strip(),
+            "exit_code": completed.returncode,
+        }
+
+    return _rerun_module_c_frame_for_web
 
 
 def _get_task_monitor_service_class() -> Any:

@@ -77,7 +77,7 @@ def _round_time(value: float) -> float:
     异常说明：无。
     边界条件：无。
     """
-    return round(float(value), 6)
+    return round(float(value), 3)
 
 
 def _clamp_time(value: float, duration_seconds: float) -> float:
@@ -166,6 +166,8 @@ def _normalize_big_segments(
     for index, item in enumerate(sorted_items):
         end_time_raw = _safe_float(item.get("end_time", cursor), cursor)
         end_time = _clamp_time(max(cursor, end_time_raw), safe_duration)
+        if _round_time(end_time) <= _round_time(cursor):
+            continue
         output.append(
             {
                 "segment_id": str(item.get("segment_id", f"big_{index + 1:03d}")),
@@ -180,8 +182,12 @@ def _normalize_big_segments(
         output[-1]["end_time"] = _round_time(safe_duration)
         for index in range(1, len(output)):
             output[index]["start_time"] = _round_time(_safe_float(output[index - 1].get("end_time", 0.0), 0.0))
-            if _safe_float(output[index].get("end_time", 0.0), 0.0) < _safe_float(output[index].get("start_time", 0.0), 0.0):
+            if _safe_float(output[index].get("end_time", 0.0), 0.0) <= _safe_float(output[index].get("start_time", 0.0), 0.0):
                 output[index]["end_time"] = output[index]["start_time"]
+        output = [seg for seg in output if _round_time(_safe_float(seg.get("end_time", 0.0), 0.0)) > _round_time(_safe_float(seg.get("start_time", 0.0), 0.0))]
+        if output:
+            output[0]["start_time"] = 0.0
+            output[-1]["end_time"] = _round_time(safe_duration)
     return output
 
 

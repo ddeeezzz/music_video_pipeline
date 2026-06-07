@@ -130,9 +130,7 @@ class ModuleBLlmConfig:
     - retry_times: LLM 请求重试次数（网络错误/超时/输出格式不符均走同一重试）。
     - temperature: 采样温度。
     - top_p: 采样 top_p。
-    - scene_desc_max_chars: scene_desc 最大字符数。
-    - keyframe_prompt_max_chars: keyframe_prompt 最大字符数。
-    - video_prompt_max_chars: video_prompt 最大字符数。
+    - max_tokens: 最大输出 token 数。
     返回值：不适用。
     异常说明：不适用。
     边界条件：当前正式链路按自由文本/Markdown 消费模型输出。
@@ -140,20 +138,18 @@ class ModuleBLlmConfig:
 
     provider: str = "siliconflow"
     base_url: str = "https://api.siliconflow.cn/v1"
-    model: str = "Qwen/Qwen2.5-14B-Instruct"
+    model: str = "Qwen/Qwen2.5-32B-Instruct"
     api_key_file: str = ".secrets/siliconflow_api_key.txt"
     prompt_template_file: str = ""
     user_custom_prompt: str = ""
     timeout_seconds: float = 60.0
     first_chunk_timeout_seconds: float = 10.0
     retry_times: int = 1
-    temperature: float = 0.50
+    temperature: float = 0.70
     top_p: float = 0.90
     stream: bool = True
     enable_thinking: bool = False
-    scene_desc_max_chars: int = 120
-    keyframe_prompt_max_chars: int = 400
-    video_prompt_max_chars: int = 500
+    max_tokens: int = 8192
 
 
 
@@ -206,7 +202,7 @@ class ModuleCConfig:
         - contract_prop_start_file: 非人物首关键帧 txt2img 契约文件。
         - contract_prop_end_file: 非人物末关键帧 img2img 契约文件。
         - checkpoint_file: 单文件 checkpoint 路径（相对项目根）。
-        - scene_lora_file: 环境 LoRA 文件路径（相对项目根）。
+        - turbo_lora_file: Turbo LoRA 文件路径（相对项目根，对应 anima-turbo-lora-v0.1）。
         - scene_lora_strength: 环境 LoRA 强度。
         - char_lora_file: 角色 LoRA 文件路径（相对项目根）。
         - char_lora_strength: 角色 LoRA 强度。
@@ -218,7 +214,7 @@ class ModuleCConfig:
         - end_denoise: 第二关键帧 img2img 强度。
         返回值：不适用。
         异常说明：不适用。
-        边界条件：checkpoint_file/scene_lora_file/char_lora_file 必须指向现有模型资产。
+        边界条件：checkpoint_file/turbo_lora_file/char_lora_file 必须指向现有模型资产。
         """
 
         contract_start_file: str = "configs/comfyui/module_c_start.contract.json"
@@ -226,18 +222,29 @@ class ModuleCConfig:
         contract_prop_start_file: str = "configs/comfyui/module_c_prop_start.contract.json"
         contract_prop_end_file: str = "configs/comfyui/module_c_prop_end.contract.json"
         checkpoint_file: str = "models/base_model/15/single/anything-v5.safetensors"
-        scene_lora_file: str = "models/lora/15/akebi/AkebiScene-000012.safetensors"
+        turbo_lora_file: str = "models/lora/anima-turbo-lora-v0.1.safetensors"
         scene_lora_strength: float = 1.0
-        char_lora_file: str = "models/lora/15/akebi/AkebiChar-000008.safetensors"
+        char_lora_file: str = "models/lora/anima_akebi_komichi/akebi_komichi-step00002400.safetensors"
         char_lora_strength: float = 1.0
         negative_prompt: str = "lowres, blurry, bad anatomy"
+        prompt_prefix: str = (
+            "year 2022, early 2020s, masterpiece, best quality, safe, "
+            "monochrome, greyscale, lineart, hatching, crosshatching, pencil (medium), graphite,"
+        )
+        prompt_suffix: str = (
+            "The artwork features extremely delicate and soft pencil-like brushstrokes, "
+            "characterized by incredibly fine lines and meticulous detailing. "
+            "(pure black and white:1.8)."
+        )
         steps: int = 24
         guidance_scale: float = 7.0
         sampler_name: str = "euler_ancestral"
         scheduler: str = "normal"
-        end_denoise: float = 0.55
+        end_denoise: float = 0.65
 
     render_backend: str = "comfyui"
+    render_width: int = 1344
+    render_height: int = 840
     render_workers: int = 3
     unit_retry_times: int = 1
     comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
@@ -323,7 +330,7 @@ class ComfyUIServiceConfig:
     server_url: str = "http://127.0.0.1:8188"
     request_timeout_seconds: float = 30.0
     poll_interval_seconds: float = 1.0
-    execution_timeout_seconds: float = 600.0
+    execution_timeout_seconds: float = 60.0
 
 
 @dataclass(frozen=True)
@@ -587,18 +594,16 @@ def _merge_defaults(raw_data: dict) -> dict:
             "llm": {
                 "provider": "siliconflow",
                 "base_url": "https://api.siliconflow.cn/v1",
-                "model": "deepseek-ai/DeepSeek-V3.2",
+                "model": "Qwen/Qwen2.5-32B-Instruct",
                 "api_key_file": ".secrets/siliconflow_api_key.txt",
                 "prompt_template_file": "",
                 "user_custom_prompt": "",
                 "timeout_seconds": 60.0,
                 "retry_times": 1,
-                "temperature": 0.30,
+                "temperature": 0.70,
                 "top_p": 0.90,
                 "stream": True,
-                "scene_desc_max_chars": 120,
-                "keyframe_prompt_max_chars": 400,
-                "video_prompt_max_chars": 500,
+                "max_tokens": 8192,
             },
         },
         "module_c": {
@@ -611,16 +616,16 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "contract_prop_start_file": "configs/comfyui/module_c_prop_start.contract.json",
                 "contract_prop_end_file": "configs/comfyui/module_c_prop_end.contract.json",
                 "checkpoint_file": "models/base_model/15/single/anything-v5.safetensors",
-                "scene_lora_file": "models/lora/15/akebi/AkebiScene-000012.safetensors",
+                "turbo_lora_file": "models/lora/anima-turbo-lora-v0.1.safetensors",
                 "scene_lora_strength": 1.0,
-                "char_lora_file": "models/lora/15/akebi/AkebiChar-000008.safetensors",
+                "char_lora_file": "models/lora/anima_akebi_komichi/akebi_komichi-step00002400.safetensors",
                 "char_lora_strength": 1.0,
                 "negative_prompt": "lowres, blurry, bad anatomy",
                 "steps": 24,
                 "guidance_scale": 7.0,
                 "sampler_name": "euler_ancestral",
                 "scheduler": "normal",
-                "end_denoise": 0.55,
+                "end_denoise": 0.65,
             },
         },
         "module_d": {
@@ -804,9 +809,6 @@ def load_config(config_path: Path) -> AppConfig:
     module_b_llm_data = module_b_data.pop("llm", {})
     if not isinstance(module_b_llm_data, dict):
         raise TypeError("配置错误：module_b.llm 必须是对象。")
-    raw_module_b_llm_data = raw_module_b_data.get("llm", {}) if isinstance(raw_module_b_data.get("llm", {}), dict) else {}
-    if "max_tokens" in raw_module_b_llm_data:
-        raise TypeError("配置错误：module_b.llm.max_tokens 已删除；请从配置文件中移除该字段。")
     storyboard_template_file = str(module_b_data.get("storyboard_template_file", "")).strip()
     if not storyboard_template_file:
         storyboard_template_file = "configs/storyboard_templates/storyboard_template.v1.md"

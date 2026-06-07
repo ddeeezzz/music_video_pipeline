@@ -20,4 +20,10 @@ export const routes = {
   taskModuleB(taskId: string): string {
     return `/tasks/${encodeTaskId(taskId)}/module-b`;
   },
+  taskModuleC(taskId: string): string {
+    return `/tasks/${encodeTaskId(taskId)}/module-c`;
+  },
+  taskModuleD(taskId: string): string {
+    return `/tasks/${encodeTaskId(taskId)}/module-d`;
+  },
 };

@@ -21,6 +21,12 @@ import time
 from music_video_pipeline.config import ModuleBLlmConfig
 # 项目内模块：提供模块 B LLM 调用函数。
 from music_video_pipeline.modules.module_b.llm_client import call_module_b_llm_chat
+# 项目内模块：提供模块 B role 工作目录路径。
+from music_video_pipeline.modules.module_b.artifact_paths import (
+    get_module_b_prompt_dir,
+    get_module_b_role_dir,
+    get_module_b_streaming_dir,
+)
 # 项目内模块：提供 role1 Markdown 契约解析器。
 from music_video_pipeline.modules.module_b.markdown_contracts import (
     Role1VisualDescription,
@@ -48,14 +54,29 @@ class Role1ImageryDescriber:
         self._llm_config = llm_config
         self._project_root = project_root
         self._artifacts_dir = artifacts_dir.resolve() if isinstance(artifacts_dir, Path) else None
-        self._stream_preview_path = (
-            (self._artifacts_dir / "module_b_role1_visual_output.streaming.md").resolve()
+        self._work_dir = (
+            get_module_b_role_dir(self._artifacts_dir, "role1")
             if self._artifacts_dir is not None
             else None
         )
-        self._stream_preview_meta_path = (
-            (self._artifacts_dir / "module_b_role1_visual_output.streaming.meta.json").resolve()
+        self._prompt_dir = (
+            get_module_b_prompt_dir(self._artifacts_dir, "role1")
             if self._artifacts_dir is not None
+            else None
+        )
+        self._streaming_dir = (
+            get_module_b_streaming_dir(self._artifacts_dir, "role1")
+            if self._artifacts_dir is not None
+            else None
+        )
+        self._stream_preview_path = (
+            (self._streaming_dir / "role1_visual_output.streaming.md").resolve()
+            if self._streaming_dir is not None
+            else None
+        )
+        self._stream_preview_meta_path = (
+            (self._streaming_dir / "role1_visual_output.streaming.meta.json").resolve()
+            if self._streaming_dir is not None
             else None
         )
 
@@ -73,6 +94,12 @@ class Role1ImageryDescriber:
                 "User Template": _normalize_markdown_text("role1.user_template_markdown", user_template_markdown),
             },
         )
+        if self._artifacts_dir is not None:
+            self._work_dir.mkdir(parents=True, exist_ok=True)
+            self._prompt_dir.mkdir(parents=True, exist_ok=True)
+            (self._prompt_dir / "role1_rendered_prompt.md").write_text(
+                prompt_asset["user_prompt_markdown"], encoding="utf-8"
+            )
         call_llm_config = self._llm_config
         if self._stream_preview_path is not None:
             self._stream_preview_path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,10 +114,15 @@ class Role1ImageryDescriber:
         last_error: Exception | None = None
         response_text = ""
         try:
-            response_text = call_module_b_llm_chat(**self._build_llm_call_kwargs(
+            llm_result = call_module_b_llm_chat(**self._build_llm_call_kwargs(
                 call_llm_config=call_llm_config,
                 prompt_asset=prompt_asset,
             ))
+            if isinstance(llm_result, tuple):
+                response_text, usage = llm_result
+            else:
+                response_text, usage = str(llm_result or ""), None
+            _update_meta_with_usage(self._stream_preview_meta_path, usage, fallback_text=response_text)
             response_markdown = _normalize_markdown_text("role1.response_markdown", response_text)
             return parse_role1_visual_descriptions(response_markdown)
         except Exception as error:  # noqa: BLE001
@@ -103,6 +135,8 @@ class Role1ImageryDescriber:
         current_attempt: int,
         first_chunk_at_ms: int,
         last_chunk_at_ms: int,
+        completion_tokens: int | None = None,
+        speed_tokens_per_sec: float | None = None,
     ) -> None:
         """
         功能说明：写入 role1 流式预览元信息，供监控页展示时间与重试次数。
@@ -110,6 +144,8 @@ class Role1ImageryDescriber:
         - current_attempt: 当前尝试序号（从 1 开始）。
         - first_chunk_at_ms: 首个 chunk 到达时间戳（毫秒）。
         - last_chunk_at_ms: 最近 chunk 到达时间戳（毫秒）。
+        - completion_tokens: LLM 输出 token 数。
+        - speed_tokens_per_sec: 输出速率（tokens/s）。
         返回值：无。
         异常说明：无；写盘失败时静默忽略，不影响主流程。
         边界条件：时间戳为 0 表示尚未收到对应 chunk。
@@ -124,6 +160,10 @@ class Role1ImageryDescriber:
                 "last_chunk_at_ms": max(0, int(last_chunk_at_ms)),
                 "last_chunk_at": _format_timestamp_ms(last_chunk_at_ms),
             }
+            if completion_tokens is not None and completion_tokens > 0:
+                payload["completion_tokens"] = completion_tokens
+            if speed_tokens_per_sec is not None and speed_tokens_per_sec > 0:
+                payload["speed_tokens_per_sec"] = round(speed_tokens_per_sec, 2)
             self._stream_preview_meta_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
@@ -142,12 +182,12 @@ class Role1ImageryDescriber:
         异常说明：无；落盘失败时仍返回包含原始错误的异常对象。
         边界条件：仅在 artifacts_dir 可用时写文件，否则直接返回原始异常。
         """
-        if self._artifacts_dir is None:
+        if self._work_dir is None:
             return error
         try:
-            self._artifacts_dir.mkdir(parents=True, exist_ok=True)
-            raw_output_path = self._artifacts_dir / "module_b_role1_visual_output.failed.md"
-            reason_path = self._artifacts_dir / "module_b_role1_visual_output.failed.reason.txt"
+            self._work_dir.mkdir(parents=True, exist_ok=True)
+            raw_output_path = self._work_dir / "role1_visual_output.failed.md"
+            reason_path = self._work_dir / "role1_visual_output.failed.reason.txt"
             if str(response_text).strip():
                 raw_output_path.write_text(str(response_text).strip() + "\n", encoding="utf-8")
             reason_path.write_text(str(error).strip() + "\n", encoding="utf-8")
@@ -322,3 +362,35 @@ def _build_messages(
         {"role": "system", "content": str(system_prompt or "").strip()},
         {"role": "user", "content": str(user_prompt_markdown or "").strip()},
     ]
+
+
+def _update_meta_with_usage(meta_path: Path | None, usage: dict | None, fallback_text: str = "") -> None:
+    """用 LLM usage 信息更新流式预览 meta 文件；无 usage 时用文本长度估算。"""
+    if meta_path is None:
+        return
+    try:
+        existing_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return
+    if usage is not None:
+        completion_tokens = int(usage.get("completion_tokens", 0))
+    elif fallback_text:
+        completion_tokens = max(1, len(str(fallback_text)) // 2)
+    else:
+        return
+    if completion_tokens <= 0:
+        return
+    existing_meta["completion_tokens"] = completion_tokens
+    first_ms = int(existing_meta.get("first_chunk_at_ms", 0))
+    last_ms = int(existing_meta.get("last_chunk_at_ms", 0))
+    if first_ms > 0 and last_ms > first_ms:
+        elapsed_s = (last_ms - first_ms) / 1000.0
+        if elapsed_s > 0:
+            existing_meta["speed_tokens_per_sec"] = round(completion_tokens / elapsed_s, 2)
+    try:
+        meta_path.write_text(
+            json.dumps(existing_meta, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except Exception:  # noqa: BLE001
+        return

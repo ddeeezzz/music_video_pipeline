@@ -48,6 +48,31 @@ class FrameGenerator(ABC):
         边界条件：必须显式返回 frame_path_start/frame_path_end/control_frame_paths。
         """
 
+    @abstractmethod
+    def generate_one_frame(
+        self,
+        shot: dict[str, Any],
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+        frame_type: str,
+    ) -> dict[str, Any]:
+        """
+        功能说明：仅生成单个 shot 的首帧或尾帧。
+        参数说明：
+        - shot: 模块 B 单元产物字典。
+        - output_dir: 输出目录。
+        - width: 输出宽度。
+        - height: 输出高度。
+        - shot_index: 镜头索引（0 基）。
+        - frame_type: "start" 或 "end"。
+        返回值：
+        - dict[str, Any]: 至少包含目标帧路径与提示词字段的结果字典。
+        异常说明：由具体实现抛出运行异常。
+        边界条件：只负责单帧，不要求同时返回双关键帧。
+        """
+
     def prewarm(self) -> None:
         """
         功能说明：执行批量生成前的显式预热或探活检查。
@@ -59,13 +84,19 @@ class FrameGenerator(ABC):
         return None
 
 
-def build_keyframe_generator(mode: str, logger: logging.Logger, app_config: Any | None = None) -> FrameGenerator:
+def build_keyframe_generator(
+    mode: str,
+    logger: logging.Logger,
+    app_config: Any | None = None,
+    seed: int = 42,
+) -> FrameGenerator:
     """
     功能说明：构建模块 C 的关键帧生成器实例。
     参数说明：
     - mode: 渲染后端名称；当前仅允许 comfyui。
     - logger: 日志对象。
     - app_config: 应用配置对象；ComfyUI 模式必填。
+    - seed: 全局固定种子，同一 task 使用同一值保证可复现。
     返回值：
     - FrameGenerator: ComfyUI 关键帧生成器实例。
     异常说明：
@@ -84,4 +115,4 @@ def build_keyframe_generator(mode: str, logger: logging.Logger, app_config: Any 
     from music_video_pipeline.generators.comfyui_frame_generator import ComfyUIFrameGenerator
 
     logger.info("模块C关键帧生成器已切换为 ComfyUI 唯一路径。")
-    return ComfyUIFrameGenerator(app_config=app_config, logger=logger)
+    return ComfyUIFrameGenerator(app_config=app_config, logger=logger, seed=seed)

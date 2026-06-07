@@ -29,6 +29,8 @@ const streamPreviewMetaSchema = z.object({
   first_chunk_at_ms: z.number(),
   last_chunk_at: z.string(),
   last_chunk_at_ms: z.number(),
+  completion_tokens: z.number().optional(),
+  speed_tokens_per_sec: z.number().optional(),
 });
 
 const moduleBUnitSummarySchema = z.object({
@@ -50,6 +52,13 @@ const moduleBSegmentItemSchema = z.object({
   label: z.string(),
   role: z.string(),
   scene_desc: z.string(),
+  story_outline_zh: z.string().optional().default(""),
+  big_segment_id: z.string().optional().default(""),
+  display_shot_id: z.string().optional().default(""),
+  display_title: z.string().optional().default(""),
+  display_subtitle: z.string().optional().default(""),
+  subject_index: z.number().optional(),
+  subject_title: z.string().optional().default(""),
 });
 
 const moduleBActiveRerunSchema = z.object({
@@ -70,6 +79,12 @@ const moduleBActiveRerunSchema = z.object({
   failure_reason: z.string(),
 });
 
+const renderedPromptSegmentSchema = z.object({
+  segment_id: z.string(),
+  content: z.string(),
+  updated_at_ms: z.number().optional(),
+});
+
 const moduleBRoleSchema = z.object({
   role_name: z.string(),
   title: z.string(),
@@ -77,10 +92,14 @@ const moduleBRoleSchema = z.object({
   source_path: z.string(),
   contract_fields: z.array(z.string()),
   implementation_status: z.string(),
-  implementation_detail: z.string(),
   supports_role_rerun: z.boolean(),
   supports_segment_retry: z.boolean(),
+  segment_items: z.array(moduleBSegmentItemSchema).optional().default([]),
+  active_rerun: moduleBActiveRerunSchema,
   prompt_template: textFileAssetSchema,
+  rendered_prompt: taskTextFileAssetSchema,
+  rendered_prompt_segments: z.array(renderedPromptSegmentSchema),
+  stream_preview_segments: z.array(renderedPromptSegmentSchema),
   stream_preview: taskTextFileAssetSchema,
   stream_preview_meta: streamPreviewMetaSchema,
   result: fileAssetSchema,
@@ -94,7 +113,6 @@ export const taskModuleBDataSchema = z.object({
   module_status: z.record(z.string(), z.string()),
   module_b_status: z.string(),
   module_b_unit_summary: moduleBUnitSummarySchema,
-  active_rerun: moduleBActiveRerunSchema,
   aggregate_output: fileAssetSchema,
   roles: z.array(moduleBRoleSchema),
   segment_items: z.array(moduleBSegmentItemSchema),

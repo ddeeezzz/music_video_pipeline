@@ -28,16 +28,14 @@
     "llm": {
       "provider": "siliconflow",
       "base_url": "https://api.siliconflow.cn/v1",
-      "model": "Qwen/Qwen2.5-14B-Instruct",
+      "model": "Qwen/Qwen2.5-32B-Instruct",
       "api_key_file": ".secrets/siliconflow_api_key.txt",
       "timeout_seconds": 120.0,
       "retry_times": 1,
-      "temperature": 0.5,
+      "temperature": 0.7,
       "top_p": 0.9,
       "enable_thinking": false,
-      "scene_desc_max_chars": 200,
-      "keyframe_prompt_max_chars": 450,
-      "video_prompt_max_chars": 550
+      "max_tokens": 8192
     }
   },
   "module_c": {
@@ -55,7 +53,7 @@
     "server_url": "http://127.0.0.1:8188",
     "request_timeout_seconds": 30.0,
     "poll_interval_seconds": 1.0,
-    "execution_timeout_seconds": 1800.0
+    "execution_timeout_seconds": 60.0
   },
   "cross_module": {
     "global_render_limit": 1,

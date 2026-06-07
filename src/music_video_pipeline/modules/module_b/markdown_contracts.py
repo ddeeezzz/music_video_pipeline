@@ -20,8 +20,20 @@ logger = logging.getLogger(__name__)
 
 # 常量：role1 当前使用的固定字段名。
 ROLE1_FIELDS = ("pos_zh", "pos_en")
-# 常量：role2/3/4 当前统一使用的占位字段名。
-PLACEHOLDER_FIELDS = ("占位1", "占位2", "占位3")
+# 常量：role2 当前使用的固定字段名。
+ROLE2_FIELDS = ("imagery_used", "story_outline_zh")
+# 常量：role3 镜头规划的固定字段名。
+ROLE3_FIELDS = ("scene_desc_zh", "remotion_id")
+# 常量：role4 当前使用的固定字段名（共 7 字段）。
+ROLE4_FIELDS = (
+    "subject_kind",
+    "keyframe_prompt_start_zh",
+    "keyframe_prompt_start_en",
+    "keyframe_prompt_end_zh",
+    "keyframe_prompt_end_en",
+    "video_prompt_zh",
+    "video_prompt_en",
+)
 
 
 class ModuleBMarkdownContractError(RuntimeError):
@@ -39,33 +51,39 @@ class Role1VisualDescription(BaseModel):
 
 
 class ScenePlan(BaseModel):
-    """role2 单条场景规划占位结构。"""
+    """role2 单条场景规划——由 parse_role2_scene_plans 解析 Markdown 产出。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    占位1: str = Field(default="")
-    占位2: str = Field(default="")
-    占位3: str = Field(default="")
+    big_segment_id: str = Field(default="")
+    imagery_used: str = Field(default="")
+    story_outline_zh: str = Field(default="")
 
 
 class ShotPlan(BaseModel):
-    """role3 单条镜头规划占位结构。"""
+    """role3 单条镜头规划——由 parse_shot_plans 解析 Markdown 产出。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    占位1: str = Field(default="")
-    占位2: str = Field(default="")
-    占位3: str = Field(default="")
+    big_segment_id: str = Field(default="")
+    segment_id: str = Field(default="")
+    scene_desc_zh: str = Field(default="")
+    remotion_id: str = Field(default="")
 
 
 class PromptPlan(BaseModel):
-    """role4 单条提示词规划占位结构。"""
+    """role4 单条提示词规划 —— 7 字段（含 subject_kind）。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    占位1: str = Field(default="")
-    占位2: str = Field(default="")
-    占位3: str = Field(default="")
+    shot_id: str = Field(default="")
+    subject_kind: str = Field(default="character")
+    keyframe_prompt_start_zh: str = Field(default="")
+    keyframe_prompt_start_en: str = Field(default="")
+    keyframe_prompt_end_zh: str = Field(default="")
+    keyframe_prompt_end_en: str = Field(default="")
+    video_prompt_zh: str = Field(default="")
+    video_prompt_en: str = Field(default="")
 
 
 @dataclass(frozen=True)
@@ -103,33 +121,191 @@ def parse_role1_visual_descriptions(markdown_text: str) -> list[Role1VisualDescr
 
 
 def parse_scene_plans(markdown_text: str) -> list[ScenePlan]:
-    """轻量提取 role2 场景规划。"""
+    """轻量提取 role2 场景规划——标题是 big_segment_id，字段来自列表行。"""
     parsed_sections = _parse_field_maps(
         markdown_text=markdown_text,
         contract_name="role2",
-        expected_fields=PLACEHOLDER_FIELDS,
+        expected_fields=ROLE2_FIELDS,
     )
-    return [ScenePlan.model_validate(field_map) for _, field_map in parsed_sections]
+    results: list[ScenePlan] = []
+    for heading, field_map in parsed_sections:
+        results.append(ScenePlan(
+            big_segment_id=heading,
+            imagery_used=field_map.get("imagery_used", ""),
+            story_outline_zh=field_map.get("story_outline_zh", ""),
+        ))
+    logger.debug("role2 成功提取 %d 条场景规划。", len(results))
+    return results
 
 
 def parse_shot_plans(markdown_text: str) -> list[ShotPlan]:
-    """轻量提取 role3 镜头规划。"""
-    parsed_sections = _parse_field_maps(
-        markdown_text=markdown_text,
-        contract_name="role3",
-        expected_fields=PLACEHOLDER_FIELDS,
-    )
-    return [ShotPlan.model_validate(field_map) for _, field_map in parsed_sections]
+    """轻量提取 role3 镜头规划——## big → ### segment → - 字段行。"""
+    text = _extract_fenced_md(markdown_text)
+    if not text:
+        raise ModuleBMarkdownContractError("role3 Markdown 不能为空。")
+
+    results: list[ShotPlan] = []
+    # 按 "## " 拆分大段
+    big_parts = re.split(r'\n(?=## )', text)
+    for big_part in big_parts:
+        big_part = big_part.strip()
+        if not big_part:
+            continue
+        big_lines = big_part.split("\n")
+        big_heading = big_lines[0].strip()
+        if not big_heading.startswith("## "):
+            continue
+        big_segment_id = big_heading[3:].strip()
+        if not big_segment_id:
+            continue
+
+        # 按 "### " 拆分 segment
+        segment_body = "\n".join(big_lines[1:])
+        segment_parts = re.split(r'\n(?=### )', segment_body)
+        for segment_part in segment_parts:
+            segment_part = segment_part.strip()
+            if not segment_part:
+                continue
+            segment_lines = segment_part.split("\n")
+            segment_heading = segment_lines[0].strip()
+            if not segment_heading.startswith("### "):
+                continue
+            segment_id = segment_heading[4:].strip()
+            if not segment_id:
+                continue
+
+            # 提取 - 字段行
+            field_map: dict[str, str] = {}
+            for line in segment_lines[1:]:
+                item = line.strip()
+                if not item.startswith("- "):
+                    continue
+                field_name, field_value = _split_field_line(item[2:])
+                if not field_name:
+                    continue
+                field_map[field_name] = field_value
+
+            _warn_missing_fields(field_map, expected=ROLE3_FIELDS, contract_name="role3", heading=segment_id)
+            results.append(ShotPlan(
+                big_segment_id=big_segment_id,
+                segment_id=segment_id,
+                scene_desc_zh=field_map.get("scene_desc_zh", ""),
+                remotion_id=field_map.get("remotion_id", ""),
+            ))
+
+    logger.debug("role3 成功提取 %d 条镜头规划。", len(results))
+    if not results:
+        raise ModuleBMarkdownContractError("role3 必须至少包含一个 ### shot 条目。")
+    return results
 
 
 def parse_prompt_plans(markdown_text: str) -> list[PromptPlan]:
-    """轻量提取 role4 提示词规划。"""
-    parsed_sections = _parse_field_maps(
-        markdown_text=markdown_text,
-        contract_name="role4",
-        expected_fields=PLACEHOLDER_FIELDS,
-    )
-    return [PromptPlan.model_validate(field_map) for _, field_map in parsed_sections]
+    """解析 role4 新的 markdown 格式为 PromptPlan 列表。
+
+    支持两种格式：
+    - 单主体：## shot_xxx 下直接 6 个 - field: value
+    - 多主体：## shot_xxx → ### 主体名 → 6 个 - field: value
+      多主体时同名字段拼接（逗号分隔），扁平化为一条 PromptPlan。
+    """
+    text = _extract_fenced_md(markdown_text)
+    if not text:
+        logger.warning("role4 markdown 为空，返回空列表。")
+        return []
+
+    results: list[PromptPlan] = []
+    # 按 ## shot_xxx 拆分
+    shot_blocks = re.split(r"\n(?=## )", text)
+    for block in shot_blocks:
+        block = block.strip()
+        if not block:
+            continue
+        lines = block.split("\n")
+        first_line = lines[0].strip()
+        if not first_line.startswith("## "):
+            continue
+        shot_id = first_line[3:].strip()
+        if not shot_id:
+            continue
+
+        # 检查是否存在 ### 主体名 子标题
+        body = "\n".join(lines[1:])
+        subject_blocks = re.split(r"\n(?=### )", body)
+
+        has_subjects = any(
+            b.strip().startswith("### ") for b in subject_blocks if b.strip()
+        )
+
+        if not has_subjects:
+            # 单主体：直接解析 7 字段
+            field_map = _build_field_map_from_body(body, contract_name="role4", heading=shot_id)
+            _warn_missing_fields(field_map, expected=ROLE4_FIELDS, contract_name="role4", heading=shot_id)
+            results.append(PromptPlan(
+                shot_id=shot_id,
+                subject_kind=field_map.get("subject_kind", "character"),
+                keyframe_prompt_start_zh=field_map.get("keyframe_prompt_start_zh", ""),
+                keyframe_prompt_start_en=field_map.get("keyframe_prompt_start_en", ""),
+                keyframe_prompt_end_zh=field_map.get("keyframe_prompt_end_zh", ""),
+                keyframe_prompt_end_en=field_map.get("keyframe_prompt_end_en", ""),
+                video_prompt_zh=field_map.get("video_prompt_zh", ""),
+                video_prompt_en=field_map.get("video_prompt_en", ""),
+            ))
+        else:
+            # 多主体：按 ### 主体名 拆分，合并同名字段
+            merged: dict[str, list[str]] = {f: [] for f in ROLE4_FIELDS}
+            for subj_block in subject_blocks:
+                subj_block = subj_block.strip()
+                if not subj_block:
+                    continue
+                subj_lines = subj_block.split("\n")
+                subj_first = subj_lines[0].strip()
+                if not subj_first.startswith("### "):
+                    continue
+                subj_body = "\n".join(subj_lines[1:])
+                subj_field_map = _build_field_map_from_body(subj_body, contract_name="role4", heading=f"{shot_id}>{subj_first[4:].strip()}")
+                for f in ROLE4_FIELDS:
+                    val = subj_field_map.get(f, "")
+                    if val:
+                        merged[f].append(val)
+
+            # 多主体各格子类型一致，取第一个非空 subject_kind
+            subject_kind = "character"
+            for val in merged.get("subject_kind", []):
+                if str(val).strip():
+                    subject_kind = str(val).strip()
+                    break
+
+            results.append(PromptPlan(
+                shot_id=shot_id,
+                subject_kind=subject_kind,
+                keyframe_prompt_start_zh=", ".join(merged["keyframe_prompt_start_zh"]),
+                keyframe_prompt_start_en=", ".join(merged["keyframe_prompt_start_en"]),
+                keyframe_prompt_end_zh=", ".join(merged["keyframe_prompt_end_zh"]),
+                keyframe_prompt_end_en=", ".join(merged["keyframe_prompt_end_en"]),
+                video_prompt_zh=", ".join(merged["video_prompt_zh"]),
+                video_prompt_en=", ".join(merged["video_prompt_en"]),
+            ))
+
+    logger.info("role4 成功提取 %d 条提示词规划。", len(results))
+    return results
+
+
+def _build_field_map_from_body(body: str, *, contract_name: str, heading: str) -> dict[str, str]:
+    """从 Markdown 正文行中提取 - field: value 映射。"""
+    field_map: dict[str, str] = {}
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("- "):
+            continue
+        field_name, field_value = _split_field_line(stripped[2:])
+        if not field_name:
+            continue
+        if field_name in field_map:
+            logger.warning(
+                "%s 条目 '%s' 出现重复字段 '%s'，使用最后一次出现的值。",
+                contract_name, heading, field_name,
+            )
+        field_map[field_name] = field_value
+    return field_map
 
 
 # ---------------------------------------------------------------------------
@@ -138,11 +314,11 @@ def parse_prompt_plans(markdown_text: str) -> list[PromptPlan]:
 
 
 def _extract_fenced_md(text: str) -> str:
-    """提取 ```md ... ``` 内部内容；若无 fence 则返回原文。"""
+    """提取所有 ```md ... ``` 内部内容并合并；若无 fence 则返回原文。"""
     t = str(text or "").replace("\r\n", "\n")
-    m = re.search(r'```(?:md|markdown)?[ \t]*\n(.*?)\n[ \t]*```', t, re.DOTALL)
-    if m:
-        return m.group(1).strip()
+    blocks = re.findall(r'```(?:md|markdown)?[ \t]*\n(.*?)\n[ \t]*```', t, re.DOTALL)
+    if blocks:
+        return "\n\n".join(block.strip() for block in blocks).strip()
     return t.strip()
 
 
@@ -185,7 +361,7 @@ def _parse_sections(markdown_text: str, contract_name: str) -> list[_MarkdownSec
         sections.append(_MarkdownSection(heading=heading, list_items=list_items))
 
     heading_names = [s.heading for s in sections]
-    logger.info("%s 解析到 %d 个 ## 条目，分别是%s。", contract_name, len(sections), heading_names)
+    logger.debug("%s 解析到 %d 个 ## 条目，分别是%s。", contract_name, len(sections), heading_names)
 
     if not sections:
         raise ModuleBMarkdownContractError(f"{contract_name} 必须至少包含一个 ## 条目。")

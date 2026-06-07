@@ -309,9 +309,9 @@ def test_task_monitor_service_should_remap_foreign_audio_path_for_search_lyrics_
             "acoustid_result": {"status": "ok"},
         }
 
-    monkeypatch.setattr("music_video_pipeline.monitoring.server.probe_audio_duration", _fake_probe_audio_duration)
+    monkeypatch.setattr("music_video_pipeline.monitoring.handlers.module_a.probe_audio_duration", _fake_probe_audio_duration)
     monkeypatch.setattr(
-        "music_video_pipeline.monitoring.server.search_synced_lrc_candidates",
+        "music_video_pipeline.monitoring.handlers.module_a.search_synced_lrc_candidates",
         _fake_search_synced_lrc_candidates,
     )
 
@@ -803,6 +803,106 @@ def test_task_monitor_service_should_build_web_payload_from_module_b_and_c_witho
     assert payload["segment_units"][1]["segment_id"] == "seg_0002"
     assert payload["segment_units"][1]["scene_desc"] == ""
     assert payload["segment_units"][1]["shot_id"] == ""
+
+
+def test_build_module_d_segment_videos_payload_should_scan_segments_dir(tmp_path: Path) -> None:
+    """
+    功能说明：验证模块 D segment 视频元数据接口直接反映 segments 目录文件事实。
+    参数说明：
+    - tmp_path: pytest 临时目录。
+    返回值：无。
+    异常说明：断言失败时由 pytest 抛出。
+    边界条件：不依赖 role3/state_store 单元状态。
+    """
+    state_store = StateStore(db_path=tmp_path / "state.sqlite3")
+    task_id = "task_segment_videos"
+    _seed_task(state_store=state_store, task_id=task_id, workspace=tmp_path)
+
+    segments_dir = tmp_path / task_id / "artifacts" / "segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    mp4_path = segments_dir / "segment_001.mp4"
+    mp4_path.write_bytes(b"fake-video")
+
+    service = TaskMonitorService(
+        state_store=state_store,
+        task_id=task_id,
+        logger=logging.getLogger("test_build_module_d_segment_videos_payload_should_scan_segments_dir"),
+        frontend_build_dir=tmp_path / "frontend_build",
+    )
+    payload = service._build_module_d_segment_videos_payload(task_id=task_id)
+
+    assert payload["ok"] is True
+    assert payload["task_id"] == task_id
+    assert "seg_0001" in payload["items"]
+    assert payload["items"]["seg_0001"]["exists"] is True
+    assert payload["items"]["seg_0001"]["mtime"] == int(mp4_path.stat().st_mtime)
+    assert payload["items"]["seg_0001"]["video_url"].endswith(f"?t={int(mp4_path.stat().st_mtime)}")
+
+
+def test_apply_module_a_segment_duration_to_props_should_override_template_frames(tmp_path: Path) -> None:
+    """
+    功能说明：验证单帧/首尾帧重跑会用 Module A segment 时长覆盖模板默认帧数。
+    """
+    state_store = StateStore(db_path=tmp_path / "state.sqlite3")
+    task_id = "task_duration_fix"
+    _seed_task(state_store=state_store, task_id=task_id, workspace=tmp_path)
+    task_dir = tmp_path / task_id
+    artifacts_dir = task_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    (artifacts_dir / "module_a_output.json").write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {
+                        "segment_id": "seg_0001",
+                        "start_time": 0.0,
+                        "end_time": 4.01,
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = TaskMonitorService(
+        state_store=state_store,
+        task_id=task_id,
+        logger=logging.getLogger("test_apply_module_a_segment_duration_to_props_should_override_template_frames"),
+        frontend_build_dir=tmp_path / "frontend_build",
+    )
+    props = {"fps": 24, "duration_in_frames": 12}
+    updated_props, seg_duration, total_frames = service._apply_module_a_segment_duration_to_props(
+        task_id=task_id,
+        segment_id="seg_0001",
+        props=props,
+    )
+
+    assert seg_duration == 4.01
+    assert total_frames == 96
+    assert updated_props["duration_in_frames"] == 96
+
+
+def test_build_module_d_segment_videos_payload_should_work_without_state_record(tmp_path: Path) -> None:
+    """
+    功能说明：验证 segment 视频元数据接口仅依赖任务目录，不强制要求 SQLite 任务记录。
+    """
+    state_store = StateStore(db_path=tmp_path / "state.sqlite3")
+    task_id = "task_dir_only"
+    segments_dir = tmp_path / task_id / "artifacts" / "segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    (segments_dir / "segment_002.mp4").write_bytes(b"fake-video-2")
+
+    service = TaskMonitorService(
+        state_store=state_store,
+        task_id=task_id,
+        logger=logging.getLogger("test_build_module_d_segment_videos_payload_should_work_without_state_record"),
+        frontend_build_dir=tmp_path / "frontend_build",
+    )
+    payload = service._build_module_d_segment_videos_payload(task_id=task_id)
+
+    assert payload["ok"] is True
+    assert "seg_0002" in payload["items"]
 
 
 def _seed_task(state_store: StateStore, task_id: str, workspace: Path) -> None:

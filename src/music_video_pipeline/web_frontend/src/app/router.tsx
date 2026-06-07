@@ -8,6 +8,8 @@ import { TaskDetailPage } from "@/pages/tasks/TaskDetailPage";
 import { TaskListPage } from "@/pages/tasks/TaskListPage";
 import { TaskModuleAPage } from "@/pages/tasks/TaskModuleAPage";
 import { TaskModuleBPage } from "@/pages/tasks/TaskModuleBPage";
+import { TaskModuleCPage } from "@/pages/tasks/TaskModuleCPage";
+import { TaskModuleDPage } from "@/pages/tasks/TaskModuleDPage";
 import { TaskMonitorPage } from "@/pages/tasks/TaskMonitorPage";
 import { TaskReviewPage } from "@/pages/tasks/TaskReviewPage";
 
@@ -55,6 +57,14 @@ export const router = createBrowserRouter([
           {
             path: "module-b",
             element: <TaskModuleBPage />,
+          },
+          {
+            path: "module-c",
+            element: <TaskModuleCPage />,
+          },
+          {
+            path: "module-d",
+            element: <TaskModuleDPage />,
           },
         ],
       },

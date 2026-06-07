@@ -50,6 +50,10 @@ const getBeatPulseScale = (
 const TEMPLATE_WIDTH = 512;
 // 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
 const TEMPLATE_HEIGHT = 320;
+// 常量：模板自然动画帧数（保持不变速）。
+const NATURAL_FRAMES = 48;
+// 常量：mid energy 左移放大倍率（仿 PanRightTemplate 第二阶段的放大处理）。
+const MID_SCALE = 1.125;
 
 /**
  * 功能说明：渲染居中单图模板。
@@ -62,32 +66,66 @@ const TEMPLATE_HEIGHT = 320;
  */
 export const CenterTemplate = (props: CenterTemplateRequest): ReactElement => {
   const frame = useCurrentFrame();
-  const pulseScale = getBeatPulseScale(
-    frame,
-    props.fps,
-    props.bpm,
-    props.motion.breathe
-  );
+  // 保持自然速度：动画帧 clamped 到 NATURAL_FRAMES，之后维持末帧
+  const animFrame = Math.min(frame, NATURAL_FRAMES - 1);
+
+  // energy_level 控制缩放/平移行为
+  const energyLevel = props.energy_level ?? "high";
+  let pulseScale: number;
+  let translateX = 0;
+
+  if (energyLevel === "high") {
+    pulseScale = getBeatPulseScale(animFrame, props.fps, props.bpm, props.motion.breathe);
+  } else if (energyLevel === "mid") {
+    // 先快速放大到 MID_SCALE，再在放大图内慢速左移
+    const phase1Frames = Math.min(12, props.duration_in_frames);
+    const phase2Frames = Math.max(0, props.duration_in_frames - phase1Frames);
+
+    const p1Raw = phase1Frames > 1
+      ? Math.min(1, Math.max(0, Math.min(frame, phase1Frames - 1) / (phase1Frames - 1)))
+      : 1;
+    const eased = p1Raw < 0.5 ? 4 * p1Raw * p1Raw * p1Raw : 1 - Math.pow(-2 * p1Raw + 2, 3) / 2;
+    pulseScale = 1 + (MID_SCALE - 1) * eased;
+
+    if (phase2Frames > 0) {
+      const p2Raw = Math.min(1, Math.max(0, (frame - phase1Frames) / phase2Frames));
+      // 放大后左右各多出 W*(SCALE-1)/2 像素，左移此距离让右侧内容逐渐可见
+      translateX = -(TEMPLATE_WIDTH * (MID_SCALE - 1) / 2) * p2Raw;
+    }
+  } else {
+    const progress = Math.min(1, frame / Math.max(1, props.duration_in_frames));
+    // low energy: 缓缓缩小 1/8
+    pulseScale = 1 - progress * (1 / 8);
+  }
+
+  // 从 frames 数组按进度取当前帧
+  const currentSymbol = props.frames[
+    Math.min(
+      Math.floor((frame / Math.max(1, props.duration_in_frames)) * props.frames.length),
+      props.frames.length - 1
+    )
+  ];
 
   return (
     <AbsoluteFill
       style={{
         width: TEMPLATE_WIDTH,
         height: TEMPLATE_HEIGHT,
-        overflow: "hidden"
+        overflow: "hidden",
+        filter: "grayscale(100%)"
       }}
     >
       <BackgroundLayer background={props.background} />
       <AbsoluteFill
         style={{
-          transform: `scale(${pulseScale})`,
+          transform: `translateX(${translateX}px) scale(${pulseScale})`,
           transformOrigin: "center center"
         }}
       >
         <SymbolLayer
-          src={props.symbol.src}
-          widthRatio={props.symbol.width_ratio}
-          heightRatio={props.symbol.height_ratio}
+          src={currentSymbol.src}
+          widthRatio={currentSymbol.width_ratio}
+          heightRatio={currentSymbol.height_ratio}
         />
       </AbsoluteFill>
     </AbsoluteFill>

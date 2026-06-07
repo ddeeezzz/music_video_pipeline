@@ -6,10 +6,10 @@
 维护说明：本文件只负责模块 C 的 ComfyUI 出图，不承担 resident daemon 或模块 D 视频逻辑。
 """
 
-# 标准库：用于稳定随机种子。
-import hashlib
 # 标准库：用于日志输出。
 import logging
+# 标准库：用于正则解析。
+import re
 # 标准库：用于文件复制。
 import shutil
 # 标准库：用于路径处理。
@@ -39,9 +39,10 @@ class ComfyUIFrameGenerator:
     边界条件：默认假设 ComfyUI 服务已经启动且可访问。
     """
 
-    def __init__(self, app_config: AppConfig, logger: logging.Logger) -> None:
+    def __init__(self, app_config: AppConfig, logger: logging.Logger, seed: int = 42) -> None:
         self._config = app_config
         self._logger = logger
+        self._seed = int(seed)
         project_root = Path(__file__).resolve().parents[3]
         comfyui_cfg = app_config.comfyui
         self._project_root = project_root
@@ -61,18 +62,18 @@ class ComfyUIFrameGenerator:
 
     def prewarm(self) -> None:
         """
-        功能说明：在模块 C 批量生成前显式校验 ComfyUI 服务、契约与关键模型资产。
+        功能说明：校验 ComfyUI 服务可达并记录工作流契约信息。
         参数说明：无。
         返回值：无。
         异常说明：
-        - RuntimeError: 服务不可达、契约异常或关键模型资产缺失时抛出。
-        边界条件：本预热不提交真实生成任务，只做前置条件校验。
+        - RuntimeError: 服务不可达时抛出。
+        边界条件：模型资产由 ComfyUI 直接管理，不做本地文件存在性校验。
         """
         self._client.ensure_service_ready()
         comfyui_cfg = self._config.module_c.comfyui
         required_asset_paths = {
             "checkpoint_file": (self._project_root / str(comfyui_cfg.checkpoint_file)).resolve(),
-            "scene_lora_file": (self._project_root / str(comfyui_cfg.scene_lora_file)).resolve(),
+            "scene_lora_file": (self._project_root / str(comfyui_cfg.turbo_lora_file)).resolve(),
             "char_lora_file": (self._project_root / str(comfyui_cfg.char_lora_file)).resolve(),
         }
         missing_assets = [
@@ -81,9 +82,9 @@ class ComfyUIFrameGenerator:
             if not asset_path.exists()
         ]
         if missing_assets:
-            raise RuntimeError(
-                "模块C ComfyUI 预热失败：关键模型资产缺失，"
-                f"missing={missing_assets}"
+            self._logger.warning(
+                "模块C ComfyUI 部分本地模型资产缺失（ComfyUI 侧可能已有对应文件），missing=%s",
+                missing_assets,
             )
         self._logger.info(
             "模块C ComfyUI 预热完成，character_start=%s，character_end=%s，prop_start=%s，prop_end=%s",
@@ -92,6 +93,18 @@ class ComfyUIFrameGenerator:
             self._contract_prop_start.workflow_api_file,
             self._contract_prop_end.workflow_api_file,
         )
+
+    @staticmethod
+    def _assemble_prompt(cfg: Any, prompt_body: str, subject_kind: str = "character") -> str:
+        """组装正向提示词：前缀 + LLM 输出主体 + （可选后缀）。
+        场景类主体跳过后缀中的白色背景约束，避免与场景描述冲突。"""
+        prefix = str(getattr(cfg, "prompt_prefix", "").strip())
+        suffix = str(getattr(cfg, "prompt_suffix", "").strip())
+        parts = [p for p in [prefix, prompt_body] if p]
+        normalized_kind = str(subject_kind or "character").strip().lower()
+        if normalized_kind != "scene" and suffix:
+            parts.append(suffix)
+        return "\n".join(parts)
 
     def generate_one(
         self,
@@ -117,8 +130,11 @@ class ComfyUIFrameGenerator:
         shot_id = str(shot.get("shot_id", "")).strip()
         if not shot_id:
             raise RuntimeError("模块C ComfyUI 生成失败：shot_id 不能为空。")
-        prompt_start = str(shot.get("keyframe_prompt_start_en", "")).strip()
-        prompt_end = str(shot.get("keyframe_prompt_end_en", "")).strip()
+        raw_prompt_start = str(shot.get("keyframe_prompt_start_en", "")).strip()
+        raw_prompt_end = str(shot.get("keyframe_prompt_end_en", "")).strip()
+        shot_subject_kind = str(shot.get("subject_kind", "character")).strip().lower()
+        prompt_start = self._assemble_prompt(self._config.module_c.comfyui, raw_prompt_start, shot_subject_kind)
+        prompt_end = self._assemble_prompt(self._config.module_c.comfyui, raw_prompt_end, shot_subject_kind)
         negative_prompt_start_zh = str(shot.get("keyframe_negative_prompt_start_zh", "")).strip()
         negative_prompt_start = str(shot.get("keyframe_negative_prompt_start_en", "")).strip()
         negative_prompt_end_zh = str(shot.get("keyframe_negative_prompt_end_zh", "")).strip()
@@ -150,8 +166,15 @@ class ComfyUIFrameGenerator:
         asset_kind = _resolve_asset_kind(shot=shot)
         contract_start, contract_end = self._resolve_contract_pair(asset_kind=asset_kind)
         checkpoint_name = Path(str(comfyui_cfg.checkpoint_file)).name
+
+        # 解析 seg 序号与资产序号，构建文件名前缀。
+        big_seg = str(shot.get("big_segment_id", "")).strip()
+        seg_match = re.search(r"(\d+)", big_seg)
+        seg_idx = int(seg_match.group(1)) if seg_match else (shot_index + 1)
+        asset_idx = 1  # 当前每个 shot 只有一个主体
+        file_prefix = f"mvpl/module_c/shot{seg_idx:04d}-{asset_idx}"
         scene_lora_name = _resolve_catalog_asset_name(
-            asset_file=str(comfyui_cfg.scene_lora_file),
+            asset_file=str(comfyui_cfg.turbo_lora_file),
             category_folder="lora",
         )
         char_lora_name = _resolve_catalog_asset_name(
@@ -170,8 +193,9 @@ class ComfyUIFrameGenerator:
                 negative_prompt=negative_prompt_start or str(comfyui_cfg.negative_prompt),
                 width=width,
                 height=height,
-                seed=_resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="start"),
-                filename_prefix=f"mvpl/module_c/{shot_id}/start",
+                seed=self._seed,
+                filename_prefix=f"{file_prefix}/start",
+                subject_kind=shot_subject_kind,
             ),
         )
         start_outputs = self._client.execute_prompt(
@@ -180,7 +204,15 @@ class ComfyUIFrameGenerator:
         )
         if not start_outputs:
             raise RuntimeError(f"模块C ComfyUI 生成失败：首关键帧未返回产物，shot_id={shot_id}")
-        staged_init_image = self._client.stage_input_image(start_outputs[0], prefix=f"{shot_id}_start")
+
+        # 保存首帧到磁盘，并 stage 到 ComfyUI input 目录作为尾帧图生图的 init_image
+        image_path_start = output_dir / f"{shot_id}_start.png"
+        image_path_start.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(start_outputs[0], image_path_start)
+        staged_init_path = self._client.stage_input_image(
+            image_path_start, prefix=f"{shot_id}_end_init"
+        )
+
         workflow_end = render_workflow_from_contract(
             contract=contract_end,
             binding_values=self._build_binding_values(
@@ -192,10 +224,11 @@ class ComfyUIFrameGenerator:
                 negative_prompt=negative_prompt_end or str(comfyui_cfg.negative_prompt),
                 width=width,
                 height=height,
-                seed=_resolve_seed_value(shot_id=shot_id, shot_index=shot_index, seed_variant="end"),
-                filename_prefix=f"mvpl/module_c/{shot_id}/end",
-                init_image=staged_init_image,
-                denoise=float(comfyui_cfg.end_denoise),
+                seed=self._seed,
+                filename_prefix=f"{file_prefix}/end",
+                init_image=staged_init_path,
+                denoise=comfyui_cfg.end_denoise,
+                subject_kind=shot_subject_kind,
             ),
         )
         end_outputs = self._client.execute_prompt(
@@ -205,9 +238,7 @@ class ComfyUIFrameGenerator:
         if not end_outputs:
             raise RuntimeError(f"模块C ComfyUI 生成失败：末关键帧未返回产物，shot_id={shot_id}")
 
-        image_path_start = output_dir / f"frame_{shot_index + 1:03d}.png"
-        image_path_end = output_dir / f"frame_{shot_index + 1:03d}_end.png"
-        shutil.copy2(start_outputs[0], image_path_start)
+        image_path_end = output_dir / f"{shot_id}_end.png"
         shutil.copy2(end_outputs[0], image_path_end)
 
         start_time = float(shot["start_time"])
@@ -246,8 +277,187 @@ class ComfyUIFrameGenerator:
             "asset_kind": asset_kind,
             "binding_name": "comfyui",
             "base_model_key": Path(str(comfyui_cfg.checkpoint_file)).stem,
-            "scene_lora_file": str((self._project_root / str(comfyui_cfg.scene_lora_file)).resolve()),
+            "scene_lora_file": str((self._project_root / str(comfyui_cfg.turbo_lora_file)).resolve()),
             "char_lora_file": str((self._project_root / str(comfyui_cfg.char_lora_file)).resolve()),
+        }
+
+    def generate_one_frame(
+        self,
+        shot: dict[str, Any],
+        output_dir: Path,
+        width: int,
+        height: int,
+        shot_index: int,
+        frame_type: str,
+    ) -> dict[str, Any]:
+        """
+        功能说明：仅生成单个 shot 的首帧或尾帧。
+        参数说明：
+        - shot: 模块 B 单元产物字典。
+        - output_dir: 关键帧输出目录。
+        - width/height: 输出分辨率。
+        - shot_index: shot 顺序索引（0 基）。
+        - frame_type: "start" 或 "end"。
+        返回值：
+        - dict[str, Any]: 单帧结果字典。
+        异常说明：
+        - RuntimeError: 服务不可用、workflow 执行失败或必要字段缺失时抛出。
+        边界条件：end 当前仍直接走 end prompt workflow，不依赖 start 图。
+        """
+        normalized_frame_type = str(frame_type or "").strip().lower()
+        if normalized_frame_type not in {"start", "end"}:
+            raise RuntimeError(f"模块C ComfyUI 单帧生成失败：非法 frame_type={frame_type}")
+
+        shot_id = str(shot.get("shot_id", "")).strip()
+        if not shot_id:
+            raise RuntimeError("模块C ComfyUI 单帧生成失败：shot_id 不能为空。")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        comfyui_cfg = self._config.module_c.comfyui
+        asset_kind = _resolve_asset_kind(shot=shot)
+        contract_start, contract_end = self._resolve_contract_pair(asset_kind=asset_kind)
+        checkpoint_name = Path(str(comfyui_cfg.checkpoint_file)).name
+
+        big_seg = str(shot.get("big_segment_id", "")).strip()
+        seg_match = re.search(r"(\d+)", big_seg)
+        seg_idx = int(seg_match.group(1)) if seg_match else (shot_index + 1)
+        asset_idx = 1
+        file_prefix = f"mvpl/module_c/shot{seg_idx:04d}-{asset_idx}"
+        scene_lora_name = _resolve_catalog_asset_name(
+            asset_file=str(comfyui_cfg.turbo_lora_file),
+            category_folder="lora",
+        )
+        char_lora_name = _resolve_catalog_asset_name(
+            asset_file=str(comfyui_cfg.char_lora_file),
+            category_folder="lora",
+        )
+
+        raw_prompt_start = str(shot.get("keyframe_prompt_start_en", "")).strip()
+        raw_prompt_end = str(shot.get("keyframe_prompt_end_en", "")).strip()
+        shot_subject_kind = str(shot.get("subject_kind", "character")).strip().lower()
+        prompt_start = self._assemble_prompt(self._config.module_c.comfyui, raw_prompt_start, shot_subject_kind)
+        prompt_end = self._assemble_prompt(self._config.module_c.comfyui, raw_prompt_end, shot_subject_kind)
+        keyframe_prompt_start_zh = str(shot.get("keyframe_prompt_start_zh", "")).strip()
+        keyframe_prompt_end_zh = str(shot.get("keyframe_prompt_end_zh", "")).strip()
+        video_prompt_zh = str(shot.get("video_prompt_zh", "")).strip()
+        video_prompt_en = str(shot.get("video_prompt_en", "")).strip()
+        negative_prompt_start_zh = str(shot.get("keyframe_negative_prompt_start_zh", "")).strip()
+        negative_prompt_start = str(shot.get("keyframe_negative_prompt_start_en", "")).strip()
+        negative_prompt_end_zh = str(shot.get("keyframe_negative_prompt_end_zh", "")).strip()
+        negative_prompt_end = str(shot.get("keyframe_negative_prompt_end_en", "")).strip()
+
+        if normalized_frame_type == "start":
+            self._logger.info(
+                "模块C ComfyUI 单帧生成开始，shot_id=%s，frame_type=start，width=%s，height=%s",
+                shot_id,
+                width,
+                height,
+            )
+            if not keyframe_prompt_start_zh or not prompt_start:
+                raise RuntimeError(
+                    f"模块C ComfyUI 首帧生成失败：缺失首帧提示词，shot_id={shot_id}"
+                )
+            workflow_prompt = render_workflow_from_contract(
+                contract=contract_start,
+                binding_values=self._build_binding_values(
+                    asset_kind=asset_kind,
+                    checkpoint_name=checkpoint_name,
+                    scene_lora_name=scene_lora_name,
+                    char_lora_name=char_lora_name,
+                    positive_prompt=prompt_start,
+                    negative_prompt=negative_prompt_start or str(comfyui_cfg.negative_prompt),
+                    width=width,
+                    height=height,
+                    seed=self._seed,
+                    filename_prefix=f"{file_prefix}/start",
+                    subject_kind=shot_subject_kind,
+                ),
+            )
+            outputs = self._client.execute_prompt(
+                workflow_prompt=workflow_prompt,
+                output_node_id=contract_start.output_node_id,
+            )
+            if not outputs:
+                raise RuntimeError(f"模块C ComfyUI 首帧生成失败：未返回产物，shot_id={shot_id}")
+            image_path = output_dir / f"{shot_id}_start.png"
+            shutil.copy2(outputs[0], image_path)
+            self._logger.info(
+                "模块C ComfyUI 单帧生成完成，shot_id=%s，frame_type=start，image=%s",
+                shot_id,
+                image_path,
+            )
+            return {
+                "shot_id": shot_id,
+                "frame_type": "start",
+                "frame_path_start": str(image_path),
+                "keyframe_prompt_start_zh": keyframe_prompt_start_zh,
+                "keyframe_prompt_start_en": prompt_start,
+                "video_prompt_zh": video_prompt_zh,
+                "video_prompt_en": video_prompt_en,
+                "scene_desc": str(shot.get("scene_desc", "")),
+            }
+
+        self._logger.info(
+            "模块C ComfyUI 单帧生成开始，shot_id=%s，frame_type=end，width=%s，height=%s",
+            shot_id,
+            width,
+            height,
+        )
+        if not keyframe_prompt_end_zh or not prompt_end:
+            raise RuntimeError(
+                f"模块C ComfyUI 尾帧生成失败：缺失尾帧提示词，shot_id={shot_id}"
+            )
+        # 单帧重跑时，从磁盘读取已存在的首帧图作为 img2img init
+        start_frame_path = output_dir / f"{shot_id}_start.png"
+        if start_frame_path.exists():
+            staged_init_path_end = self._client.stage_input_image(
+                start_frame_path, prefix=f"{shot_id}_end_init"
+            )
+        else:
+            self._logger.warning(
+                "模块C ComfyUI 尾帧单帧生成未找到首帧图，回退 txt2img：shot_id=%s，path=%s",
+                shot_id, start_frame_path,
+            )
+            staged_init_path_end = None
+        workflow_prompt = render_workflow_from_contract(
+            contract=contract_end,
+            binding_values=self._build_binding_values(
+                asset_kind=asset_kind,
+                checkpoint_name=checkpoint_name,
+                scene_lora_name=scene_lora_name,
+                char_lora_name=char_lora_name,
+                positive_prompt=prompt_end,
+                negative_prompt=negative_prompt_end or str(comfyui_cfg.negative_prompt),
+                width=width,
+                height=height,
+                seed=self._seed,
+                filename_prefix=f"{file_prefix}/end",
+                init_image=staged_init_path_end,
+                denoise=comfyui_cfg.end_denoise if staged_init_path_end else None,
+                subject_kind=shot_subject_kind,
+            ),
+        )
+        outputs = self._client.execute_prompt(
+            workflow_prompt=workflow_prompt,
+            output_node_id=contract_end.output_node_id,
+        )
+        if not outputs:
+            raise RuntimeError(f"模块C ComfyUI 尾帧生成失败：未返回产物，shot_id={shot_id}")
+        image_path = output_dir / f"{shot_id}_end.png"
+        shutil.copy2(outputs[0], image_path)
+        self._logger.info(
+            "模块C ComfyUI 单帧生成完成，shot_id=%s，frame_type=end，image=%s",
+            shot_id,
+            image_path,
+        )
+        return {
+            "shot_id": shot_id,
+            "frame_type": "end",
+            "frame_path_end": str(image_path),
+            "keyframe_prompt_end_zh": keyframe_prompt_end_zh,
+            "keyframe_prompt_end_en": prompt_end,
+            "video_prompt_zh": video_prompt_zh,
+            "video_prompt_en": video_prompt_en,
+            "scene_desc": str(shot.get("scene_desc", "")),
         }
 
     def _resolve_contract_pair(self, asset_kind: str):
@@ -279,11 +489,13 @@ class ComfyUIFrameGenerator:
         filename_prefix: str,
         init_image: str | None = None,
         denoise: float | None = None,
+        subject_kind: str = "character",
     ) -> dict[str, Any]:
         """
         功能说明：构建一次 ComfyUI workflow 渲染所需的绑定值字典。
         参数说明：
         - asset_kind: 素材类型。
+        - subject_kind: 主体类型（character/scene），场景类主体跳过角色 LoRA。
         - checkpoint_name: checkpoint 文件名。
         - scene_lora_name: 场景 LoRA 相对名。
         - char_lora_name: 角色 LoRA 相对名。
@@ -304,7 +516,6 @@ class ComfyUIFrameGenerator:
             "checkpoint_name": checkpoint_name,
             "scene_lora_name": scene_lora_name,
             "scene_lora_strength_model": float(comfyui_cfg.scene_lora_strength),
-            "scene_lora_strength_clip": float(comfyui_cfg.scene_lora_strength),
             "positive_prompt": positive_prompt,
             "negative_prompt": negative_prompt,
             "seed": int(seed),
@@ -320,27 +531,13 @@ class ComfyUIFrameGenerator:
         else:
             binding_values["init_image"] = init_image
             binding_values["denoise"] = float(denoise if denoise is not None else comfyui_cfg.end_denoise)
-        if asset_kind == "character":
-            binding_values["char_lora_name"] = char_lora_name
+        normalized_sk = str(subject_kind or "character").strip().lower()
+        binding_values["char_lora_name"] = char_lora_name
+        if asset_kind == "character" and normalized_sk != "scene":
             binding_values["char_lora_strength_model"] = float(comfyui_cfg.char_lora_strength)
-            binding_values["char_lora_strength_clip"] = float(comfyui_cfg.char_lora_strength)
+        else:
+            binding_values["char_lora_strength_model"] = 0.0
         return binding_values
-
-
-def _resolve_seed_value(shot_id: str, shot_index: int, seed_variant: str) -> int:
-    """
-    功能说明：为 ComfyUI workflow 生成稳定随机种子。
-    参数说明：
-    - shot_id: 镜头 ID。
-    - shot_index: 镜头索引。
-    - seed_variant: 种子变体标签（start/end）。
-    返回值：
-    - int: 32 位正整数种子。
-    异常说明：无。
-    边界条件：同一 shot 不同变体返回不同种子。
-    """
-    seed_source = f"{shot_id}|{shot_index}|{seed_variant}".encode("utf-8")
-    return int(hashlib.sha256(seed_source).hexdigest()[:8], 16)
 
 
 def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
@@ -350,7 +547,7 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
     - asset_file: 模型文件路径。
     - category_folder: 目录锚点名称，如 lora。
     返回值：
-    - str: 相对于 ComfyUI 搜索根目录的 POSIX 路径。
+    - str: 相对于 ComfyUI 搜索根目录的相对路径（使用反斜杠分隔符以兼容 Windows ComfyUI）。
     异常说明：无。
     边界条件：当无法识别目录锚点时退回文件名。
     """
@@ -358,9 +555,9 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
     for index, part in enumerate(parts):
         if part != category_folder:
             continue
-        relative_parts = parts[index + 2 :]
+        relative_parts = parts[index + 1 :]
         if relative_parts:
-            return Path(*relative_parts).as_posix()
+            return "\\".join(relative_parts)
     return Path(str(asset_file)).name
 
 

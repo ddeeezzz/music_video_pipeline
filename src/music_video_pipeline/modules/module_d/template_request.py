@@ -467,8 +467,168 @@ class ScrollTemplateRequest:
         }
 
 
+@dataclass(frozen=True)
+class TransitionSceneRequest:
+    """
+    功能说明：表示转场模板中的一个场景（独立背景 + 独立符号）。
+    """
+
+    background: BackgroundRequest
+    symbol: SymbolRequest
+
+
+@dataclass(frozen=True)
+class PanMotionRequest:
+    """
+    功能说明：表示镜头推移类模板的运动参数。
+    参数说明：
+    - travel_px: 镜头移动的像素距离。
+    - easing: 缓动曲线类型。
+    返回值：不适用。
+    异常说明：
+    - ValueError: 字段非法时抛出。
+    边界条件：travel_px 不得为负。
+    """
+
+    travel_px: float
+    easing: Literal["ease_in_out", "ease_out", "ease_in"] = "ease_in_out"
+
+    def __post_init__(self) -> None:
+        if float(self.travel_px) < 0:
+            raise ValueError("PanMotionRequest 非法：travel_px 不得小于 0。")
+
+
+@dataclass(frozen=True)
+class TiltUpTemplateRequest:
+    """
+    功能说明：表示正式的 TiltUpTemplate 渲染请求（镜头上移，地面→天空）。
+    旧场景下移出画，新场景从上方进入。
+    """
+
+    template: Literal["tilt_up"]
+    fps: int
+    duration_in_frames: int
+    bpm: float
+    scene_before: TransitionSceneRequest
+    scene_after: TransitionSceneRequest
+    motion: PanMotionRequest
+
+    def __post_init__(self) -> None:
+        if self.template != "tilt_up":
+            raise ValueError(f"TiltUpTemplate 请求非法：template 必须为 tilt_up，当前为 {self.template}")
+        if int(self.fps) <= 0:
+            raise ValueError("TiltUpTemplate 请求非法：fps 必须大于 0。")
+        if int(self.duration_in_frames) <= 0:
+            raise ValueError("TiltUpTemplate 请求非法：duration_in_frames 必须大于 0。")
+        if float(self.bpm) <= 0:
+            raise ValueError("TiltUpTemplate 请求非法：bpm 必须大于 0。")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "template": self.template,
+            "fps": int(self.fps),
+            "duration_in_frames": int(self.duration_in_frames),
+            "bpm": float(self.bpm),
+            "scene_before": {
+                "background": self.scene_before.background.to_dict(),
+                "symbol": asdict(self.scene_before.symbol),
+            },
+            "scene_after": {
+                "background": self.scene_after.background.to_dict(),
+                "symbol": asdict(self.scene_after.symbol),
+            },
+            "motion": asdict(self.motion),
+        }
+
+
+@dataclass(frozen=True)
+class TiltDownTemplateRequest:
+    """
+    功能说明：表示正式的 TiltDownTemplate 渲染请求（镜头下移，天空→地面）。
+    旧场景上移出画，新场景从下方进入。
+    """
+
+    template: Literal["tilt_down"]
+    fps: int
+    duration_in_frames: int
+    bpm: float
+    scene_before: TransitionSceneRequest
+    scene_after: TransitionSceneRequest
+    motion: PanMotionRequest
+
+    def __post_init__(self) -> None:
+        if self.template != "tilt_down":
+            raise ValueError(f"TiltDownTemplate 请求非法：template 必须为 tilt_down，当前为 {self.template}")
+        if int(self.fps) <= 0:
+            raise ValueError("TiltDownTemplate 请求非法：fps 必须大于 0。")
+        if int(self.duration_in_frames) <= 0:
+            raise ValueError("TiltDownTemplate 请求非法：duration_in_frames 必须大于 0。")
+        if float(self.bpm) <= 0:
+            raise ValueError("TiltDownTemplate 请求非法：bpm 必须大于 0。")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "template": self.template,
+            "fps": int(self.fps),
+            "duration_in_frames": int(self.duration_in_frames),
+            "bpm": float(self.bpm),
+            "scene_before": {
+                "background": self.scene_before.background.to_dict(),
+                "symbol": asdict(self.scene_before.symbol),
+            },
+            "scene_after": {
+                "background": self.scene_after.background.to_dict(),
+                "symbol": asdict(self.scene_after.symbol),
+            },
+            "motion": asdict(self.motion),
+        }
+
+
+@dataclass(frozen=True)
+class PanRightTemplateRequest:
+    """
+    功能说明：表示正式的 PanRightTemplate 渲染请求（镜头右移，"下一个"）。
+    旧场景左移出画，新场景从右方进入。
+    """
+
+    template: Literal["pan_right"]
+    fps: int
+    duration_in_frames: int
+    bpm: float
+    scene_before: TransitionSceneRequest
+    scene_after: TransitionSceneRequest
+    motion: PanMotionRequest
+
+    def __post_init__(self) -> None:
+        if self.template != "pan_right":
+            raise ValueError(f"PanRightTemplate 请求非法：template 必须为 pan_right，当前为 {self.template}")
+        if int(self.fps) <= 0:
+            raise ValueError("PanRightTemplate 请求非法：fps 必须大于 0。")
+        if int(self.duration_in_frames) <= 0:
+            raise ValueError("PanRightTemplate 请求非法：duration_in_frames 必须大于 0。")
+        if float(self.bpm) <= 0:
+            raise ValueError("PanRightTemplate 请求非法：bpm 必须大于 0。")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "template": self.template,
+            "fps": int(self.fps),
+            "duration_in_frames": int(self.duration_in_frames),
+            "bpm": float(self.bpm),
+            "scene_before": {
+                "background": self.scene_before.background.to_dict(),
+                "symbol": asdict(self.scene_before.symbol),
+            },
+            "scene_after": {
+                "background": self.scene_after.background.to_dict(),
+                "symbol": asdict(self.scene_after.symbol),
+            },
+            "motion": asdict(self.motion),
+        }
+
+
 def write_template_request_json(
-    request: CenterTemplateRequest | GridTemplateRequest | ScrollTemplateRequest,
+    request: CenterTemplateRequest | GridTemplateRequest | ScrollTemplateRequest | TiltUpTemplateRequest | TiltDownTemplateRequest | PanRightTemplateRequest,
     output_path: Path,
 ) -> Path:
     """

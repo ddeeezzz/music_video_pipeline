@@ -1,0 +1,373 @@
+/* ============================================================
+   模块A可视化 — 时间轴可视化样式（BEM命名）
+   ============================================================ */
+
+/* ---- 根容器 ---- */
+.vis-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ---- 摘要卡片 ---- */
+.vis-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.vis-card {
+  background: #fff;
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.vis-card__title {
+  font-size: 12px;
+  color: #8c959f;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.vis-card__value {
+  font-size: 22px;
+  font-weight: 600;
+  color: #1d2b3f;
+}
+
+.vis-card__detail {
+  font-size: 12px;
+  color: #5f6b7a;
+  margin-top: 4px;
+}
+
+/* ---- 控件区域 ---- */
+.vis-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #fafbfc;
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.vis-controls__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.vis-controls__audio {
+  flex: 0 0 auto;
+  min-width: 280px;
+}
+
+.vis-controls__audio audio {
+  width: 100%;
+}
+
+.vis-controls__zoom {
+  flex: 0 0 auto;
+  min-width: 200px;
+}
+
+.vis-controls__zoom-label {
+  font-size: 12px;
+  color: #5f6b7a;
+  margin-bottom: 4px;
+}
+
+/* ---- 图层开关 ---- */
+.vis-layer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 4px 12px;
+  width: 100%;
+}
+
+/* ---- 时间轴容器 ---- */
+.vis-timeline-wrap {
+  border: 1px solid #e8ecf0;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.vis-timeline-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+}
+
+.vis-timeline-inner {
+  position: relative;
+  min-height: 300px;
+}
+
+/* ---- 时间轴标尺 ---- */
+.vis-axis {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: #f7f8fa;
+  border-bottom: 1px solid #dde1e6;
+  height: 28px;
+  overflow: hidden;
+}
+
+.vis-axis__tick {
+  position: absolute;
+  bottom: 0;
+}
+
+.vis-axis__tick--major {
+  width: 1px;
+  height: 12px;
+  background: #8c959f;
+}
+
+.vis-axis__tick--minor {
+  width: 1px;
+  height: 6px;
+  background: #c4cad2;
+}
+
+.vis-axis__label {
+  position: absolute;
+  bottom: 14px;
+  font-size: 10px;
+  color: #5f6b7a;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* ---- 图层行 ---- */
+.vis-lane {
+  display: flex;
+  border-bottom: 1px solid #f0f2f4;
+  min-height: 32px;
+  position: relative;
+}
+
+.vis-lane--hidden {
+  display: none;
+}
+
+.vis-lane__label {
+  flex: 0 0 132px;
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  background: #fafbfc;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: #3a4554;
+  display: flex;
+  align-items: center;
+  border-right: 1px solid #e8ecf0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vis-lane__track {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 28px;
+}
+
+/* ---- 段落方块 ---- */
+.vis-seg {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  padding: 2px 4px;
+  transition: filter 0.1s;
+}
+
+.vis-seg:hover {
+  filter: brightness(0.92);
+  z-index: 3;
+}
+
+.vis-seg--inst { background: #f3f5f8; }
+.vis-seg--verse { background: #d9f2ee; }
+.vis-seg--chorus { background: #ffe8b5; }
+.vis-seg--bridge { background: #e8ddff; }
+.vis-seg--start { background: #cfe8ff; }
+.vis-seg--end { background: #ffe1e1; }
+.vis-seg--default { background: #f3f5f8; }
+.vis-seg--lyric { background: #cef2e7; }
+.vis-seg--chant { background: #f5e6d3; }
+.vis-seg--silence { background: #e8ecf0; }
+
+/* ---- 节拍线 ---- */
+.vis-beat {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+}
+
+.vis-beat--major {
+  background: rgba(15, 123, 108, 0.86);
+  width: 2px;
+}
+
+.vis-beat--minor {
+  background: rgba(15, 123, 108, 0.44);
+}
+
+/* ---- Onset 线 ---- */
+.vis-onset {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+}
+
+/* ---- RMS 折线 ---- */
+.vis-rms-line {
+  position: absolute;
+  bottom: 0;
+  height: 2px;
+  background: rgba(179, 63, 98, 0.55);
+  transform-origin: left bottom;
+}
+
+.vis-rms-line--precheck {
+  background: rgba(45, 110, 180, 0.5);
+}
+
+/* ---- RMS 阈值线 ---- */
+.vis-threshold-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-top: 1px dashed rgba(215, 60, 60, 0.55);
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* ---- 歌词块 ---- */
+.vis-lyric {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  background: rgba(230, 220, 250, 0.65);
+  border: 1px solid rgba(150, 130, 190, 0.25);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 10px;
+  padding: 2px 3px;
+}
+
+.vis-lyric:hover {
+  background: rgba(210, 190, 240, 0.8);
+}
+
+/* ---- 能量特征块 ---- */
+.vis-energy {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 9px;
+  padding: 2px 3px;
+}
+
+.vis-energy--low { background: #dbe7ff; }
+.vis-energy--mid { background: #b5f0e0; }
+.vis-energy--high { background: #ffe6a3; }
+
+/* ---- 播放头 ---- */
+.vis-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #e63946;
+  z-index: 20;
+  pointer-events: none;
+  will-change: left;
+}
+
+/* ---- Tooltip ---- */
+.vis-tooltip {
+  position: fixed;
+  z-index: 1000;
+  background: rgba(20, 28, 40, 0.92);
+  color: #f4f5f7;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 10px 14px;
+  border-radius: 6px;
+  pointer-events: none;
+  max-width: 360px;
+  white-space: pre-line;
+}
+
+.vis-tooltip__key {
+  color: #a0b4cc;
+}
+
+.vis-tooltip__val {
+  color: #e8ecf2;
+}
+
+/* ---- 间距与工具 ---- */
+.vis-lane--tall {
+  min-height: 64px;
+}
+
+.vis-no-audio {
+  font-size: 12px;
+  color: #8c959f;
+  padding: 8px;
+}
+
+/* ============================================================
+   响应式适配
+   ============================================================ */
+@media (max-width: 1200px) {
+  .vis-cards {
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  }
+
+  .vis-layer-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .vis-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .vis-lane__label {
+    flex: 0 0 80px;
+    font-size: 10px;
+  }
+}

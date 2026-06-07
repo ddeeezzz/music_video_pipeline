@@ -6,10 +6,14 @@
 维护说明：最小单元固定为 shot，unit_id 默认映射 shot_id。
 """
 
+# 标准库：用于复制字典载荷
+from copy import deepcopy
 # 标准库：用于数据类定义
 from dataclasses import dataclass
 # 标准库：用于路径处理
 from pathlib import Path
+# 标准库：用于解析多主体 shot 标识
+import re
 # 标准库：用于类型提示
 from typing import Any
 
@@ -128,6 +132,135 @@ def build_module_d_units(
     return units
 
 
+# 常量：需要在模块 D 合成为单个模板视频的多主体模板集合。
+MULTI_SUBJECT_TEMPLATE_IDS = {"GridTemplate", "ScrollTemplate"}
+
+
+def normalize_frame_items_for_module_d(frame_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    功能说明：将模块 C 帧清单归一化为模块 D 视频片段清单。
+    参数说明：
+    - frame_items: 模块 C 输出的 frame_items，允许包含同一 segment 的多主体子 shot。
+    返回值：
+    - list[dict[str, Any]]: 模块 D 消费的片段清单，多主体模板会聚合为一个单元。
+    异常说明：无。
+    边界条件：非多主体模板保持原样；多主体模板使用同一 segment 下所有子 shot 作为 template_slots。
+    """
+    grouped_items: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+    for item in frame_items:
+        group_key = _resolve_segment_group_key(item)
+        if group_key not in grouped_items:
+            grouped_items[group_key] = []
+            group_order.append(group_key)
+        grouped_items[group_key].append(dict(item))
+
+    normalized_items: list[dict[str, Any]] = []
+    for group_key in group_order:
+        group = grouped_items[group_key]
+        if _should_group_as_template_segment(group):
+            normalized_items.append(_build_multi_subject_frame_item(group_key=group_key, group=group))
+        else:
+            normalized_items.extend(group)
+    return normalized_items
+
+
+def _resolve_segment_group_key(item: dict[str, Any]) -> str:
+    """
+    功能说明：解析 frame_item 所属的时间段分组键。
+    参数说明：
+    - item: 单个 frame_item。
+    返回值：
+    - str: segment_id 或从 shot_id 反推的 segment_id。
+    异常说明：无。
+    边界条件：无法反推时回退使用 shot_id，避免错误合并无关单元。
+    """
+    explicit_segment_id = str(item.get("segment_id", "")).strip()
+    if explicit_segment_id:
+        return explicit_segment_id
+    shot_id = str(item.get("shot_id", "")).strip()
+    shot_match = re.match(r"^shot_(\d+)_(\d+)$", shot_id)
+    if shot_match:
+        return f"seg_{shot_match.group(1)}"
+    return shot_id
+
+
+def _resolve_subject_index(item: dict[str, Any]) -> int:
+    """
+    功能说明：解析多主体子 shot 的主体序号。
+    参数说明：
+    - item: 单个 frame_item。
+    返回值：
+    - int: 1-based 主体序号，无法解析时返回较大的稳定值。
+    异常说明：无。
+    边界条件：优先使用 subject_index 字段，回退解析 shot_id 后缀。
+    """
+    try:
+        subject_index = int(item.get("subject_index", 0) or 0)
+    except (TypeError, ValueError):
+        subject_index = 0
+    if subject_index > 0:
+        return subject_index
+    shot_id = str(item.get("shot_id", "")).strip()
+    shot_match = re.match(r"^shot_\d+_(\d+)$", shot_id)
+    if shot_match:
+        return int(shot_match.group(1))
+    return 999999
+
+
+def _should_group_as_template_segment(group: list[dict[str, Any]]) -> bool:
+    """
+    功能说明：判断一组 frame_item 是否应聚合为多主体模板单元。
+    参数说明：
+    - group: 同一 segment 下的 frame_item 数组。
+    返回值：
+    - bool: 需要聚合返回 True。
+    异常说明：无。
+    边界条件：只有 GridTemplate/ScrollTemplate 且至少 2 个子主体时聚合。
+    """
+    if len(group) <= 1:
+        return False
+    return any(str(item.get("remotion_id", "")).strip() in MULTI_SUBJECT_TEMPLATE_IDS for item in group)
+
+
+def _build_multi_subject_frame_item(group_key: str, group: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    功能说明：把同一 segment 的多个主体 frame_item 聚合为一个模块 D 单元载荷。
+    参数说明：
+    - group_key: 聚合后的 segment_id。
+    - group: 同一 segment 下的子主体 frame_item。
+    返回值：
+    - dict[str, Any]: 聚合后的 frame_item，包含 template_slots。
+    异常说明：无。
+    边界条件：保留第一格作为代表载荷，同时把全部格子素材放入 template_slots。
+    """
+    ordered_group = sorted(group, key=_resolve_subject_index)
+    first_item = deepcopy(ordered_group[0])
+    first_item["shot_id"] = group_key
+    first_item["segment_id"] = group_key
+    first_item["source_shot_ids"] = [str(item.get("shot_id", "")).strip() for item in ordered_group]
+    first_item["template_slot_count"] = len(ordered_group)
+    first_item["template_slots"] = [
+        {
+            "shot_id": str(item.get("shot_id", "")).strip(),
+            "subject_index": _resolve_subject_index(item),
+            "frame_path_start": str(item.get("frame_path_start", "")).strip(),
+            "frame_path_end": str(item.get("frame_path_end", "")).strip(),
+            "frame_path": str(item.get("frame_path", item.get("frame_path_start", ""))).strip(),
+            "keyframe_prompt_start_zh": str(item.get("keyframe_prompt_start_zh", "")).strip(),
+            "keyframe_prompt_start_en": str(item.get("keyframe_prompt_start_en", "")).strip(),
+            "keyframe_prompt_end_zh": str(item.get("keyframe_prompt_end_zh", "")).strip(),
+            "keyframe_prompt_end_en": str(item.get("keyframe_prompt_end_en", "")).strip(),
+        }
+        for item in ordered_group
+    ]
+    if not str(first_item.get("video_prompt_zh", "")).strip():
+        first_item["video_prompt_zh"] = "多主体模板合成，多个格子在同一视频画面中呈现"
+    if not str(first_item.get("video_prompt_en", "")).strip():
+        first_item["video_prompt_en"] = "multi subject template composition in one video frame"
+    return first_item
+
+
 def build_module_d_unit_blueprints(
     shots: list[dict[str, Any]],
     audio_duration: float,
@@ -232,6 +365,7 @@ def build_unit_sync_payload(units: list[ModuleDUnit]) -> list[dict[str, Any]]:
         {
             "unit_id": unit.unit_id,
             "unit_index": unit.unit_index,
+            "segment_id": str(unit.shot.get("segment_id", "")),
             "start_time": unit.start_time,
             "end_time": unit.end_time,
             "duration": unit.duration,

@@ -35,6 +35,7 @@ class CommandRequest:
     role_name: str | None = None
     shot_id: str | None = None
     segment_id: str | None = None
+    frame_type: str | None = None
     user_custom_prompt_override: str | None = None
     storyboard_template_file_override: str | None = None
     run_name: str | None = None
@@ -108,6 +109,17 @@ class MvplCommandService:
             task_id = self._require_text(request.task_id, field_name="task_id")
             shot_id = self._require_text(request.shot_id, field_name="shot_id")
             return self.runner.retry_module_c_shot(task_id=task_id, shot_id=shot_id, config_path=request.config_path)
+
+        if command == "c-retry-frame":
+            task_id = self._require_text(request.task_id, field_name="task_id")
+            shot_id = self._require_text(request.shot_id, field_name="shot_id")
+            frame_type = self._require_text(request.frame_type, field_name="frame_type")
+            return self.runner.retry_module_c_frame(
+                task_id=task_id,
+                shot_id=shot_id,
+                frame_type=frame_type,
+                config_path=request.config_path,
+            )
 
         if command == "b-task-status":
             task_id = self._require_text(request.task_id, field_name="task_id")

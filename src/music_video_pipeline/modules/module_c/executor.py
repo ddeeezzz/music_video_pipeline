@@ -15,8 +15,7 @@ from typing import Any
 
 # 项目内模块：运行上下文定义
 from music_video_pipeline.context import RuntimeContext
-# 项目内模块：JSON写入工具（用于落盘模块C单元完整产物）
-from music_video_pipeline.io_utils import write_json
+
 # 项目内模块：关键帧生成器抽象
 from music_video_pipeline.generators import FrameGenerator
 # 项目内模块：模块C单元数据模型
@@ -125,6 +124,7 @@ def execute_one_unit_with_retry(
     generator: FrameGenerator,
     frames_dir: Path,
     retry_times: int | None = None,
+    frame_type: str | None = None,
 ) -> dict[str, Any]:
     """
     功能说明：执行单个模块 C 单元并按配置重试。
@@ -134,6 +134,7 @@ def execute_one_unit_with_retry(
     - generator: 关键帧生成器实例。
     - frames_dir: 帧输出目录。
     - retry_times: 可选重试次数，传空时读取模块配置。
+    - frame_type: 可选单帧类型（start/end）；传空时保持双关键帧逻辑。
     返回值：
     - dict[str, Any]: 单元 frame_item。
     异常说明：
@@ -145,6 +146,9 @@ def execute_one_unit_with_retry(
         if retry_times is None
         else _normalize_module_c_retry_times(retry_times)
     )
+    normalized_frame_type = str(frame_type or "").strip().lower()
+    if normalized_frame_type and normalized_frame_type not in {"start", "end"}:
+        raise ValueError(f"非法 frame_type: {frame_type}")
     last_error: Exception | None = None
     for attempt_index in range(normalized_retry_times + 1):
         attempt_no = attempt_index + 1
@@ -165,6 +169,7 @@ def execute_one_unit_with_retry(
                 frames_dir=frames_dir,
                 width=width,
                 height=height,
+                frame_type=normalized_frame_type,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
             return frame_item
@@ -268,21 +273,27 @@ def _execute_units_parallel(
     return failed_units
 
 
+MULTI_SUBJECT_TEMPLATE_IDS: frozenset[str] = frozenset({"GridTemplate"})
+
+
 def _resolve_unit_dimensions(context: RuntimeContext, unit: ModuleCUnit) -> tuple[int, int]:
     """
-    功能说明：根据素材类型解析模块 C 单元应使用的默认图像尺寸。
+    功能说明：根据素材类型与模板类型解析模块 C 单元应使用的图像尺寸。
     参数说明：
     - context: 运行上下文对象。
     - unit: 模块 C 单元对象。
     返回值：
     - tuple[int, int]: 依次为宽度与高度。
     异常说明：无。
-    边界条件：prop 固定使用 512x512；其余类型沿用全局 render 默认值。
+    边界条件：prop 固定使用 512x512；GridTemplate 使用 768x1024（竖版）；其余沿用全局 render 默认值。
     """
     asset_kind = str(unit.shot.get("asset_kind", "character")).strip().lower()
     if asset_kind == "prop":
         return PROP_DEFAULT_WIDTH, PROP_DEFAULT_HEIGHT
-    return int(context.config.render.video_width), int(context.config.render.video_height)
+    remotion_id = str(unit.shot.get("remotion_id", "")).strip()
+    if remotion_id in MULTI_SUBJECT_TEMPLATE_IDS:
+        return 768, 1024
+    return int(context.config.module_c.render_width), int(context.config.module_c.render_height)
 
 
 def _generate_one_frame_item(
@@ -292,6 +303,7 @@ def _generate_one_frame_item(
     frames_dir: Path,
     width: int,
     height: int,
+    frame_type: str | None = None,
 ) -> dict[str, Any]:
     """
     功能说明：调用生成器执行单元渲染并返回 frame_item。
@@ -306,6 +318,16 @@ def _generate_one_frame_item(
     异常说明：由生成器实现抛出异常。
     边界条件：frame_item 结构需兼容模块 D 消费字段。
     """
+    normalized_frame_type = str(frame_type or "").strip().lower()
+    if normalized_frame_type in {"start", "end"}:
+        return generator.generate_one_frame(
+            shot=unit.shot,
+            output_dir=frames_dir,
+            width=width,
+            height=height,
+            shot_index=unit.unit_index,
+            frame_type=normalized_frame_type,
+        )
     return generator.generate_one(
         shot=unit.shot,
         output_dir=frames_dir,
@@ -317,58 +339,58 @@ def _generate_one_frame_item(
 
 def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict[str, Any]) -> None:
     """
-    功能说明：将单元状态写入 done 并记录产物路径。
+    功能说明：将单元帧状态写入 done 并记录产物路径（不再写 sidecar）。
     参数说明：
     - context: 运行上下文对象。
     - unit: 模块 C 单元对象。
     - frame_item: 渲染返回结构。
     返回值：无。
     异常说明：数据库写入失败时抛出 sqlite3.Error。
-    边界条件：frame_item 必须满足“双关键帧契约”，缺字段直接失败。
+    边界条件：frame_item 必须满足"双关键帧契约"，缺字段直接失败。
     """
     frame_path_start = str(frame_item.get("frame_path_start", "")).strip()
     frame_path_end = str(frame_item.get("frame_path_end", "")).strip()
-    if (not frame_path_start) or (not frame_path_end):
+    frame_type = str(frame_item.get("frame_type", "")).strip().lower()
+    if frame_type == "start" and not frame_path_start:
+        raise RuntimeError(
+            "模块C单元执行失败：缺失首关键帧字段，"
+            f"unit_id={unit.unit_id}，要求包含 frame_path_start。"
+        )
+    if frame_type == "end" and not frame_path_end:
+        raise RuntimeError(
+            "模块C单元执行失败：缺失尾关键帧字段，"
+            f"unit_id={unit.unit_id}，要求包含 frame_path_end。"
+        )
+    if not frame_type and ((not frame_path_start) or (not frame_path_end)):
         raise RuntimeError(
             "模块C单元执行失败：缺失双关键帧字段，"
             f"unit_id={unit.unit_id}，要求包含 frame_path_start 与 frame_path_end。"
         )
-    control_frame_paths_payload = frame_item.get("control_frame_paths")
-    if isinstance(control_frame_paths_payload, list):
-        normalized_control_frame_paths = [str(item).strip() for item in control_frame_paths_payload if str(item).strip()]
+
+    frame_path = frame_path_start or frame_path_end
+    store = context.state_store
+
+    if frame_type == "start":
+        store.set_module_unit_frame_status(
+            task_id=context.task_id, module_name="C", unit_id=unit.unit_id,
+            frame_type="start", status="done",
+        )
+    elif frame_type == "end":
+        store.set_module_unit_frame_status(
+            task_id=context.task_id, module_name="C", unit_id=unit.unit_id,
+            frame_type="end", status="done",
+        )
     else:
-        normalized_control_frame_paths = []
-    if len(normalized_control_frame_paths) < 2:
-        raise RuntimeError(
-            "模块C单元执行失败：缺失 control_frame_paths 双锚点，"
-            f"unit_id={unit.unit_id}，当前有效数量={len(normalized_control_frame_paths)}。"
+        store.set_module_unit_frame_status(
+            task_id=context.task_id, module_name="C", unit_id=unit.unit_id,
+            frame_type="start", status="done",
         )
-    if (
-        str(normalized_control_frame_paths[0]) != frame_path_start
-        or str(normalized_control_frame_paths[-1]) != frame_path_end
-    ):
-        raise RuntimeError(
-            "模块C单元执行失败：双关键帧字段不一致，"
-            f"unit_id={unit.unit_id}，frame_path_start={frame_path_start}，"
-            f"frame_path_end={frame_path_end}，control_frame_paths={normalized_control_frame_paths}。"
+        store.set_module_unit_frame_status(
+            task_id=context.task_id, module_name="C", unit_id=unit.unit_id,
+            frame_type="end", status="done",
         )
-    frame_path = frame_path_start
 
-    normalized_frame_item = {
-        **dict(frame_item),
-        "shot_id": str(frame_item.get("shot_id", unit.unit_id)).strip() or unit.unit_id,
-        "frame_path": frame_path,
-        "frame_path_start": frame_path_start,
-        "frame_path_end": frame_path_end,
-        "control_frame_paths": [
-            str(normalized_control_frame_paths[0]),
-            str(normalized_control_frame_paths[-1]),
-        ],
-    }
-    unit_payload_path = context.artifacts_dir / "module_c_units" / f"{unit.unit_id}.json"
-    write_json(unit_payload_path, normalized_frame_item)
-
-    context.state_store.set_module_unit_status(
+    store.set_module_unit_status(
         task_id=context.task_id,
         module_name="C",
         unit_id=unit.unit_id,
@@ -377,12 +399,11 @@ def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict
         error_message="",
     )
     context.logger.info(
-        "模块C单元执行完成，task_id=%s，unit_id=%s，frame_start=%s，frame_end=%s，payload=%s",
+        "模块C单元执行完成，task_id=%s，unit_id=%s，frame_start=%s，frame_end=%s",
         context.task_id,
         unit.unit_id,
         frame_path_start,
         frame_path_end,
-        unit_payload_path,
     )
 
 

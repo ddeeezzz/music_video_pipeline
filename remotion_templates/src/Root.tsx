@@ -16,11 +16,20 @@ import {CenterTemplate} from "./compositions/CenterTemplate";
 import {GridTemplate} from "./compositions/GridTemplate";
 // 项目内模块：用于承载 ScrollTemplate 组件实现。
 import {ScrollTemplate} from "./compositions/ScrollTemplate";
+// 项目内模块：用于承载 TiltUpTemplate 组件实现。
+import {TiltUpTemplate} from "./compositions/TiltUpTemplate";
+// 项目内模块：用于承载 TiltDownTemplate 组件实现。
+import {TiltDownTemplate} from "./compositions/TiltDownTemplate";
+// 项目内模块：用于承载 PanRightTemplate 组件实现。
+import {PanRightTemplate} from "./compositions/PanRightTemplate";
 // 项目内模块：用于提供 Studio Props 面板所需 schema。
 import {
   centerTemplateSchema,
   gridTemplateSchema,
-  scrollTemplateSchema
+  scrollTemplateSchema,
+  tiltUpTemplateSchema,
+  tiltDownTemplateSchema,
+  panRightTemplateSchema
 } from "./schema";
 
 // 常量：模板画布固定宽度，和 Tooncrafter 推荐分辨率对齐。
@@ -48,7 +57,7 @@ export const Root = (): ReactElement => {
           fps: props.fps,
           durationInFrames: props.duration_in_frames
         })}
-        defaultProps={{"template":"center" as const,"fps":24,"duration_in_frames":48,"bpm":130,"background":{"kind":"solid" as const,"color":"#FFFFFF"},"symbol":{"src":"/fixtures/center-symbol.svg","width_ratio":0.42,"height_ratio":0.42},"motion":{"breathe":true}}}
+        defaultProps={{"template":"center" as const,"fps":24,"duration_in_frames":48,"bpm":130,"background":{"kind":"solid" as const,"color":"#FFFFFF"},"frames":[{"src":"/fixtures/center-symbol.svg","width_ratio":0.42,"height_ratio":0.42}],"motion":{"breathe":true}}}
       />
       <Composition
         id="GridTemplate"
@@ -66,10 +75,10 @@ export const Root = (): ReactElement => {
           duration_in_frames: 84,
           bpm: 130,
           background: {kind: "solid" as const, color: "#FFFFFF"},
-          symbols: [
-            {src: "/fixtures/grid-a.svg", width_ratio: 0.26, height_ratio: 0.52},
-            {src: "/fixtures/grid-b.svg", width_ratio: 0.26, height_ratio: 0.52},
-            {src: "/fixtures/grid-c.svg", width_ratio: 0.26, height_ratio: 0.52}
+          slots: [
+            {frames: [{src: "/fixtures/grid-a.svg", width_ratio: 0.26, height_ratio: 0.52}]},
+            {frames: [{src: "/fixtures/grid-b.svg", width_ratio: 0.26, height_ratio: 0.52}]},
+            {frames: [{src: "/fixtures/grid-c.svg", width_ratio: 0.26, height_ratio: 0.52}]}
           ],
           layout: {visible_cell_count: 3},
           motion: {active_ratio: 0.45, overshoot_ratio: 0.08, enter_distance: 72}
@@ -94,15 +103,93 @@ export const Root = (): ReactElement => {
             kind: "solid",
             color: "#FFFFFF"
           },
-          symbols: [
-            {src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72},
-            {src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72},
-            {src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72}
+          slots: [
+            {frames: [{src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72}]},
+            {frames: [{src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72}]},
+            {frames: [{src: "/fixtures/scroll-symbol.svg", width_ratio: 0.28, height_ratio: 0.72}]}
           ],
           layout: {visible_cell_count: 3},
           motion: {
             loop: false
           }
+        }}
+      />
+      <Composition
+        id="TiltUpTemplate"
+        component={TiltUpTemplate}
+        schema={tiltUpTemplateSchema}
+        calculateMetadata={({props}) => ({
+          width: TEMPLATE_WIDTH,
+          height: TEMPLATE_HEIGHT,
+          fps: props.fps,
+          durationInFrames: props.duration_in_frames
+        })}
+        defaultProps={{
+          template: "tilt_up" as const,
+          fps: 24,
+          duration_in_frames: 12,
+          bpm: 130,
+          scene_before: {
+            background: {kind: "solid" as const, color: "#FFFFFF"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          scene_after: {
+            background: {kind: "solid" as const, color: "#FFFF00"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          motion: {travel_px: 320, easing: "ease_in_out" as const}
+        }}
+      />
+      <Composition
+        id="TiltDownTemplate"
+        component={TiltDownTemplate}
+        schema={tiltDownTemplateSchema}
+        calculateMetadata={({props}) => ({
+          width: TEMPLATE_WIDTH,
+          height: TEMPLATE_HEIGHT,
+          fps: props.fps,
+          durationInFrames: props.duration_in_frames
+        })}
+        defaultProps={{
+          template: "tilt_down" as const,
+          fps: 24,
+          duration_in_frames: 12,
+          bpm: 130,
+          scene_before: {
+            background: {kind: "solid" as const, color: "#FFFFFF"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          scene_after: {
+            background: {kind: "solid" as const, color: "#FFFF00"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          motion: {travel_px: 320, easing: "ease_in_out" as const}
+        }}
+      />
+      <Composition
+        id="PanRightTemplate"
+        component={PanRightTemplate}
+        schema={panRightTemplateSchema}
+        calculateMetadata={({props}) => ({
+          width: TEMPLATE_WIDTH,
+          height: TEMPLATE_HEIGHT,
+          fps: props.fps,
+          durationInFrames: props.duration_in_frames
+        })}
+        defaultProps={{
+          template: "pan_right" as const,
+          fps: 24,
+          duration_in_frames: 12,
+          bpm: 130,
+          scene_before: {
+            background: {kind: "solid" as const, color: "#FFFFFF"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          scene_after: {
+            background: {kind: "solid" as const, color: "#FFFF00"},
+            symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
+          },
+          motion: {travel_px: 512, easing: "ease_in_out" as const}
         }}
       />
     </>

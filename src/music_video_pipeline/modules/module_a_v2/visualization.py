@@ -119,9 +119,9 @@ def _normalize_segment_item(item: dict[str, Any], layer_name: str) -> dict[str, 
         "display_text": display_text,
         "merge_action": str(item.get("merge_action", "")),
         "source_segment_ids": list(source_ids_raw),
-        "start_time": round(start_time, 6),
-        "end_time": round(end_time, 6),
-        "duration": round(max(0.0, end_time - start_time), 6),
+        "start_time": round(start_time, 3),
+        "end_time": round(end_time, 3),
+        "duration": round(max(0.0, end_time - start_time), 3),
         "layer": layer_name,
     }
 
@@ -150,9 +150,9 @@ def _normalize_lyric_item(item: dict[str, Any], index: int) -> dict[str, Any]:
         "text": text,
         "display_text": display_text,
         "confidence": round(confidence, 4),
-        "start_time": round(start_time, 6),
-        "end_time": round(end_time, 6),
-        "duration": round(max(0.0, end_time - start_time), 6),
+        "start_time": round(start_time, 3),
+        "end_time": round(end_time, 3),
+        "duration": round(max(0.0, end_time - start_time), 3),
     }
 
 
@@ -193,12 +193,12 @@ def _normalize_energy_item(item: dict[str, Any], index: int) -> dict[str, Any]:
         end_time = start_time
     return {
         "id": f"energy_{index + 1:04d}",
-        "start_time": round(start_time, 6),
-        "end_time": round(end_time, 6),
-        "duration": round(max(0.0, end_time - start_time), 6),
+        "start_time": round(start_time, 3),
+        "end_time": round(end_time, 3),
+        "duration": round(max(0.0, end_time - start_time), 3),
         "energy_level": str(item.get("energy_level", "")),
         "trend": str(item.get("trend", "")),
-        "rhythm_tension": round(_safe_float(item.get("rhythm_tension", 0.0)), 6),
+        "rhythm_tension": round(_safe_float(item.get("rhythm_tension", 0.0)), 3),
     }
 
 
@@ -218,7 +218,7 @@ def _normalize_beats(beats: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized.append(
             {
                 "id": f"beat_{index + 1:04d}",
-                "time": round(max(0.0, time_value), 6),
+                "time": round(max(0.0, time_value), 3),
                 "type": str(item.get("type", "")),
                 "source": str(item.get("source", "")),
             }
@@ -267,13 +267,13 @@ def _normalize_onset_points(onset_points_raw: list[Any], onset_candidates_raw: l
     for item in list(onset_points_raw):
         if not isinstance(item, dict):
             continue
-        time_value = round(max(0.0, _safe_float(item.get("time", 0.0), 0.0)), 6)
+        time_value = round(max(0.0, _safe_float(item.get("time", 0.0), 0.0)), 3)
         energy_raw = max(0.0, _safe_float(item.get("energy_raw", 0.0), 0.0))
         previous_value = onset_energy_by_time.get(time_value, 0.0)
         if energy_raw > previous_value:
             onset_energy_by_time[time_value] = energy_raw
     for item in list(onset_candidates_raw):
-        time_value = round(max(0.0, _safe_float(item, 0.0)), 6)
+        time_value = round(max(0.0, _safe_float(item, 0.0)), 3)
         onset_energy_by_time.setdefault(time_value, 0.0)
 
     normalized_times = sorted(onset_energy_by_time.keys())
@@ -298,9 +298,9 @@ def _normalize_onset_points(onset_points_raw: list[Any], onset_candidates_raw: l
         normalized_output.append(
             {
                 "id": f"onset_{index + 1:04d}",
-                "time": round(time_item, 6),
-                "energy_raw": round(energy_raw, 6),
-                "energy_norm": round(float(energy_norm), 6),
+                "time": round(time_item, 3),
+                "energy_raw": round(energy_raw, 3),
+                "energy_norm": round(float(energy_norm), 3),
             }
         )
     return normalized_output
@@ -363,9 +363,9 @@ def _compute_boundary_shift_stats(a0_segments: list[dict[str, Any]], al_segments
     return {
         "compared_count": compared_count,
         "adjusted_count": len(adjusted),
-        "adjusted_ratio": round(len(adjusted) / max(1, compared_count), 6),
-        "average_abs_shift_seconds": round(average_shift, 6),
-        "max_abs_shift_seconds": round(max_shift, 6),
+        "adjusted_ratio": round(len(adjusted) / max(1, compared_count), 3),
+        "average_abs_shift_seconds": round(average_shift, 3),
+        "max_abs_shift_seconds": round(max_shift, 3),
     }
 
 
@@ -394,7 +394,7 @@ def _compute_duration_seconds(payload: dict[str, Any]) -> float:
         max_time = max(max_time, _safe_float(rms_time, 0.0))
     for rms_time in payload.get("accompaniment_rms", {}).get("times", []):
         max_time = max(max_time, _safe_float(rms_time, 0.0))
-    return round(max_time, 6)
+    return round(max_time, 3)
 
 
 def collect_visualization_payload(task_dir: Path) -> dict[str, Any]:
@@ -488,12 +488,12 @@ def collect_visualization_payload(task_dir: Path) -> dict[str, Any]:
     beats = _normalize_beats(list(output_data.get("beats", [])))
 
     onset_candidates = [_safe_float(item, 0.0) for item in list(accompaniment_candidates.get("onset_candidates", []))]
-    onset_candidates = sorted({round(max(0.0, item), 6) for item in onset_candidates})
+    onset_candidates = sorted({round(max(0.0, item), 3) for item in onset_candidates})
     onset_points = _normalize_onset_points(
         onset_points_raw=list(accompaniment_candidates.get("onset_points", [])),
         onset_candidates_raw=onset_candidates,
     )
-    onset_candidates = [round(_safe_float(item.get("time", 0.0), 0.0), 6) for item in onset_points]
+    onset_candidates = [round(_safe_float(item.get("time", 0.0), 0.0), 3) for item in onset_points]
     accompaniment_rms_times, accompaniment_rms_values = _downsample_series(
         times=list(accompaniment_candidates.get("rms_times", [])),
         values=list(accompaniment_candidates.get("rms_values", [])),

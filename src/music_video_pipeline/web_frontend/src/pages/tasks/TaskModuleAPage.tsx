@@ -35,6 +35,7 @@ import {
   taskQueryKeys,
 } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
+import { ModuleAVisualization } from "@/features/moduleA/visualization/ModuleAVisualization";
 import { useTaskIdParam } from "@/hooks/useTaskIdParam";
 import type {
   TaskModuleALyricCandidate,
@@ -797,13 +798,10 @@ export function TaskModuleAPage() {
       ) : null}
 
       {data?.module_a_visualization.available ? (
-        <Card bordered={false} className="iframe-card">
-          <Alert type="info" showIcon message={`来源文件：${data.module_a_visualization.path}`} style={{ marginBottom: 16 }} />
-          <iframe title={`module-a-${taskId}`} src={data.module_a_visualization.url} className="module-a-iframe" />
-        </Card>
+        <ModuleAVisualization taskId={taskId} />
       ) : (
         <Card bordered={false}>
-          <Empty description="当前任务还没有模块 A 可视化 HTML 产物。" />
+          <Empty description="当前任务还没有模块 A 可视化产物数据。" />
         </Card>
       )}
 

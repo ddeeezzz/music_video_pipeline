@@ -40,6 +40,8 @@ const getSlotLeftList = (
 const TEMPLATE_WIDTH = 512;
 // 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
 const TEMPLATE_HEIGHT = 320;
+// 常量：模板自然动画帧数（保持不变速）。
+const NATURAL_FRAMES = 84;
 
 /**
  * 功能说明：渲染三图依次进入的网格模板。
@@ -52,38 +54,55 @@ const TEMPLATE_HEIGHT = 320;
  */
 export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
   const frame = useCurrentFrame();
+  // 保持自然速度：动画帧 clamped 到 NATURAL_FRAMES，之后维持末帧
+  const animFrame = Math.min(frame, NATURAL_FRAMES - 1);
+
   const visibleCellCount = Math.max(1, props.layout.visible_cell_count);
   const slotWidth = TEMPLATE_WIDTH / visibleCellCount;
   const leftList = getSlotLeftList(TEMPLATE_WIDTH, slotWidth);
-  const topList = props.symbols.map(
-    (symbol) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * symbol.height_ratio) / 2
+  const topList = props.slots.map(
+    (slot) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52)) / 2
   );
-  const widthList = props.symbols.map((symbol) => TEMPLATE_WIDTH * symbol.width_ratio);
-  const heightList = props.symbols.map((symbol) => TEMPLATE_HEIGHT * symbol.height_ratio);
+  const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.26));
+  const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52));
+  // 图片容器宽度小于格子宽度时，将每个图片容器在格子内居中偏移
+  const centeredLeftList = leftList.map((slotLeft, i) => {
+    const imgW = widthList[i] ?? slotWidth;
+    return slotLeft + (slotWidth - imgW) / 2;
+  });
   const totalActiveFrames = Math.max(
     3,
-    Math.round(props.duration_in_frames * props.motion.active_ratio)
+    Math.round(NATURAL_FRAMES * props.motion.active_ratio)
   );
   const enterFrames = Math.max(1, Math.floor(totalActiveFrames / 3));
+
+  // 每个 slot 独立从 frames 数组按进度取当前帧
+  const activeSymbolAt = (index: number) => {
+    const slotFrames = props.slots[index]?.frames ?? [];
+    if (slotFrames.length <= 1) return slotFrames[0] ?? null;
+    const progress = animFrame / Math.max(1, props.duration_in_frames);
+    return slotFrames[Math.min(Math.floor(progress * slotFrames.length), slotFrames.length - 1)];
+  };
 
   return (
     <AbsoluteFill
       style={{
         width: TEMPLATE_WIDTH,
         height: TEMPLATE_HEIGHT,
-        overflow: "hidden"
+        overflow: "hidden",
+        filter: "grayscale(100%)"
       }}
     >
       <BackgroundLayer background={props.background} />
-      {props.symbols.map((symbol, index) => {
-        const localFrame = Math.max(0, frame - enterFrames * index);
+      {props.slots.map((_slot, index) => {
+        const localFrame = Math.max(0, animFrame - enterFrames * index);
         const progress = spring({
           fps: props.fps,
           frame: localFrame,
           durationInFrames: enterFrames
         });
         const overshootScale = 1 + props.motion.overshoot_ratio;
-        const scale = interpolate(progress, [0, 0.8, 1], [0.75, overshootScale, 1], {
+        const scale = interpolate(progress, [0, 0.8, 1], [1.2, 1.0, 1.0], {
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp"
         });
@@ -96,9 +115,11 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
           extrapolateRight: "clamp"
         });
 
+        const currentSymbol = activeSymbolAt(index);
+
         return (
           <AbsoluteFill
-            key={`${symbol.src}-${index}`}
+            key={`${currentSymbol.src}-${index}`}
             style={{
               transform: `translateY(${translateY}px) scale(${scale})`,
               transformOrigin: "center center",
@@ -106,8 +127,8 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
             }}
           >
             <SymbolStripLayer
-              symbolSrcList={[symbol.src]}
-              leftList={[leftList[index]]}
+              symbolSrcList={[currentSymbol.src]}
+              leftList={[centeredLeftList[index]]}
               top={0}
               width={slotWidth}
               height={TEMPLATE_HEIGHT}

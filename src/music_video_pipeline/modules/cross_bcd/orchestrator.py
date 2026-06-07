@@ -91,14 +91,20 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
         task_id=context.task_id,
         module_name="B",
         units=[
-            {
-                "unit_id": item.segment_id,
-                "unit_index": item.unit_index,
-                "start_time": item.start_time,
-                "end_time": item.end_time,
-                "duration": item.duration,
-            }
-            for item in chain_units
+            {"unit_id": "role1", "unit_index": 0, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role2", "unit_index": 1, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role3", "unit_index": 2, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role4", "unit_index": 3, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            *(
+                {
+                    "unit_id": item.segment_id,
+                    "unit_index": item.unit_index + 4,
+                    "start_time": item.start_time,
+                    "end_time": item.end_time,
+                    "duration": item.duration,
+                }
+                for item in chain_units
+            ),
         ],
     )
     context.state_store.sync_module_units(
@@ -108,6 +114,7 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
             {
                 "unit_id": item.shot_id,
                 "unit_index": item.unit_index,
+                "segment_id": item.segment_id,
                 "start_time": item.start_time,
                 "end_time": item.end_time,
                 "duration": item.duration,
@@ -246,6 +253,7 @@ def _refresh_module_b_output(
             done_unit_records=valid_unit_records,
             module_a_output=module_a_output,
             instrumental_labels=context.config.module_a.instrumental_labels,
+            artifacts_dir=context.artifacts_dir,
         )
         try:
             validate_module_b_output(module_b_output)
@@ -288,6 +296,7 @@ def _filter_valid_module_b_done_unit_records(
                 done_unit_records=[record],
                 module_a_output=module_a_output,
                 instrumental_labels=context.config.module_a.instrumental_labels,
+                artifacts_dir=context.artifacts_dir,
             )
             validate_module_b_output(candidate_output)
             valid_records.append(record)

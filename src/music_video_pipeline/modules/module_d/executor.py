@@ -1,13 +1,15 @@
 """
-文件用途：实现模块 D 的纯 ComfyUI 单元执行与重试逻辑。
-核心流程：预热 ComfyUI 服务 -> 解析模块 D 单元视频提示词 -> 执行单元渲染 -> 写入状态与产物路径。
+文件用途：实现模块 D 的 Remotion 单元执行与重试逻辑。
+核心流程：预热 ComfyUI 服务 -> 解析模块 D 单元模板参数 -> 全量执行 Remotion 渲染 -> 写入状态与产物路径。
 输入输出：输入运行上下文与模块 D 单元，输出片段路径或执行副作用。
-依赖说明：依赖标准库并发工具与项目内 RuntimeContext/ModuleDUnit/ComfyUI 渲染后端。
-维护说明：模块 D 已彻底收口为 ComfyUI 路径，执行器只负责任务调度、重试与状态写回。
+依赖说明：依赖标准库并发工具与项目内 RuntimeContext/ModuleDUnit/Remotion 渲染后端。
+维护说明：所有 shot 统一走 Remotion 渲染，不再走 ToonCrafter 路径。
 """
 
 # 标准库：用于线程池并发。
 from concurrent.futures import ThreadPoolExecutor, as_completed
+# 标准库：用于 JSON 序列化模板请求。
+import json
 # 标准库：用于路径处理。
 from pathlib import Path
 # 标准库：用于类型提示。
@@ -15,12 +17,11 @@ from typing import Any
 
 # 项目内模块：运行上下文定义。
 from music_video_pipeline.context import RuntimeContext
-# 项目内模块：JSON 读取工具（用于补取模块 B 的 video_prompt_en）。
+# 项目内模块：JSON 读取工具（供旧辅助函数保留使用）。
 from music_video_pipeline.io_utils import read_json
-# 项目内模块：模块 D ComfyUI 渲染后端。
+# 项目内模块：模块 D ComfyUI 渲染后端（仅预热用）。
 from music_video_pipeline.modules.module_d.backends import (
     prewarm_comfyui_runtime as prewarm_comfyui_runtime_backend,
-    render_one_unit_comfyui,
 )
 # 项目内模块：模块 D FFmpeg 后处理工具。
 from music_video_pipeline.modules.module_d.finalizer import apply_camera_plan_to_segment
@@ -30,17 +31,32 @@ from music_video_pipeline.modules.module_d.unit_models import ModuleDUnit
 
 def prewarm_comfyui_runtime(context: RuntimeContext, device_override: str | None = None) -> dict[str, str]:
     """
-    功能说明：预热模块 D 的 ComfyUI runtime。
+    功能说明：预热模块 D runtime（Remotion 模式）。
     参数说明：
     - context: 运行上下文对象。
-    - device_override: 预留字段；当前 HTTP ComfyUI 路径不直接消费该值。
+    - device_override: 预留字段。
     返回值：
     - dict[str, str]: 预热摘要。
     异常说明：
-    - RuntimeError: ComfyUI 服务探活或契约加载失败时抛出。
-    边界条件：仅校验服务与工作流，不执行真实推理。
+    - RuntimeError: ComfyUI 服务探活失败时抛出。
+    边界条件：Remotion 模式不要求 ToonCrafter 模型存在；ToonCrafter 相关校验失败仅告警。
     """
-    return prewarm_comfyui_runtime_backend(context=context, device_override=device_override)
+    try:
+        return prewarm_comfyui_runtime_backend(context=context, device_override=device_override)
+    except RuntimeError as error:
+        error_text = str(error)
+        # Remotion 模式：ToonCrafter 模型缺失不阻断预热
+        if "主模型不存在" in error_text or "sketch encoder 不存在" in error_text:
+            context.logger.warning(
+                "模块D 预热跳过 ToonCrafter 模型检查（当前 Remotion 模式），警告=%s",
+                error_text,
+            )
+            return {
+                "backend": "remotion",
+                "device": str(device_override or "remotion-local"),
+                "note": "ToonCrafter models not checked (Remotion mode)",
+            }
+        raise
 
 
 def resolve_render_profile(context: RuntimeContext) -> dict[str, Any]:
@@ -51,12 +67,12 @@ def resolve_render_profile(context: RuntimeContext) -> dict[str, Any]:
     返回值：
     - dict[str, Any]: 供调度层观测的 profile 字典。
     异常说明：无。
-    边界条件：模块 D 真实执行路径固定为 comfyui；本 profile 不再承载编码参数。
+    边界条件：模块 D 统一走 Remotion 渲染；ToonCrafter 路径保留为待启用扩展。
     """
     _ = context
     return {
-        "render_backend": "comfyui",
-        "name": "comfyui",
+        "render_backend": "remotion",
+        "name": "remotion",
         "command_args": [],
         "fallback_cpu_profile": None,
     }
@@ -86,7 +102,7 @@ def execute_units_with_retry(context: RuntimeContext, units_to_run: list[ModuleD
             break
         attempt_no = attempt_index + 1
         context.logger.info(
-            "模块D单元执行轮次开始，task_id=%s，attempt=%s/%s，pending_count=%s，workers=%s，backend=comfyui",
+            "模块D单元执行轮次开始，task_id=%s，attempt=%s/%s，pending_count=%s，workers=%s，backend=remotion",
             context.task_id,
             attempt_no,
             retry_times + 1,
@@ -121,7 +137,7 @@ def execute_units_with_retry(context: RuntimeContext, units_to_run: list[ModuleD
             continue
         if attempt_index < retry_times:
             context.logger.warning(
-                "模块D单元执行有失败，准备重试，task_id=%s，attempt=%s/%s，failed_count=%s，backend=comfyui",
+                "模块D单元执行有失败，准备重试，task_id=%s，attempt=%s/%s，failed_count=%s，backend=remotion",
                 context.task_id,
                 attempt_no,
                 retry_times + 1,
@@ -201,7 +217,7 @@ def _execute_units_parallel_comfyui(
     worker_count: int,
 ) -> list[tuple[ModuleDUnit, Exception]]:
     """
-    功能说明：并行执行模块 D 的 ComfyUI 单元渲染任务。
+    功能说明：并行执行模块 D 的 Remotion 单元渲染任务。
     参数说明：
     - context: 运行上下文对象。
     - pending_units: 待执行单元数组。
@@ -209,7 +225,7 @@ def _execute_units_parallel_comfyui(
     返回值：
     - list[tuple[ModuleDUnit, Exception]]: 失败单元与异常信息数组。
     异常说明：无（异常统一转换为失败列表返回）。
-    边界条件：ComfyUI 服务端自身负责模型常驻与执行队列。
+    边界条件：Remotion 渲染为本地子进程，并发数受 CPU/内存限制。
     """
     failed_units: list[tuple[ModuleDUnit, Exception]] = []
     with ThreadPoolExecutor(max_workers=max(1, int(worker_count))) as executor:
@@ -233,19 +249,17 @@ def _execute_units_parallel_comfyui(
 
 def _render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> Exception | None:
     """
-    功能说明：执行一次模块 D 的 ComfyUI 渲染并写入状态。
+    功能说明：执行一次模块 D 的 Remotion 渲染并写入状态。
     参数说明：
     - context: 运行上下文对象。
     - unit: 模块 D 单元对象。
     返回值：
     - Exception | None: 成功返回 None，失败返回异常对象。
     异常说明：无（异常转为返回值，交给上层重试逻辑处理）。
-    边界条件：模块常驻由 ComfyUI 服务自身负责。
+    边界条件：所有 shot 统一走 Remotion 路径，不再走 ToonCrafter。
     """
     try:
-        if not str(unit.shot.get("video_prompt_en", "")).strip():
-            unit.shot["video_prompt_en"] = _resolve_unit_video_prompt_en(context=context, unit=unit)
-        result = render_one_unit_comfyui(context=context, unit=unit)
+        result = _render_unit_via_remotion(context=context, unit=unit)
         _apply_camera_plan_if_needed(context=context, unit=unit)
         _mark_unit_done(
             context=context,
@@ -257,6 +271,292 @@ def _render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> Exce
     except Exception as error:  # noqa: BLE001
         _mark_unit_failed(context=context, unit=unit, error=error)
         return error
+
+
+def _render_unit_via_remotion(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, Any]:
+    """
+    功能说明：将任意模块 D 单元通过 Remotion 渲染为视频片段（首尾帧合成）。
+    参数说明：
+    - context: 运行上下文对象。
+    - unit: 模块 D 单元对象。
+    返回值：
+    - dict[str, Any]: 渲染摘要（backend/segment_path/composition_id/frame_count_used）。
+    异常说明：
+    - RuntimeError: 模板参数、素材路径或 Remotion 渲染失败时抛出。
+    边界条件：根据 remotion_id 自动选择多主体模板或单主体模板；
+    管道执行固定首尾帧模式；前端重跑按键通过独立 API 控制不同模式。
+    """
+    remotion_id = str(unit.shot.get("remotion_id", "")).strip() or "CenterTemplate"
+
+    if remotion_id in {"GridTemplate", "ScrollTemplate"}:
+        return _render_one_unit_remotion_template(context=context, unit=unit)
+
+    if remotion_id in {"TiltUpTemplate", "TiltDownTemplate", "PanRightTemplate"}:
+        return _render_one_unit_transition_template(context=context, unit=unit, remotion_id=remotion_id)
+
+    # --- 单主体模板（CenterTemplate 等）：frames 数组包含首尾帧 ---
+    start_path = str(unit.shot.get("frame_path_start", "")).strip()
+    end_path = str(unit.shot.get("frame_path_end", "")).strip()
+    if not start_path:
+        raise RuntimeError(
+            f"模块D Remotion 渲染失败：缺失首帧素材，unit_id={unit.unit_id}"
+        )
+    if not Path(start_path).exists():
+        raise RuntimeError(
+            f"模块D Remotion 渲染失败：首帧素材不存在，unit_id={unit.unit_id}，path={start_path}"
+        )
+
+    start_sym = _build_symbol_payload_single(path=start_path, unit_id=unit.unit_id)
+    end_sym = (
+        _build_symbol_payload_single(path=end_path, unit_id=unit.unit_id)
+        if end_path and Path(end_path).exists()
+        else start_sym
+    )
+
+    props: dict[str, Any] = {
+        "template": remotion_id,
+        "fps": int(context.config.ffmpeg.fps),
+        "duration_in_frames": int(unit.exact_frames),
+        "bpm": 120,
+        "background": {"kind": "solid", "color": "white"},
+        "frames": [start_sym, end_sym],
+        "motion": {"breathe": True},
+    }
+
+    props_dir = context.artifacts_dir / "template_requests"
+    props_dir.mkdir(parents=True, exist_ok=True)
+    props_path = props_dir / f"{unit.unit_id}.{remotion_id}.json"
+    props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    project_root = Path(__file__).resolve().parents[4]
+    remotion_project_dir = (project_root / "remotion_templates").resolve()
+    from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
+
+    render_template_segment(
+        remotion_project_dir=remotion_project_dir,
+        composition_id=remotion_id,
+        props_json_path=props_path,
+        output_path=unit.segment_path,
+    )
+    return {
+        "backend": f"remotion-{remotion_id}",
+        "segment_path": str(unit.segment_path),
+        "composition_id": remotion_id,
+        "frame_count_used": int(unit.exact_frames),
+    }
+
+
+def _build_symbol_payload_single(path: str, unit_id: str) -> dict[str, Any]:
+    """
+    功能说明：为单主体模板构建全屏 symbol payload。
+    参数说明：
+    - path: 帧文件路径。
+    - unit_id: 单元标识。
+    返回值：
+    - dict[str, Any]: Remotion symbol 参数（全屏尺寸）。
+    异常说明：
+    - RuntimeError: 路径为空或文件不存在时抛出。
+    """
+    if not path:
+        raise RuntimeError(f"模块D Remotion 渲染失败：素材路径为空，unit_id={unit_id}")
+    resolved = Path(path).resolve()
+    if not resolved.exists():
+        raise RuntimeError(f"模块D Remotion 渲染失败：素材不存在，unit_id={unit_id}，path={path}")
+    return {
+        "src": resolved.as_uri(),
+        "width_ratio": 1.0,
+        "height_ratio": 1.0,
+    }
+
+
+def _is_multi_subject_template_unit(unit: ModuleDUnit) -> bool:
+    """
+    功能说明：判断当前模块 D 单元是否应走 Remotion 多主体模板合成。
+    参数说明：
+    - unit: 模块 D 单元对象。
+    返回值：
+    - bool: GridTemplate/ScrollTemplate 且包含 template_slots 时返回 True。
+    异常说明：无。
+    边界条件：无 slot 时继续走 ToonCrafter，避免误吞单主体旧产物。
+    """
+    remotion_id = str(unit.shot.get("remotion_id", "")).strip()
+    template_slots = unit.shot.get("template_slots")
+    return remotion_id in {"GridTemplate", "ScrollTemplate"} and isinstance(template_slots, list) and bool(template_slots)
+
+
+def _render_one_unit_remotion_template(context: RuntimeContext, unit: ModuleDUnit) -> dict[str, Any]:
+    """
+    功能说明：用 Remotion 多主体模板把多个格子素材合成为一个视频片段。
+    参数说明：
+    - context: 运行上下文对象。
+    - unit: 已聚合的模块 D 单元对象。
+    返回值：
+    - dict[str, Any]: 渲染摘要。
+    异常说明：
+    - RuntimeError: 模板参数、素材或 Remotion 渲染失败时抛出。
+    边界条件：当前只处理 GridTemplate/ScrollTemplate，多余素材截断为前三个，不足三个复制最后一个。
+    """
+    remotion_id = str(unit.shot.get("remotion_id", "")).strip()
+    template_slots = unit.shot.get("template_slots")
+    if remotion_id not in {"GridTemplate", "ScrollTemplate"}:
+        raise RuntimeError(f"模块D Remotion 渲染失败：不支持的多主体模板，unit_id={unit.unit_id}，remotion_id={remotion_id}")
+    if not isinstance(template_slots, list) or not template_slots:
+        raise RuntimeError(f"模块D Remotion 渲染失败：缺失 template_slots，unit_id={unit.unit_id}")
+
+    normalized_slots = [slot for slot in template_slots if isinstance(slot, dict)]
+    if not normalized_slots:
+        raise RuntimeError(f"模块D Remotion 渲染失败：template_slots 为空，unit_id={unit.unit_id}")
+    while len(normalized_slots) < 3:
+        normalized_slots.append(dict(normalized_slots[-1]))
+    normalized_slots = normalized_slots[:3]
+
+    slots: list[dict[str, Any]] = []
+    for slot in normalized_slots:
+        start_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_start", unit_id=unit.unit_id)
+        end_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_end", unit_id=unit.unit_id)
+        slots.append({"frames": [start_sym, end_sym]})
+
+    props: dict[str, Any] = {
+        "template": remotion_id,
+        "fps": int(context.config.ffmpeg.fps),
+        "duration_in_frames": int(unit.exact_frames),
+        "bpm": 120,
+        "background": {"kind": "solid", "color": "white"},
+        "slots": slots,
+        "layout": {"visible_cell_count": 3},
+    }
+    if remotion_id == "GridTemplate":
+        props["motion"] = {"active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 72}
+    else:
+        props["motion"] = {"loop": False}
+
+    props_dir = context.artifacts_dir / "template_requests"
+    props_dir.mkdir(parents=True, exist_ok=True)
+    props_path = props_dir / f"{unit.unit_id}.{remotion_id}.json"
+    props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    project_root = Path(__file__).resolve().parents[4]
+    remotion_project_dir = (project_root / "remotion_templates").resolve()
+    from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
+
+    render_template_segment(
+        remotion_project_dir=remotion_project_dir,
+        composition_id=remotion_id,
+        props_json_path=props_path,
+        output_path=unit.segment_path,
+    )
+    return {
+        "backend": "remotion-template",
+        "segment_path": str(unit.segment_path),
+        "composition_id": remotion_id,
+        "slot_count": len(template_slots),
+        "frame_count_used": int(unit.exact_frames),
+    }
+
+
+def _render_one_unit_transition_template(
+    context: RuntimeContext,
+    unit: ModuleDUnit,
+    remotion_id: str,
+) -> dict[str, Any]:
+    """
+    功能说明：用 Remotion 转场模板合成前后双场景过渡视频片段。
+    参数说明：
+    - context: 运行上下文对象。
+    - unit: 模块 D 单元对象。
+    - remotion_id: 转场模板标识（TiltUpTemplate/TiltDownTemplate/PanRightTemplate）。
+    返回值：
+    - dict[str, Any]: 渲染摘要。
+    异常说明：
+    - RuntimeError: 模板参数、素材或 Remotion 渲染失败时抛出。
+    边界条件：首帧作为 scene_before（旧场景），尾帧作为 scene_after（新场景）。
+    """
+    start_path = str(unit.shot.get("frame_path_start", "")).strip()
+    end_path = str(unit.shot.get("frame_path_end", "")).strip()
+    if not start_path:
+        raise RuntimeError(
+            f"模块D Remotion 转场渲染失败：缺失首帧素材，unit_id={unit.unit_id}"
+        )
+    if not Path(start_path).exists():
+        raise RuntimeError(
+            f"模块D Remotion 转场渲染失败：首帧素材不存在，unit_id={unit.unit_id}，path={start_path}"
+        )
+
+    before_sym = _build_symbol_payload_single(path=start_path, unit_id=unit.unit_id)
+    after_sym = (
+        _build_symbol_payload_single(path=end_path, unit_id=unit.unit_id)
+        if end_path and Path(end_path).exists()
+        else before_sym
+    )
+
+    # travel_px：TiltUp/TiltDown 使用高度 320，PanRight 使用宽度 512
+    travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+
+    props: dict[str, Any] = {
+        "template": remotion_id,
+        "fps": int(context.config.ffmpeg.fps),
+        "duration_in_frames": int(unit.exact_frames),
+        "bpm": 120,
+        "scene_before": {
+            "background": {"kind": "solid", "color": "white"},
+            "symbol": before_sym,
+        },
+        "scene_after": {
+            "background": {"kind": "solid", "color": "white"},
+            "symbol": after_sym,
+        },
+        "motion": {"travel_px": travel_px, "easing": "ease_in_out"},
+    }
+
+    props_dir = context.artifacts_dir / "template_requests"
+    props_dir.mkdir(parents=True, exist_ok=True)
+    props_path = props_dir / f"{unit.unit_id}.{remotion_id}.json"
+    props_path.write_text(json.dumps(props, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    project_root = Path(__file__).resolve().parents[4]
+    remotion_project_dir = (project_root / "remotion_templates").resolve()
+    from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
+
+    render_template_segment(
+        remotion_project_dir=remotion_project_dir,
+        composition_id=remotion_id,
+        props_json_path=props_path,
+        output_path=unit.segment_path,
+    )
+    return {
+        "backend": f"remotion-transition-{remotion_id}",
+        "segment_path": str(unit.segment_path),
+        "composition_id": remotion_id,
+        "frame_count_used": int(unit.exact_frames),
+    }
+
+
+def _build_symbol_payload(slot: dict[str, Any], frame_key: str, unit_id: str) -> dict[str, Any]:
+    """
+    功能说明：将 template_slot 中的帧路径转换为 Remotion symbol payload。
+    参数说明：
+    - slot: 单个格子素材载荷。
+    - frame_key: 帧路径字段名。
+    - unit_id: 当前模块 D 单元标识。
+    返回值：
+    - dict[str, Any]: Remotion symbol 参数。
+    异常说明：
+    - RuntimeError: 素材路径为空或文件不存在时抛出。
+    边界条件：Grid/Scroll 固定使用保守尺寸比例。
+    """
+    frame_path = str(slot.get(frame_key, "")).strip()
+    if not frame_path:
+        fallback_key = "frame_path_start" if frame_key == "frame_path_end" else "frame_path_end"
+        frame_path = str(slot.get(fallback_key, "")).strip()
+    if not frame_path:
+        raise RuntimeError(f"模块D Remotion 渲染失败：格子素材缺失，unit_id={unit_id}，frame_key={frame_key}")
+    if not Path(frame_path).exists():
+        raise RuntimeError(f"模块D Remotion 渲染失败：格子素材不存在，unit_id={unit_id}，path={frame_path}")
+    return {
+        "src": Path(frame_path).resolve().as_uri(),
+        "width_ratio": 0.26,
+        "height_ratio": 0.52,
+    }
 
 
 def _resolve_unit_video_prompt_en(context: RuntimeContext, unit: ModuleDUnit) -> str:

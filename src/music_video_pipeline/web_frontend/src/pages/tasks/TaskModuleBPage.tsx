@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
   ExportOutlined,
   EyeOutlined,
   FileSearchOutlined,
   ReloadOutlined,
+  ToolOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
@@ -23,37 +24,30 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
   getTaskModuleBData,
+  rebuildModuleBOutput,
   rerunModuleBRole,
   rerunModuleBRoleSegment,
+  resumeModuleB,
   taskQueryKeys,
 } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
 import type { TaskModuleBData, TaskModuleBRole } from "@/schemas/moduleB";
 import { useTaskIdParam } from "@/hooks/useTaskIdParam";
+import { Role3SegmentBody } from "@/components/moduleB/Role3SegmentBody";
+import { Role4SegmentBody } from "@/components/moduleB/Role4SegmentBody";
+import { StreamViewerModal } from "@/components/moduleB/StreamViewerModal";
 
 function getImplementationTag(role: TaskModuleBRole) {
   if (role.implementation_status === "implemented") {
-    return <Tag color="success">已接入</Tag>;
+    return <Tag color="success">已生成</Tag>;
   }
   if (role.implementation_status === "placeholder") {
     return <Tag color="warning">占位中</Tag>;
   }
   if (role.implementation_status === "missing") {
-    return <Tag color="error">缺源码</Tag>;
+    return <Tag color="error">当前未生成结果</Tag>;
   }
   return <Tag>待确认</Tag>;
-}
-
-function formatSegmentOptionLabel(segmentId: string, shotId: string, label: string): string {
-  const normalizedLabel = label.trim();
-  if (!normalizedLabel) {
-    return `${segmentId} / ${shotId}`;
-  }
-  return `${segmentId} / ${shotId} / ${normalizedLabel}`;
-}
-
-function formatTimeRange(startTime: number, endTime: number): string {
-  return `${startTime.toFixed(2)} - ${endTime.toFixed(2)}`;
 }
 
 function formatDurationMs(durationMs: number): string {
@@ -62,21 +56,6 @@ function formatDurationMs(durationMs: number): string {
     return `${normalized} ms`;
   }
   return `${(normalized / 1000).toFixed(normalized >= 10000 ? 1 : 2)} s`;
-}
-
-function formatTimestampOrDash(value: string): string {
-  return value.trim() || "-";
-}
-
-function formatStopwatchSeconds(totalSeconds: number): string {
-  const normalizedSeconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
-  const hours = Math.floor(normalizedSeconds / 3600);
-  const minutes = Math.floor((normalizedSeconds % 3600) / 60);
-  const seconds = normalizedSeconds % 60;
-  if (hours > 0) {
-    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  }
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function isActiveRerunConflictMessage(errorText: string): boolean {
@@ -106,8 +85,15 @@ function buildRoleResultStatusText(
   return `成果文件最近更新于 ${updatedAt}。`;
 }
 
+function computeEffectiveDurationMs(ar: NonNullable<TaskModuleBRole["active_rerun"]>): number {
+  if (ar.duration_ms && ar.duration_ms > 0) return ar.duration_ms;
+  if (ar.finished_at_ms && ar.started_at_ms) return Math.max(0, ar.finished_at_ms - ar.started_at_ms);
+  if (ar.finished_at_ms && ar.submitted_at_ms) return Math.max(0, ar.finished_at_ms - ar.submitted_at_ms);
+  return 0;
+}
+
 function buildRerunStatusMessage(
-  activeRerun: TaskModuleBData["active_rerun"] | undefined,
+  activeRerun: TaskModuleBRole["active_rerun"] | undefined,
   roleName: string,
 ): { type: "info" | "success" | "error"; text: string } | null {
   if (!activeRerun || activeRerun.role_name !== roleName || !activeRerun.status) {
@@ -117,7 +103,7 @@ function buildRerunStatusMessage(
     if (activeRerun.mode === "segment") {
       return {
         type: "info",
-        text: `正在按 Segment 重跑，已提交于 ${activeRerun.submitted_at || "-"}。`,
+        text: `正在按 ${roleName === "role3" ? "Big Segment" : "Shot"} 重跑，已提交于 ${activeRerun.submitted_at || "-"}。`,
       };
     }
     return {
@@ -125,10 +111,11 @@ function buildRerunStatusMessage(
       text: `正在按 Role 重跑，已提交于 ${activeRerun.submitted_at || "-"}。`,
     };
   }
+  const durationMs = computeEffectiveDurationMs(activeRerun);
   if (activeRerun.status === "succeeded") {
     return {
       type: "success",
-      text: `最近一次重跑已完成，后端耗时 ${formatDurationMs(activeRerun.duration_ms)}。`,
+      text: `最近一次重跑已完成，耗时 ${formatDurationMs(durationMs)}。`,
     };
   }
   if (activeRerun.status === "failed") {
@@ -136,7 +123,7 @@ function buildRerunStatusMessage(
     const detail = activeRerun.last_error ? `；详情：${activeRerun.last_error}` : "";
     return {
       type: "error",
-      text: `最近一次重跑失败，后端耗时 ${formatDurationMs(activeRerun.duration_ms)}，原因：${reason}${detail}`,
+      text: `最近一次重跑失败，耗时 ${formatDurationMs(durationMs)}，原因：${reason}${detail}`,
     };
   }
   return null;
@@ -147,12 +134,9 @@ export function TaskModuleBPage() {
   const queryClient = useQueryClient();
   const { message } = App.useApp();
   const [promptRoleName, setPromptRoleName] = useState("");
+  const [promptSegmentId, setPromptSegmentId] = useState("");
   const [segmentSelection, setSegmentSelection] = useState<Record<string, string>>({});
-  const [clientRerunStartedAtMs, setClientRerunStartedAtMs] = useState<Record<string, number>>({});
-  const [clientRerunFrozenElapsedMs, setClientRerunFrozenElapsedMs] = useState<Record<string, number>>({});
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [streamViewerRoleName, setStreamViewerRoleName] = useState("");
-  const [streamViewerMode, setStreamViewerMode] = useState<"rerun" | "follow-current">("rerun");
 
   useEffect(() => {
     appLogger.info("模块B页面", "模块 B 观察页已进入", { taskId });
@@ -162,10 +146,15 @@ export function TaskModuleBPage() {
     queryKey: taskQueryKeys.moduleB(taskId),
     queryFn: () => getTaskModuleBData(taskId),
     enabled: Boolean(taskId),
+    placeholderData: (previousData: any) => previousData,
     refetchInterval: (query) => {
       const payload = query.state.data;
-      if (payload?.active_rerun?.active) {
+      if (payload?.roles?.some((r) => r.active_rerun?.active)) {
         return 1000;
+      }
+      // 流式查看器打开时持续轮询，避免后端未确认时 stop polling
+      if (streamViewerRoleName) {
+        return 1500;
       }
       if (payload?.task_status === "running" || payload?.module_b_status === "running") {
         return 2000;
@@ -176,65 +165,56 @@ export function TaskModuleBPage() {
   const queryErrorText = error instanceof Error ? error.message : "";
 
   const roles = data?.roles || [];
-  const roleMap = useMemo(
-    () => Object.fromEntries(roles.map((role) => [role.role_name, role])),
-    [roles],
-  );
-  const segmentItems = data?.segment_items || [];
+  const roleMap = Object.fromEntries(roles.map((role) => [role.role_name, role]));
 
+  // 初始化 role3/role4 默认选中（已有选中值则保留）
   useEffect(() => {
     setSegmentSelection((current) => {
-      const nextSelection = { ...current };
-      for (const roleName of ["role3", "role4"]) {
-        const currentValue = nextSelection[roleName];
-        if (currentValue && segmentItems.some((item) => item.segment_id === currentValue)) {
-          continue;
+      const next = { ...current };
+      for (const rn of ["role3", "role4"] as const) {
+        const items = roleMap[rn]?.segment_items || [];
+        if (!items.length) continue;
+        if (next[rn]) {
+          // 校验已有选中在当前 segment_items 中仍然有效
+          const currentId = next[rn];
+          const stillValid = items.some((item) => {
+            const id = rn === "role3"
+              ? (item.big_segment_id || item.segment_id)
+              : item.segment_id;
+            return id === currentId;
+          });
+          if (stillValid) continue;
+          // 无效则回退到第一项
         }
-        nextSelection[roleName] = segmentItems[0]?.segment_id || "";
+        next[rn] = (rn === "role3")
+          ? (items[0].big_segment_id || items[0].segment_id)
+          : items[0].segment_id;
       }
-      return nextSelection;
+      return next;
     });
-  }, [segmentItems]);
+  }, [roleMap["role3"]?.segment_items, roleMap["role4"]?.segment_items]);
 
+  // prompt 默认选中
   useEffect(() => {
-    const hasLocalTimer = Object.keys(clientRerunStartedAtMs).length > 0;
-    const hasActiveRerun = Boolean(data?.active_rerun?.active);
-    if (!hasLocalTimer && !hasActiveRerun) {
-      return undefined;
-    }
-    const timerId = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timerId);
-  }, [clientRerunStartedAtMs, data?.active_rerun?.active]);
-
-  useEffect(() => {
-    const activeRerun = data?.active_rerun;
-    if (!activeRerun || !activeRerun.role_name) {
-      return;
-    }
-    if (activeRerun.active) {
-      return;
-    }
-    const roleName = activeRerun.role_name;
-    const startedAtMs = clientRerunStartedAtMs[roleName] || 0;
-    const fallbackElapsedMs =
-      activeRerun.duration_ms > 0
-        ? activeRerun.duration_ms
-        : startedAtMs > 0
-          ? Math.max(0, nowMs - startedAtMs)
-          : 0;
-    setClientRerunFrozenElapsedMs((current) => ({
-      ...current,
-      [roleName]: fallbackElapsedMs,
-    }));
-    setClientRerunStartedAtMs((current) => {
-      if (!(roleName in current)) {
-        return current;
+    if (promptRoleName !== "role3" && promptRoleName !== "role4") return;
+    const segments = roleMap[promptRoleName]?.segment_items || [];
+    if (!segments.length) return;
+    setPromptSegmentId((prev) => {
+      if (prev) {
+        const stillValid = segments.some((s) => {
+          const id = promptRoleName === "role3"
+            ? (s.big_segment_id || s.segment_id)
+            : s.segment_id;
+          return id === prev;
+        });
+        if (stillValid) return prev;
       }
-      const nextState = { ...current };
-      delete nextState[roleName];
-      return nextState;
+      if (promptRoleName === "role3") {
+        return segments[0].big_segment_id || segments[0].segment_id;
+      }
+      return segments[0].segment_id;
     });
-  }, [clientRerunStartedAtMs, data?.active_rerun, nowMs]);
+  }, [promptRoleName, roleMap[promptRoleName]?.segment_items]);
 
   const invalidateTaskScopes = async () => {
     await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
@@ -247,19 +227,74 @@ export function TaskModuleBPage() {
   const roleRerunMutation = useMutation({
     mutationFn: ({ roleName, replaceRunning }: { roleName: string; replaceRunning?: boolean }) =>
       rerunModuleBRole(taskId, roleName, { replaceRunning }),
+    onMutate: async (variables) => {
+      queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
+        if (!old?.roles) return old;
+        return {
+          ...old,
+          roles: old.roles.map((r: any) => {
+            if (r.role_name === variables.roleName) {
+              return {
+                ...r,
+                active_rerun: {
+                  active: true,
+                  status: "queued",
+                  mode: "role",
+                  role_name: variables.roleName,
+                  segment_id: "",
+                  shot_id: "",
+                  submitted_at: new Date().toISOString(),
+                  submitted_at_ms: Date.now(),
+                  started_at: "",
+                  started_at_ms: 0,
+                  finished_at: "",
+                  finished_at_ms: 0,
+                  duration_ms: 0,
+                  last_error: "",
+                  failure_reason: "",
+                },
+                stream_preview: { ...r.stream_preview, content: "", available: false },
+                stream_preview_segments: (r.stream_preview_segments || []).map((seg: any) => ({ ...seg, content: "" })),
+                result_text: { ...r.result_text, content: "" },
+              };
+            }
+            return r;
+          }),
+        };
+      });
+    },
     onSuccess: async (payload, variables) => {
-      await invalidateTaskScopes();
+      // 失效其他查询范围（list/detail/snapshot/webData），保留 moduleB 手动控制
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
+      // 重新拉取 moduleB，如果后端还没确认重跑，重填乐观状态保持轮询不中断
+      await queryClient.refetchQueries({ queryKey: taskQueryKeys.moduleB(taskId) });
+      queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
+        if (!old?.roles) return old;
+        const targetRole = old.roles.find((r: any) => r.role_name === variables.roleName);
+        if (targetRole && !targetRole.active_rerun?.active) {
+          return {
+            ...old,
+            roles: old.roles.map((r: any) =>
+              r.role_name === variables.roleName
+                ? {
+                    ...r,
+                    active_rerun: { ...r.active_rerun, active: true, status: "queued" },
+                    stream_preview: { ...r.stream_preview, content: "", available: false },
+                    stream_preview_segments: (r.stream_preview_segments || []).map((seg: any) => ({ ...seg, content: "" })),
+                    result_text: { ...r.result_text, content: "" },
+                  }
+                : r
+            ),
+          };
+        }
+        return old;
+      });
       message.success(payload.message || `模块 B ${variables.roleName} 重跑请求已提交`);
     },
     onError: async (error, variables) => {
-      setClientRerunStartedAtMs((current) => {
-        if (!(variables.roleName in current)) {
-          return current;
-        }
-        const nextState = { ...current };
-        delete nextState[variables.roleName];
-        return nextState;
-      });
       const errorText = error instanceof Error ? error.message : String(error);
       appLogger.warn("模块B页面", "模块 B role 重跑入口反馈", { taskId, error: errorText });
       if (isActiveRerunConflictMessage(errorText)) {
@@ -277,19 +312,73 @@ export function TaskModuleBPage() {
   const segmentRerunMutation = useMutation({
     mutationFn: ({ roleName, segmentId, replaceRunning }: { roleName: string; segmentId: string; replaceRunning?: boolean }) =>
       rerunModuleBRoleSegment(taskId, roleName, segmentId, { replaceRunning }),
+    onMutate: async (variables) => {
+      queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
+        if (!old?.roles) return old;
+        return {
+          ...old,
+          roles: old.roles.map((r: any) => {
+            if (r.role_name === variables.roleName) {
+              return {
+                ...r,
+                active_rerun: {
+                  active: true,
+                  status: "queued",
+                  mode: "segment",
+                  role_name: variables.roleName,
+                  segment_id: variables.segmentId,
+                  shot_id: "",
+                  submitted_at: new Date().toISOString(),
+                  submitted_at_ms: Date.now(),
+                  started_at: "",
+                  started_at_ms: 0,
+                  finished_at: "",
+                  finished_at_ms: 0,
+                  duration_ms: 0,
+                  last_error: "",
+                  failure_reason: "",
+                },
+                stream_preview_segments: (r.stream_preview_segments || []).map((seg: any) =>
+                  seg.segment_id === variables.segmentId ? { ...seg, content: "" } : seg
+                ),
+              };
+            }
+            return r;
+          }),
+        };
+      });
+    },
     onSuccess: async (payload, variables) => {
-      await invalidateTaskScopes();
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
+      await queryClient.refetchQueries({ queryKey: taskQueryKeys.moduleB(taskId) });
+      queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
+        if (!old?.roles) return old;
+        const targetRole = old.roles.find((r: any) => r.role_name === variables.roleName);
+        if (targetRole && !targetRole.active_rerun?.active) {
+          return {
+            ...old,
+            roles: old.roles.map((r: any) =>
+              r.role_name === variables.roleName
+                ? {
+                    ...r,
+                    active_rerun: { ...r.active_rerun, active: true, status: "queued" },
+                    stream_preview: { ...r.stream_preview, content: "", available: false },
+                    stream_preview_segments: (r.stream_preview_segments || []).map((seg: any) =>
+                      seg.segment_id === variables.segmentId ? { ...seg, content: "" } : seg
+                    ),
+                  }
+                : r
+            ),
+          };
+        }
+        return old;
+      });
       message.success(payload.message || `模块 B ${variables.roleName} / ${variables.segmentId} 重跑请求已提交`);
     },
     onError: async (error, variables) => {
-      setClientRerunStartedAtMs((current) => {
-        if (!(variables.roleName in current)) {
-          return current;
-        }
-        const nextState = { ...current };
-        delete nextState[variables.roleName];
-        return nextState;
-      });
       const errorText = error instanceof Error ? error.message : String(error);
       appLogger.warn("模块B页面", "模块 B segment 重跑入口反馈", { taskId, error: errorText });
       if (isActiveRerunConflictMessage(errorText)) {
@@ -303,7 +392,7 @@ export function TaskModuleBPage() {
             cancelText: variables.roleName === "role1" ? "继续查看当前输出" : "暂不重跑",
             onCancelView:
               variables.roleName === "role1"
-                ? () => openRoleStreamViewer(variables.roleName, "follow-current")
+                ? () => openRoleStreamViewer(variables.roleName)
                 : undefined,
           },
         );
@@ -313,34 +402,73 @@ export function TaskModuleBPage() {
     },
   });
 
-  const promptRole = promptRoleName ? roleMap[promptRoleName] : undefined;
-  const activeRerun = data?.active_rerun;
-  const streamViewerRole = streamViewerRoleName ? roleMap[streamViewerRoleName] : undefined;
-  const streamViewerContent = streamViewerRole?.stream_preview.content || "";
-  const streamViewerUpdatedAt = streamViewerRole?.stream_preview.updated_at || "";
-  const streamViewerMeta = streamViewerRole?.stream_preview_meta;
-  const streamViewerActive = Boolean(
-    activeRerun?.active && activeRerun.role_name === streamViewerRoleName,
-  );
-  const streamViewerElapsedMs = streamViewerRoleName
-    ? (
-      clientRerunStartedAtMs[streamViewerRoleName]
-        ? Math.max(0, nowMs - clientRerunStartedAtMs[streamViewerRoleName])
-        : clientRerunFrozenElapsedMs[streamViewerRoleName]
-          || (
-            streamViewerActive && Math.max(activeRerun?.submitted_at_ms || 0, activeRerun?.started_at_ms || 0) > 0
-              ? Math.max(0, nowMs - Math.max(activeRerun?.submitted_at_ms || 0, activeRerun?.started_at_ms || 0))
-              : activeRerun?.role_name === streamViewerRoleName
-                ? activeRerun.duration_ms || 0
-                : 0
-          )
-    )
-    : 0;
-  const streamViewerTimerText = formatStopwatchSeconds(Math.floor(streamViewerElapsedMs / 1000));
+  const rebuildOutputMutation = useMutation({
+    mutationFn: () => rebuildModuleBOutput(taskId),
+    onSuccess: async (payload) => {
+      await invalidateTaskScopes();
+      message.success(payload.message || "模块 B 输出已重建");
+    },
+    onError: (error) => {
+      const errorText = error instanceof Error ? error.message : String(error);
+      message.warning(errorText);
+    },
+  });
 
-  const openRoleStreamViewer = (roleName: string, mode: "rerun" | "follow-current") => {
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeModuleB(taskId),
+    onSuccess: async (payload) => {
+      await invalidateTaskScopes();
+      message.success(payload.message || "断点续跑已开始");
+    },
+    onError: (error) => {
+      const errorText = error instanceof Error ? error.message : String(error);
+      if (isActiveRerunConflictMessage(errorText)) {
+        message.warning(errorText);
+        return;
+      }
+      message.warning(errorText);
+    },
+  });
+
+  const promptRole = promptRoleName ? roleMap[promptRoleName] : undefined;
+  const promptRoleAllSegments = promptRole?.segment_items || [];
+  const promptRoleSegmentOptions = (() => {
+    if (!promptRoleAllSegments.length) return [];
+    if (promptRoleName === "role3") {
+      const seen = new Set<string>();
+      const options: { value: string; label: string }[] = [];
+      for (const s of promptRoleAllSegments) {
+        const bid = s.big_segment_id || s.segment_id;
+        if (!bid || seen.has(bid)) continue;
+        seen.add(bid);
+        const story = s.story_outline_zh || "";
+        options.push({ value: bid, label: story ? `${bid} / ${story}` : bid });
+      }
+      return options;
+    }
+    return promptRoleAllSegments.map((s) => ({
+      value: s.segment_id,
+      label: s.segment_id,
+    }));
+  })();
+  const promptRoleFirstSegId = (() => {
+    if (!promptRoleAllSegments.length) return "";
+    if (promptRoleName === "role3") {
+      return promptRoleAllSegments[0].big_segment_id || promptRoleAllSegments[0].segment_id;
+    }
+    return promptRoleAllSegments[0].segment_id;
+  })();
+  const promptRoleSegmentContent = (() => {
+    if (promptRole?.role_name !== "role3" && promptRole?.role_name !== "role4") {
+      return promptRole?.rendered_prompt.content || "";
+    }
+    if (!promptRoleAllSegments.length) return "";
+    const selectedId = promptSegmentId || promptRoleFirstSegId || "";
+    return (promptRole?.rendered_prompt_segments || []).find((s) => s.segment_id === selectedId)?.content || "";
+  })();
+
+  const openRoleStreamViewer = (roleName: string) => {
     setStreamViewerRoleName(roleName);
-    setStreamViewerMode(mode);
   };
 
   const confirmRunningRoleAction = (
@@ -359,37 +487,25 @@ export function TaskModuleBPage() {
       okText: options?.okText || "取消并重跑",
       cancelText: options?.cancelText || "继续查看当前输出",
       onOk: onConfirmReplace,
-      onCancel: options?.onCancelView || (() => openRoleStreamViewer(roleName, "follow-current")),
+      onCancel: options?.onCancelView || (() => openRoleStreamViewer(roleName)),
     });
   };
 
   const submitRoleRerun = (roleName: string, replaceRunning = false) => {
-    setClientRerunFrozenElapsedMs((current) => {
-      if (!(roleName in current)) {
-        return current;
-      }
-      const nextState = { ...current };
-      delete nextState[roleName];
-      return nextState;
-    });
-    openRoleStreamViewer(roleName, "rerun");
-    setClientRerunStartedAtMs((current) => ({
-      ...current,
-      [roleName]: Date.now(),
-    }));
+    openRoleStreamViewer(roleName);
     roleRerunMutation.mutate({ roleName, replaceRunning });
   };
 
   const submitSegmentRerun = (roleName: string, segmentId: string, replaceRunning = false) => {
-    setClientRerunStartedAtMs((current) => ({
-      ...current,
-      [roleName]: Date.now(),
-    }));
     segmentRerunMutation.mutate({ roleName, segmentId, replaceRunning });
   };
 
   const handleRoleRerunClick = (roleName: string) => {
-    const hasActiveRoleRerun = Boolean(activeRerun?.active && activeRerun.role_name === roleName);
+    const roleActiveRerun = roles.find((r) => r.role_name === roleName)?.active_rerun;
+    const hasActiveRoleRerun = Boolean(
+      roleActiveRerun?.active &&
+      roleActiveRerun.role_name === roleName,
+    );
     if (!hasActiveRoleRerun) {
       submitRoleRerun(roleName, false);
       return;
@@ -398,7 +514,11 @@ export function TaskModuleBPage() {
   };
 
   const handleSegmentRerunClick = (roleName: string, segmentId: string) => {
-    const hasActiveRoleRerun = Boolean(activeRerun?.active && activeRerun.role_name === roleName);
+    const roleActiveRerun = roles.find((r) => r.role_name === roleName)?.active_rerun;
+    const hasActiveRoleRerun = Boolean(
+      roleActiveRerun?.active &&
+      roleActiveRerun.role_name === roleName,
+    );
     if (!hasActiveRoleRerun) {
       submitSegmentRerun(roleName, segmentId, false);
       return;
@@ -410,21 +530,13 @@ export function TaskModuleBPage() {
         content: "是否先取消当前后台进程，再重新发起新的 Segment 重跑？",
         okText: "取消并重跑",
         cancelText: roleName === "role1" ? "继续查看当前输出" : "暂不重跑",
-        onCancelView: roleName === "role1" ? () => openRoleStreamViewer(roleName, "follow-current") : undefined,
+        onCancelView: roleName === "role1" ? () => openRoleStreamViewer(roleName) : undefined,
       },
     );
   };
 
   const openRoleResult = (role: TaskModuleBRole) => {
-    if (role.role_name === "role1") {
-      openRoleStreamViewer(role.role_name, "follow-current");
-      return;
-    }
-    if (!role.result.available || !role.result.url) {
-      message.info(`当前任务还没有 ${role.title} 的角色级成果文件。`);
-      return;
-    }
-    window.open(role.result.url, "_blank", "noopener,noreferrer");
+    openRoleStreamViewer(role.role_name);
   };
 
   const openAggregateOutput = () => {
@@ -476,6 +588,32 @@ export function TaskModuleBPage() {
             <Button icon={<ExportOutlined />} onClick={openAggregateOutput}>
               查看聚合产物
             </Button>
+            <Button
+              icon={<ToolOutlined />}
+              loading={rebuildOutputMutation.isPending}
+              onClick={() => {
+                Modal.confirm({
+                  title: "重建模块 B 输出",
+                  content: "将根据已有的 role3/role4 markdown 产物重新生成 module_b_output.json，不会重新调用 LLM。",
+                  onOk: () => rebuildOutputMutation.mutate(),
+                });
+              }}
+            >
+              重建 B 输出
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
+              loading={resumeMutation.isPending}
+              onClick={() => {
+                Modal.confirm({
+                  title: "断点续跑 Role 4",
+                  content: "将扫描 role3 输出的所有 shot，对缺少 role4 产物的 shot 逐个补跑。已有产物的 shot 会跳过。",
+                  onOk: () => resumeMutation.mutate(),
+                });
+              }}
+            >
+              断点续跑
+            </Button>
           </Space>
         </div>
 
@@ -497,15 +635,14 @@ export function TaskModuleBPage() {
 
       {roles.map((role) => {
         const selectedSegmentId = segmentSelection[role.role_name] || "";
-        const selectedSegment = segmentItems.find((item) => item.segment_id === selectedSegmentId);
         const roleRerunActive =
-          activeRerun?.active &&
-          activeRerun.role_name === role.role_name &&
-          activeRerun.mode === "role";
+          role.active_rerun?.active &&
+          role.active_rerun.mode === "role" &&
+          role.active_rerun.role_name === role.role_name;
         const segmentRerunActive =
-          activeRerun?.active &&
-          activeRerun.role_name === role.role_name &&
-          activeRerun.mode === "segment";
+          role.active_rerun?.active &&
+          role.active_rerun.mode === "segment" &&
+          role.active_rerun.role_name === role.role_name;
         const roleRerunLoading =
           roleRerunActive || (roleRerunMutation.isPending && roleRerunMutation.variables?.roleName === role.role_name);
         const segmentRerunLoading =
@@ -518,10 +655,10 @@ export function TaskModuleBPage() {
         const roleResultStatusText = buildRoleResultStatusText(
           role.result.updated_at,
           role.result.updated_at_ms,
-          activeRerun?.submitted_at_ms || 0,
+          role.active_rerun?.submitted_at_ms || 0,
           Boolean(roleRerunActive || segmentRerunActive),
         );
-        const rerunStatusMessage = buildRerunStatusMessage(activeRerun, role.role_name);
+        const rerunStatusMessage = buildRerunStatusMessage(role.active_rerun, role.role_name);
 
         return (
           <Card key={role.role_name} bordered={false} className="module-b-role-card">
@@ -569,62 +706,36 @@ export function TaskModuleBPage() {
                   <Tag key={`${role.role_name}-${fieldName}`}>{fieldName}</Tag>
                 ))}
               </div>
-              <Typography.Paragraph className="page-paragraph">
-                {role.implementation_detail}
-              </Typography.Paragraph>
               <Typography.Paragraph type="secondary" className="page-paragraph">
                 {roleResultStatusText}
               </Typography.Paragraph>
               {rerunStatusMessage ? <Alert type={rerunStatusMessage.type} showIcon message={rerunStatusMessage.text} /> : null}
 
               {role.supports_segment_retry ? (
-                <div className="module-b-segment-box">
-                  <div className="module-b-segment-toolbar">
-                    <Select
-                      value={selectedSegmentId || undefined}
-                      placeholder="选择 segment"
-                      options={segmentItems.map((item) => ({
-                        value: item.segment_id,
-                        label: formatSegmentOptionLabel(item.segment_id, item.shot_id, item.label),
-                      }))}
-                      onChange={(value) =>
-                        setSegmentSelection((current) => ({ ...current, [role.role_name]: String(value) }))
-                      }
-                      className="module-b-segment-select"
-                    />
-                    <Button
-                      icon={<ReloadOutlined />}
-                      loading={segmentRerunLoading}
-                      onClick={() => {
-                        if (!selectedSegmentId) {
-                          message.info("请先选择一个 segment。");
-                          return;
-                        }
-                        handleSegmentRerunClick(role.role_name, selectedSegmentId);
-                      }}
-                    >
-                      按 Segment 重跑
-                    </Button>
-                  </div>
-                  {selectedSegment ? (
-                    <div className="module-b-segment-summary">
-                      <Typography.Text strong>
-                        {selectedSegment.segment_id} / {selectedSegment.shot_id}
-                      </Typography.Text>
-                      <Typography.Text type="secondary">
-                        {formatTimeRange(selectedSegment.start_time, selectedSegment.end_time)}
-                      </Typography.Text>
-                      <Typography.Text type="secondary">
-                        {selectedSegment.label || selectedSegment.role || "未标注"}
-                      </Typography.Text>
-                      <Typography.Paragraph className="page-paragraph">
-                        {selectedSegment.scene_desc || "当前 segment 还没有 scene_desc。"}
-                      </Typography.Paragraph>
-                    </div>
-                  ) : (
-                    <Empty description="当前任务还没有可用于 role3/role4 的 segment 列表。" />
-                  )}
-                </div>
+                role.role_name === "role3" ? (
+                  <Role3SegmentBody
+                    role={role}
+                    selectedBigSegmentId={selectedSegmentId}
+                    onBigSegmentChange={(bid) => {
+                      appLogger.info("模块B页面", "role3 big_segment 选中变更", { rid: role.role_name, bid });
+                      setSegmentSelection((cur) => ({ ...cur, [role.role_name]: bid }));
+                    }}
+                    onSegmentRerun={(bid) => handleSegmentRerunClick(role.role_name, bid)}
+                    roleRerunLoading={roleRerunLoading}
+                    segmentRerunLoading={segmentRerunLoading}
+                  />
+                ) : role.role_name === "role4" ? (
+                  <Role4SegmentBody
+                    role={role}
+                    selectedSegmentId={selectedSegmentId}
+                    onSegmentChange={(sid) =>
+                      setSegmentSelection((cur) => ({ ...cur, [role.role_name]: sid }))
+                    }
+                    onSegmentRerun={(sid) => handleSegmentRerunClick(role.role_name, sid)}
+                    roleRerunLoading={roleRerunLoading}
+                    segmentRerunLoading={segmentRerunLoading}
+                  />
+                ) : null
               ) : null}
             </div>
           </Card>
@@ -643,72 +754,42 @@ export function TaskModuleBPage() {
           <div className="module-b-prompt-modal">
             <Descriptions column={1} bordered size="small">
               <Descriptions.Item label="模板路径">{promptRole.prompt_template.path || "-"}</Descriptions.Item>
-              <Descriptions.Item label="当前状态">{promptRole.implementation_detail}</Descriptions.Item>
             </Descriptions>
+            {(promptRole.role_name === "role3" || promptRole.role_name === "role4") && promptRoleSegmentOptions.length > 0 ? (
+              <div style={{ marginTop: 16, marginBottom: 8 }}>
+                <Space align="center">
+                  <Typography.Text strong>选择：</Typography.Text>
+                  <Select
+                    value={promptSegmentId || promptRoleFirstSegId || undefined}
+                    options={promptRoleSegmentOptions}
+                    onChange={(value) => setPromptSegmentId(String(value))}
+                    style={{ width: 340 }}
+                    popupClassName="module-b-prompt-select-dropdown"
+                  />
+                </Space>
+              </div>
+            ) : null}
+            {promptRole.rendered_prompt.available || promptRoleSegmentContent ? (
+              <>
+                <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 8 }}>
+                  渲染后 User Prompt（已替换变量）
+                </Typography.Title>
+                <pre className="module-b-prompt-pre">{promptRoleSegmentContent || promptRole.rendered_prompt.content}</pre>
+                <Typography.Title level={5} style={{ marginTop: 16, marginBottom: 8 }}>
+                  原始模板（含占位符）
+                </Typography.Title>
+              </>
+            ) : null}
             <pre className="module-b-prompt-pre">{promptRole.prompt_template.content || "当前 prompt 模板不可用。"}</pre>
           </div>
         ) : null}
       </Modal>
 
-      <Modal
-        title={
-          streamViewerRole ? (
-            <Space direction="vertical" size={4}>
-              <Typography.Text strong>
-                {streamViewerRole.title} 流式输出{streamViewerMode === "follow-current" ? "（当前进程）" : ""}
-              </Typography.Text>
-              <Space wrap size={[8, 4]}>
-                <Tag color={streamViewerActive ? "processing" : "default"}>
-                  计时器 {streamViewerTimerText}
-                </Tag>
-                <Tag color="blue">Retry 第 {Math.max(1, streamViewerMeta?.current_attempt || 1)} 次</Tag>
-                <Tag>首个 chunk {formatTimestampOrDash(streamViewerMeta?.first_chunk_at || "")}</Tag>
-                <Tag>最近 chunk {formatTimestampOrDash(streamViewerMeta?.last_chunk_at || "")}</Tag>
-              </Space>
-            </Space>
-          ) : "流式输出"
-        }
+      <StreamViewerModal
+        role={streamViewerRoleName ? roleMap[streamViewerRoleName] : undefined}
         open={Boolean(streamViewerRoleName)}
-        onCancel={() => setStreamViewerRoleName("")}
-        footer={null}
-        width={920}
-        destroyOnClose={false}
-      >
-        {streamViewerRole ? (
-          <Space direction="vertical" size={12} style={{ width: "100%" }}>
-            <Alert
-              type={streamViewerActive ? "info" : "success"}
-              showIcon
-              message={
-                streamViewerActive
-                  ? "当前正在持续接收 role1 流式输出。"
-                  : streamViewerContent
-                    ? "当前展示的是最近一次已收到的全部内容。"
-                    : "当前还没有收到任何流式输出。"
-              }
-              description={
-                streamViewerUpdatedAt
-                  ? `最近文本更新时间：${streamViewerUpdatedAt}；首个 chunk：${formatTimestampOrDash(streamViewerMeta?.first_chunk_at || "")}；最近 chunk：${formatTimestampOrDash(streamViewerMeta?.last_chunk_at || "")}；当前 retry：第 ${Math.max(1, streamViewerMeta?.current_attempt || 1)} 次`
-                  : "一旦后端收到首个内容 chunk，这里会自动刷新。"
-              }
-            />
-            <pre
-              style={{
-                margin: 0,
-                padding: 16,
-                background: "var(--ant-color-fill-quaternary)",
-                borderRadius: 8,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-                fontSize: 12,
-                lineHeight: 1.6,
-              }}
-            >
-              {streamViewerContent || "正在等待流式输出..."}
-            </pre>
-          </Space>
-        ) : null}
-      </Modal>
+        onClose={() => { setStreamViewerRoleName(""); }}
+      />
     </div>
   );
 }

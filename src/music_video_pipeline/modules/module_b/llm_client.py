@@ -70,7 +70,7 @@ def call_module_b_llm_chat(
     project_root: Path,
     on_stream_chunk: Any | None = None,
     on_retry_hint: Any | None = None,
-) -> str:
+) -> tuple[str, dict[str, Any] | None]:
     """
     功能说明：执行模块 B 的文本 LLM 调用。
     参数说明：
@@ -79,18 +79,19 @@ def call_module_b_llm_chat(
     - messages: 对话消息数组。
     - project_root: 项目根目录。
     返回值：
-    - str: 模型返回文本。
+    - tuple[str, dict | None]: (模型返回文本, usage 信息或 None)。
     异常说明：按具体实现定义。
     边界条件：消息结构应与目标模型接口保持兼容。
     """
-    return call_module_b_llm_chat_detailed(
+    detailed = call_module_b_llm_chat_detailed(
         logger=logger,
         llm_config=llm_config,
         messages=messages,
         project_root=project_root,
         on_stream_chunk=on_stream_chunk,
         on_retry_hint=on_retry_hint,
-    ).content
+    )
+    return detailed.content, detailed.response_json.get("usage")
 
 
 def call_module_b_llm_chat_detailed(
@@ -302,6 +303,13 @@ def call_module_b_llm_chat_detailed(
                 "choices": [{"message": {"content": content}}],
                 "raw_text": response_text,
             }
+            # 非流式模式下，将完整响应内容写入 streaming 文件，
+            # 确保监控页面「查看成果」能展示内容而非"正在等待流式输出..."。
+            if on_stream_chunk is not None and content:
+                try:
+                    on_stream_chunk(content, content)
+                except Exception:
+                    pass
 
         if not content:
             last_error = ModuleBLlmClientError(
@@ -435,6 +443,9 @@ def _build_request_payload(llm_config: Any, messages: list[dict[str, str]]) -> d
     enable_thinking_value = getattr(llm_config, "enable_thinking", None)
     if enable_thinking_value is not None:
         payload["enable_thinking"] = bool(enable_thinking_value)
+    max_tokens_value = getattr(llm_config, "max_tokens", None)
+    if max_tokens_value is not None:
+        payload["max_tokens"] = int(max_tokens_value)
     return payload
 
 
@@ -554,6 +565,8 @@ def _read_streaming_chat_completion(
     first_reasoning_logged = False
     stream_start = monotonic()
     deadline = stream_start + max(0.0, float(first_chunk_timeout_seconds))
+    usage: dict[str, Any] | None = None
+    last_finish_reason: str | None = None
 
     try:
         logger.info(
@@ -594,6 +607,10 @@ def _read_streaming_chat_completion(
             break
         chunk_payloads.append(data_text)
         delta_text = _extract_stream_delta_content_from_data_text(data_text)
+        if usage is None:
+            usage = _extract_usage_from_data_text(data_text)
+        if last_finish_reason is None:
+            last_finish_reason = _extract_finish_reason_from_data_text(data_text)
         if delta_text:
             content_parts.append(delta_text)
             content_chunk_count += 1
@@ -646,7 +663,7 @@ def _read_streaming_chat_completion(
     content = "".join(content_parts).strip()
     try:
         logger.info(
-            "模块 B LLM 流式读取结束：attempt=%s/%s data_lines=%s content_chunks=%s reasoning_chunks=%s content_chars=%s has_first_chunk=%s",
+            "模块 B LLM 流式读取结束：attempt=%s/%s data_lines=%s content_chunks=%s reasoning_chunks=%s content_chars=%s has_first_chunk=%s finish_reason=%s has_usage=%s tail_chunks=%s",
             attempt_number,
             attempt_total,
             data_line_count,
@@ -654,6 +671,9 @@ def _read_streaming_chat_completion(
             reasoning_chunk_count,
             len(content),
             first_chunk_logged,
+            last_finish_reason or "无",
+            usage is not None,
+            json.dumps(chunk_payloads[-3:] if len(chunk_payloads) > 3 else chunk_payloads, ensure_ascii=False),
         )
     except Exception:  # noqa: BLE001
         pass
@@ -662,6 +682,8 @@ def _read_streaming_chat_completion(
         "choices": [{"message": {"content": content}}],
         "chunks": chunk_payloads,
     }
+    if usage is not None:
+        synthetic_response_json["usage"] = usage
     return content, synthetic_response_json
 
 
@@ -764,6 +786,46 @@ def _extract_stream_reasoning_content_from_data_text(data_text: str) -> str:
                     if isinstance(rc, str) and rc.strip():
                         return rc
     return ""
+
+
+def _extract_usage_from_data_text(data_text: str) -> dict[str, Any] | None:
+    """从 SSE data 行中提取 usage 字段，通常在最后一条 chunk 中出现。"""
+    normalized_text = str(data_text or "").strip()
+    if not normalized_text:
+        return None
+    try:
+        chunk_json = json.loads(normalized_text)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(chunk_json, dict):
+        raw_usage = chunk_json.get("usage")
+        if isinstance(raw_usage, dict):
+            return {
+                "completion_tokens": int(raw_usage.get("completion_tokens", 0)),
+                "prompt_tokens": int(raw_usage.get("prompt_tokens", 0)),
+                "total_tokens": int(raw_usage.get("total_tokens", 0)),
+            }
+    return None
+
+
+def _extract_finish_reason_from_data_text(data_text: str) -> str | None:
+    """从 SSE data 行中提取 finish_reason，用于诊断截断原因。"""
+    normalized_text = str(data_text or "").strip()
+    if not normalized_text:
+        return None
+    try:
+        chunk_json = json.loads(normalized_text)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(chunk_json, dict):
+        choices = chunk_json.get("choices", [])
+        if isinstance(choices, list) and choices:
+            first_choice = choices[0]
+            if isinstance(first_choice, dict):
+                fr = first_choice.get("finish_reason")
+                if fr and str(fr).strip():
+                    return str(fr).strip()
+    return None
 
 
 def _extract_first_json_string_field(source_text: str, field_name: str) -> str:

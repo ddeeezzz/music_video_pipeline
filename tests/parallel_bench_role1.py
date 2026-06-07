@@ -88,9 +88,6 @@ def main():
         "retry_times": int(llm_raw.get("retry_times", 1)),
         "top_p": float(llm_raw.get("top_p", 0.9)),
         "stream": True,
-        "scene_desc_max_chars": int(llm_raw.get("scene_desc_max_chars", 200)),
-        "keyframe_prompt_max_chars": int(llm_raw.get("keyframe_prompt_max_chars", 450)),
-        "video_prompt_max_chars": int(llm_raw.get("video_prompt_max_chars", 550)),
     }
 
     models = [

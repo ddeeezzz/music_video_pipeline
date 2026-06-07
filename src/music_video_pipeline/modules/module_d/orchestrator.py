@@ -24,7 +24,12 @@ from music_video_pipeline.modules.module_d.finalizer import _concat_segment_vide
 # 项目内模块：模块D输出对象构建器
 from music_video_pipeline.modules.module_d.output_builder import build_module_d_output
 # 项目内模块：模块D单元模型工具
-from music_video_pipeline.modules.module_d.unit_models import build_module_d_units, build_unit_map, build_unit_sync_payload
+from music_video_pipeline.modules.module_d.unit_models import (
+    build_module_d_units,
+    build_unit_map,
+    build_unit_sync_payload,
+    normalize_frame_items_for_module_d,
+)
 
 # 常量：模块D要求的模块C聚合输出最小契约版本。
 REQUIRED_MODULE_C_OUTPUT_CONTRACT_VERSION = 2
@@ -46,6 +51,11 @@ def run_module_d(context: RuntimeContext) -> Path:
     module_c_path = context.artifacts_dir / "module_c_output.json"
     module_c_output = read_json(module_c_path)
     frame_items = _validate_module_c_output_for_module_d(module_c_output=module_c_output)
+    frame_items = _merge_frame_items_with_module_b_payloads(
+        frame_items=frame_items,
+        artifacts_dir=context.artifacts_dir,
+    )
+    frame_items = normalize_frame_items_for_module_d(frame_items=frame_items)
 
     segments_dir = context.artifacts_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
@@ -227,3 +237,45 @@ def _validate_module_c_output_for_module_d(module_c_output: Any) -> list[dict[st
                 "请从模块C重跑。"
             )
     return frame_items
+
+
+def _merge_frame_items_with_module_b_payloads(
+    frame_items: list[dict[str, Any]],
+    artifacts_dir: Path,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：用 module_b_output.json 为模块 C 帧清单补齐模板与提示词元数据。
+    参数说明：
+    - frame_items: 模块 C 输出帧清单。
+    - artifacts_dir: 当前任务 artifacts 目录。
+    返回值：
+    - list[dict[str, Any]]: 已补齐元数据的帧清单。
+    异常说明：无，缺失 module_b_output.json 时保持原样。
+    边界条件：模块 C 旧产物可能没有 remotion_id/segment_id，需要在 D 阶段兜底。
+    """
+    module_b_path = artifacts_dir / "module_b_output.json"
+    if not module_b_path.exists():
+        return frame_items
+    try:
+        module_b_output = read_json(module_b_path)
+    except Exception:
+        return frame_items
+    if not isinstance(module_b_output, list):
+        return frame_items
+
+    shot_payload_map = {
+        str(item.get("shot_id", "")).strip(): item
+        for item in module_b_output
+        if isinstance(item, dict) and str(item.get("shot_id", "")).strip()
+    }
+    merged_items: list[dict[str, Any]] = []
+    for frame_item in frame_items:
+        shot_id = str(frame_item.get("shot_id", "")).strip()
+        shot_payload = shot_payload_map.get(shot_id, {})
+        merged_item = dict(frame_item)
+        if isinstance(shot_payload, dict):
+            for key, value in shot_payload.items():
+                if key not in merged_item or merged_item.get(key) in ("", None, [], {}):
+                    merged_item[key] = value
+        merged_items.append(merged_item)
+    return merged_items

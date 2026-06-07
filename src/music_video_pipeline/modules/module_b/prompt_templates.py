@@ -47,6 +47,18 @@ ROLE1_PROMPT_TEMPLATE_REF = PromptTemplateRef(
     template_file="configs/prompts/module_b.role1_visual_director.md",
 )
 
+ROLE2_PROMPT_TEMPLATE_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role2_big_segment_director.md",
+)
+
+ROLE3_PROMPT_TEMPLATE_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role3_segment_director.md",
+)
+
+ROLE4_PROMPT_TEMPLATE_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role4_prompt_builder.md",
+)
+
 
 def load_prompt_template(project_root: Path, template_file: str) -> str:
     """

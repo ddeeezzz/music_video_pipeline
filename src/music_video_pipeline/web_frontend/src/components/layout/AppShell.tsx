@@ -4,6 +4,8 @@ import {
   DeploymentUnitOutlined,
   FileAddOutlined,
   FolderOpenOutlined,
+  PictureOutlined,
+  PlaySquareOutlined,
   ProfileOutlined,
   RadarChartOutlined,
   ReadOutlined,
@@ -39,6 +41,12 @@ function getSelectedTaskMenuKey(pathname: string): string {
   }
   if (pathname.endsWith("/module-b")) {
     return "task-module-b";
+  }
+  if (pathname.endsWith("/module-c")) {
+    return "task-module-c";
+  }
+  if (pathname.endsWith("/module-d")) {
+    return "task-module-d";
   }
   return "task-detail";
 }
@@ -110,6 +118,16 @@ export function AppShell() {
           key: "task-module-b",
           icon: <DeploymentUnitOutlined />,
           label: <Link to={routes.taskModuleB(taskId)}>模块 B</Link>,
+        },
+        {
+          key: "task-module-c",
+          icon: <PictureOutlined />,
+          label: <Link to={routes.taskModuleC(taskId)}>模块 C</Link>,
+        },
+        {
+          key: "task-module-d",
+          icon: <PlaySquareOutlined />,
+          label: <Link to={routes.taskModuleD(taskId)}>模块 D</Link>,
         },
       ]
     : [];

@@ -124,7 +124,7 @@ def _round_time(value: float) -> float:
     异常说明：无。
     边界条件：负值由调用方裁剪。
     """
-    return round(float(value), 6)
+    return round(float(value), 3)
 
 
 def _clamp_time(value: float, duration_seconds: float) -> float:
