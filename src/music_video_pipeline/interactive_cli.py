@@ -18,6 +18,7 @@ from music_video_pipeline.command_service import CommandRequest
 from music_video_pipeline.config import load_config
 from music_video_pipeline.constants import MODULE_ORDER
 from music_video_pipeline.state_store import StateStore
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path
 
 
 _BACK = object()
@@ -1776,6 +1777,9 @@ def _prompt_config_path(
 
 def _resolve_path(*, workspace_root: Path, raw_text: str) -> Path:
     path = Path(raw_text)
+    remapped = remap_windows_absolute_path(workspace_root=workspace_root, path_text=raw_text)
+    if remapped is not None:
+        return remapped
     if path.is_absolute():
         return path.resolve()
     return (workspace_root / path).resolve()

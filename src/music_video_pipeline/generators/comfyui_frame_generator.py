@@ -26,6 +26,8 @@ from music_video_pipeline.comfyui import (
     load_workflow_contract,
     render_workflow_from_contract,
 )
+# 项目内模块：Windows 路径回映射。
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path
 
 
 class ComfyUIFrameGenerator:
@@ -46,9 +48,15 @@ class ComfyUIFrameGenerator:
         project_root = Path(__file__).resolve().parents[3]
         comfyui_cfg = app_config.comfyui
         self._project_root = project_root
+        comfyui_root_text = str(comfyui_cfg.root_dir)
+        remapped_root = remap_windows_absolute_path(workspace_root=project_root, path_text=comfyui_root_text)
+        if remapped_root is not None:
+            resolved_root = remapped_root
+        else:
+            resolved_root = (project_root / comfyui_root_text).resolve()
         self._client = ComfyUIClient(
             ComfyUIServiceOptions(
-                root_dir=(project_root / str(comfyui_cfg.root_dir)).resolve(),
+                root_dir=resolved_root,
                 server_url=str(comfyui_cfg.server_url),
                 request_timeout_seconds=float(comfyui_cfg.request_timeout_seconds),
                 poll_interval_seconds=float(comfyui_cfg.poll_interval_seconds),
@@ -57,8 +65,6 @@ class ComfyUIFrameGenerator:
         )
         self._contract_start = load_workflow_contract(app_config.module_c.comfyui.contract_start_file)
         self._contract_end = load_workflow_contract(app_config.module_c.comfyui.contract_end_file)
-        self._contract_prop_start = load_workflow_contract(app_config.module_c.comfyui.contract_prop_start_file)
-        self._contract_prop_end = load_workflow_contract(app_config.module_c.comfyui.contract_prop_end_file)
 
     def prewarm(self) -> None:
         """
@@ -87,11 +93,9 @@ class ComfyUIFrameGenerator:
                 missing_assets,
             )
         self._logger.info(
-            "模块C ComfyUI 预热完成，character_start=%s，character_end=%s，prop_start=%s，prop_end=%s",
+            "模块C ComfyUI 预热完成，start=%s，end=%s",
             self._contract_start.workflow_api_file,
             self._contract_end.workflow_api_file,
-            self._contract_prop_start.workflow_api_file,
-            self._contract_prop_end.workflow_api_file,
         )
 
     @staticmethod
@@ -462,16 +466,10 @@ class ComfyUIFrameGenerator:
 
     def _resolve_contract_pair(self, asset_kind: str):
         """
-        功能说明：根据素材类型返回对应的 start/end 工作流契约。
-        参数说明：
-        - asset_kind: 素材类型，当前支持 character/prop。
+        功能说明：返回 start/end 工作流契约。
         返回值：
         - tuple[object, object]: 依次为 start/end 契约对象。
-        异常说明：无。
-        边界条件：未知值统一按 character 处理。
         """
-        if asset_kind == "prop":
-            return self._contract_prop_start, self._contract_prop_end
         return self._contract_start, self._contract_end
 
     def _build_binding_values(
@@ -547,7 +545,7 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
     - asset_file: 模型文件路径。
     - category_folder: 目录锚点名称，如 lora。
     返回值：
-    - str: 相对于 ComfyUI 搜索根目录的相对路径（使用反斜杠分隔符以兼容 Windows ComfyUI）。
+    - str: 相对于 ComfyUI 搜索根目录的相对路径（使用正斜杠分隔符以兼容 Linux ComfyUI，亦适用于 Windows）。
     异常说明：无。
     边界条件：当无法识别目录锚点时退回文件名。
     """
@@ -557,7 +555,7 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
             continue
         relative_parts = parts[index + 1 :]
         if relative_parts:
-            return "\\".join(relative_parts)
+            return "/".join(relative_parts)
     return Path(str(asset_file)).name
 
 

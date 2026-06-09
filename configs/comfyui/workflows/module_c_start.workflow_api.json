@@ -1,7 +1,7 @@
 {
   "20": {
     "inputs": {
-      "text": "year 2022, early 2020s, masterpiece, best quality, safe, monochrome, greyscale, lineart, hatching, crosshatching, pencil (medium), graphite, \n\n1girl, solo,\n\nakebi_komichi,\n\nakebi-chan no serafuku,\n\n@hiro_(dismaless),\n\nShe is wearing the classic Roubai Academy winter uniform, featuring a sailor shirt, a pleated skirt, a sailor collar, cuffs, and a neckerchief. She has long black hair, She has eyelashes.\n\ncentered composition, upper body,\n\nstanding straight, facing directly at the viewer, looking at viewer, smiling, eyes opened,\n\n(holding a flower:1.4), (flower:1.3), hands in front of chest,\n\nThe artwork features extremely delicate and soft pencil-like brushstrokes, characterized by incredibly fine lines and meticulous detailing. (pure black and white character:1.8),(Set against a completely flat solid green and simple background:2).",
+      "text": "",
       "clip": [
         "163",
         0
@@ -9,12 +9,12 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "人物"
+      "title": "正向提示词"
     }
   },
   "21": {
     "inputs": {
-      "text": "worst quality, low quality, score_1, score_2, score_3, texture, signature, watermark, username, (cropped head, cropped arms, cropped hands, out of frame, cut off:1.3), (scanned, paper texture, dirt, smudges, frame, sepia, watercolor:1.4), bad hands, extra fingers, missing fingers, (paper textured background:1.8)",
+      "text": "worst quality, low quality, score_1, score_2, score_3, texture, signature, watermark, username, blurred, (scanned, paper texture, dirt, smudges:1.4), bad hands, extra fingers, missing fingers",
       "clip": [
         "163",
         0
@@ -22,7 +22,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP文本编码"
+      "title": "负向提示词"
     }
   },
   "30": {
@@ -33,17 +33,17 @@
     },
     "class_type": "EmptyLatentImage",
     "_meta": {
-      "title": "空Latent图像"
+      "title": "空Latent"
     }
   },
   "40": {
     "inputs": {
-      "seed": 902905417396826,
+      "seed": 42,
       "steps": 8,
       "cfg": 1.8,
       "sampler_name": "er_sde",
-      "scheduler": "beta57",
-      "denoise": 1,
+      "scheduler": "normal",
+      "denoise": 1.0,
       "model": [
         "189",
         0
@@ -102,42 +102,6 @@
       "title": "加载CLIP"
     }
   },
-  "172": {
-    "inputs": {
-      "rem_mode": "Inspyrenet",
-      "image_output": "Preview",
-      "save_prefix": "ComfyUI",
-      "torchscript_jit": false,
-      "add_background": "none",
-      "refine_foreground": false,
-      "images": [
-        "50",
-        0
-      ]
-    },
-    "class_type": "easy imageRemBg",
-    "_meta": {
-      "title": "图像背景移除"
-    }
-  },
-  "179": {
-    "inputs": {
-      "rem_mode": "Inspyrenet",
-      "image_output": "Preview",
-      "save_prefix": "ComfyUI",
-      "torchscript_jit": false,
-      "add_background": "white",
-      "refine_foreground": false,
-      "images": [
-        "50",
-        0
-      ]
-    },
-    "class_type": "easy imageRemBg",
-    "_meta": {
-      "title": "图像背景移除"
-    }
-  },
   "183": {
     "inputs": {
       "unet_name": "anima_baseV10.safetensors",
@@ -151,7 +115,7 @@
   "186": {
     "inputs": {
       "lora_name": "anima-turbo-lora-v0.1.safetensors",
-      "strength_model": 1,
+      "strength_model": 1.0,
       "model": [
         "183",
         0
@@ -159,12 +123,12 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "LoRA加载器（仅模型）"
+      "title": "LoRA(涡轮)"
     }
   },
   "189": {
     "inputs": {
-      "lora_name": "anima_akebi_komichi\\akebi_komichi-step00002400.safetensors",
+      "lora_name": "anima_akebi_komichi/akebi_komichi-step00002400.safetensors",
       "strength_model": 0.85,
       "model": [
         "186",
@@ -173,46 +137,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "LoRA加载器（仅模型）"
-    }
-  },
-  "206": {
-    "inputs": {
-      "text": "year 2022, early 2020s, masterpiece, best quality, safe, monochrome, greyscale, lineart, hatching, crosshatching, pencil (medium), graphite,\n\n1 animal, solo,\n\n(slender black cat:1.5), pointed ears, thin tail, short fur,\n\ncentered composition, upper body equivalent for animal,\n\nfacing directly at the viewer, looking at viewer, eyes opened,\n\n(full body:1.3), (entire subject visible:1.2), zoomed out, wide shot, centered composition,\n\nThe artwork features extremely delicate and soft pencil-like brushstrokes, characterized by incredibly fine lines and meticulous detailing. (everything except the solid green background is pure black and white, monochrome, grayscale:1.8), (Set against a completely flat solid green and simple background:2).",
-      "clip": [
-        "163",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "动物"
-    }
-  },
-  "207": {
-    "inputs": {
-      "text": "year 2022, early 2020s, masterpiece, best quality, safe, monochrome, greyscale, lineart, hatching, crosshatching, pencil (medium), graphite, \n\n1girl, solo,\n\nakebi_komichi,\n\nakebi-chan no serafuku,\n\n@hiro_(dismaless),\n\nShe is wearing the classic Roubai Academy winter uniform, featuring a sailor shirt, a pleated skirt, a sailor collar, cuffs, and a neckerchief. She has long black hair, She has eyelashes.\n\ncentered composition, upper body,\n\nstanding straight, facing directly at the viewer, looking at viewer, smiling, eyes opened,\n\n(holding a flower:1.4), (flower:1.3), hands in front of chest,\n\nThe artwork features extremely delicate and soft pencil-like brushstrokes, characterized by incredibly fine lines and meticulous detailing. (pure black and white character:1.8),(Set against a completely flat solid green and simple background:2).",
-      "clip": [
-        "163",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "场景"
-    }
-  },
-  "208": {
-    "inputs": {
-      "text": "year 2022, early 2020s, masterpiece, best quality, safe, monochrome, greyscale, lineart, hatching, crosshatching, pencil (medium), graphite, \n\n1apple, solo,\n\n (floating in mid-air:1.3), (zero gravity:1.2), a surreal apple with a gaping hole drilled directly through its center. A heavy metal chain goes inside the hole and penetrates the apple flesh. crisp anime lineart, completely flat manga style, clean vector lines.\n\nThe artwork features extremely delicate and soft pencil-like brushstrokes, characterized by incredibly fine lines and meticulous detailing. (pure black and white character:1.8),(Set against a completely flat solid green and simple background:2).",
-      "clip": [
-        "163",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "物体"
+      "title": "LoRA(角色)"
     }
   },
   "209": {

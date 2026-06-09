@@ -86,6 +86,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_A_SEARCH_LYRICS_API_PATH,
     TASK_MODULE_A_SEARCH_LYRICS_WS_PATH,
     TASK_MODULE_A_SELECT_LYRICS_API_PATH,
+    TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH,
     TASK_MODULE_B_API_PATH,
     TASK_MODULE_B_REBUILD_OUTPUT_API_PATH,
     TASK_MODULE_B_RERUN_ROLE_API_PATH,
@@ -100,6 +101,13 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_D_RERUN_SEGMENT_API_PATH,
     TASK_MODULE_D_RERUN_BOTH_FRAMES_API_PATH,
     TASK_MODULE_D_RERUN_MODULE_API_PATH,
+    TASK_MODULE_D_RERUN_TOONCRAFTER_API_PATH,
+    TASK_MODULE_D_RERUN_TOONCRAFTER_MODULE_API_PATH,
+    TASK_MODULE_D_RERUN_REMOTION_API_PATH,
+    TASK_MODULE_D_RERUN_REMOTION_MODULE_API_PATH,
+    TASK_MODULE_D_TOONCRAFTER_MODE_API_PATH,
+    TASK_MODULE_D_REBUILD_FINAL_API_PATH,
+    TASK_MODULE_D_REBUILD_AUDIO_CANDIDATES_API_PATH,
     TASK_RENAME_API_PATH,
     TASK_RERUN_API_PATH,
     WEB_APP_BUILD_DIR_NAME,
@@ -646,6 +654,13 @@ class TaskMonitorService(
                 content_type="application/json; charset=utf-8",
                 body_text=json.dumps(payload, ensure_ascii=False),
             )
+        if parsed.path == TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH:
+            payload, status = self._handle_module_a_visualization_payload_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
         if parsed.path == TASK_MODULE_A_SEARCH_LYRICS_API_PATH:
             payload, status = self._handle_module_a_search_lyrics_request(parsed=parsed)
             return self._build_http_response(
@@ -792,6 +807,55 @@ class TaskMonitorService(
             )
         if parsed.path == TASK_MODULE_D_RERUN_MODULE_API_PATH:
             payload, status = self._handle_module_d_rerun_module(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_RERUN_TOONCRAFTER_API_PATH:
+            payload, status = self._handle_module_d_rerun_tooncrafter(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_RERUN_TOONCRAFTER_MODULE_API_PATH:
+            payload, status = self._handle_module_d_rerun_tooncrafter_module(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_RERUN_REMOTION_API_PATH:
+            payload, status = self._handle_module_d_rerun_remotion(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_RERUN_REMOTION_MODULE_API_PATH:
+            payload, status = self._handle_module_d_rerun_remotion_module(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_TOONCRAFTER_MODE_API_PATH:
+            payload, status = self._handle_module_d_tooncrafter_mode(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_REBUILD_AUDIO_CANDIDATES_API_PATH:
+            payload, status = self._handle_module_d_rebuild_audio_candidates(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_REBUILD_FINAL_API_PATH:
+            payload, status = self._handle_module_d_rebuild_final(parsed=parsed)
             return self._build_http_response(
                 status=status,
                 content_type="application/json; charset=utf-8",

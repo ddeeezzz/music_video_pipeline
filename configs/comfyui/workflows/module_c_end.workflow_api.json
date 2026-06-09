@@ -1,32 +1,13 @@
 {
-  "1": {
-    "inputs": {
-      "ckpt_name": "zImageTurboAnime_aioFP8.safetensors"
-    },
-    "class_type": "CheckpointLoaderSimple"
-  },
-  "5": {
-    "inputs": {
-      "lora_name": "xl\\anime_style_v1_zimage.safetensors",
-      "strength_model": 1.0,
-      "strength_clip": 1.0,
-      "model": [
-        "1",
-        0
-      ],
-      "clip": [
-        "1",
-        1
-      ]
-    },
-    "class_type": "LoraLoader"
-  },
   "10": {
     "inputs": {
       "image": "mvpl/example.png",
       "upload": "image"
     },
-    "class_type": "LoadImage"
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载首帧"
+    }
   },
   "11": {
     "inputs": {
@@ -35,42 +16,51 @@
         0
       ],
       "vae": [
-        "1",
-        2
+        "160",
+        0
       ]
     },
-    "class_type": "VAEEncode"
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE编码"
+    }
   },
   "20": {
     "inputs": {
-      "text": "AkebiChar, 1girl, solo, face focus, smiling, looking at viewer, long hair, bangs, (monochrome:1.3), (white background:1.3), hiro (artist), manga style, lineart, sketch, hatching (texture), delicate lines, sharp lines, masterpiece",
+      "text": "",
       "clip": [
-        "5",
-        1
+        "163",
+        0
       ]
     },
-    "class_type": "CLIPTextEncode"
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "正向提示词"
+    }
   },
   "21": {
     "inputs": {
-      "text": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
+      "text": "worst quality, low quality, score_1, score_2, score_3, texture, signature, watermark, username, blurred, (scanned, paper texture, dirt, smudges:1.4), bad hands, extra fingers, missing fingers",
       "clip": [
-        "5",
-        1
+        "163",
+        0
       ]
     },
-    "class_type": "CLIPTextEncode"
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "负向提示词"
+    }
   },
   "40": {
     "inputs": {
-      "seed": 522076159302229,
+      "seed": 42,
       "steps": 8,
-      "cfg": 1,
-      "sampler_name": "euler_ancestral",
-      "scheduler": "beta",
-      "denoise": 0,
+      "cfg": 1.8,
+      "sampler_name": "er_sde",
+      "scheduler": "normal",
+      "denoise": 0.65,
       "model": [
-        "5",
+        "189",
         0
       ],
       "positive": [
@@ -86,7 +76,10 @@
         0
       ]
     },
-    "class_type": "KSampler"
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
   },
   "50": {
     "inputs": {
@@ -95,130 +88,84 @@
         0
       ],
       "vae": [
-        "1",
-        2
+        "160",
+        0
       ]
     },
-    "class_type": "VAEDecode"
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
   },
-  "60": {
+  "160": {
     "inputs": {
-      "model_name": "RealESRGAN_x4plus_anime_6B.pth"
+      "vae_name": "qwen_image_vae.safetensors"
     },
-    "class_type": "UpscaleModelLoader"
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
   },
-  "61": {
+  "163": {
     "inputs": {
-      "upscale_model": [
-        "60",
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "183": {
+    "inputs": {
+      "unet_name": "anima_baseV10.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "186": {
+    "inputs": {
+      "lora_name": "anima-turbo-lora-v0.1.safetensors",
+      "strength_model": 1.0,
+      "model": [
+        "183",
         0
-      ],
-      "image": [
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA(涡轮)"
+    }
+  },
+  "189": {
+    "inputs": {
+      "lora_name": "anima_akebi_komichi/akebi_komichi-step00002400.safetensors",
+      "strength_model": 0.85,
+      "model": [
+        "186",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA(角色)"
+    }
+  },
+  "209": {
+    "inputs": {
+      "filename_prefix": "mvpl/module_c_end",
+      "images": [
         "50",
         0
       ]
     },
-    "class_type": "ImageUpscaleWithModel"
-  },
-  "85": {
-    "inputs": {
-      "image": [
-        "61",
-        0
-      ],
-      "upscale_method": "lanczos",
-      "width": 512,
-      "height": 512,
-      "crop": "center"
-    },
-    "class_type": "ImageScale"
-  },
-  "147": {
-    "inputs": {
-      "image": [
-        "85",
-        0
-      ],
-      "threshold": 180
-    },
-    "class_type": "MVPL: ConvertToGrayscale"
-  },
-  "148": {
-    "inputs": {
-      "images": [
-        "91",
-        0
-      ],
-      "filename_prefix": "mvpl/module_c_end"
-    },
-    "class_type": "SaveImage"
-  },
-  "149": {
-    "inputs": {
-      "images": [
-        "85",
-        0
-      ],
-      "filename_prefix": "mvpl/module_c_end"
-    },
-    "class_type": "SaveImage"
-  },
-  "150": {
-    "inputs": {
-      "image": [
-        "151",
-        0
-      ],
-      "threshold": 180
-    },
-    "class_type": "MVPL: ConvertToGrayscale"
-  },
-  "151": {
-    "inputs": {
-      "image": [
-        "85",
-        0
-      ]
-    },
-    "class_type": "MVPL: ExtractComicAlpha"
-  },
-  "152": {
-    "inputs": {
-      "images": [
-        "150",
-        0
-      ],
-      "filename_prefix": "mvpl/module_c_end"
-    },
-    "class_type": "SaveImage"
-  },
-  "153": {
-    "inputs": {
-      "images": [
-        "151",
-        0
-      ],
-      "filename_prefix": "mvpl/module_c_end"
-    },
-    "class_type": "SaveImage"
-  },
-  "91": {
-    "inputs": {
-      "image": [
-        "147",
-        0
-      ]
-    },
-    "class_type": "MVPL: ExtractComicAlpha"
-  },
-  "99": {
-    "inputs": {
-      "filename_prefix": "mvpl/module_c_end",
-      "images": [
-        "91",
-        0
-      ]
-    },
-    "class_type": "SaveImage"
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "保存图像"
+    }
   }
 }

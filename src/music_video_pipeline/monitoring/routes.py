@@ -63,6 +63,22 @@ TASK_MODULE_D_RERUN_SEGMENT_API_PATH = "/api/module-d/rerun-segment"
 TASK_MODULE_D_RERUN_BOTH_FRAMES_API_PATH = "/api/module-d/rerun-both-frames"
 # 常量：模块 D 批量重跑接口路径（frame_type=start|end|both）
 TASK_MODULE_D_RERUN_MODULE_API_PATH = "/api/module-d/rerun-module"
+# 常量：模块 D segment ToonCrafter 重跑接口路径
+TASK_MODULE_D_RERUN_TOONCRAFTER_API_PATH = "/api/module-d/rerun-tooncrafter"
+# 常量：模块 D 全量 ToonCrafter 重跑接口路径
+TASK_MODULE_D_RERUN_TOONCRAFTER_MODULE_API_PATH = "/api/module-d/rerun-tooncrafter-module"
+# 常量：模块 D segment Remotion 重渲（复用已有 ToonCrafter 帧）
+TASK_MODULE_D_RERUN_REMOTION_API_PATH = "/api/module-d/rerun-remotion"
+# 常量：模块 D 全量 Remotion 重渲
+TASK_MODULE_D_RERUN_REMOTION_MODULE_API_PATH = "/api/module-d/rerun-remotion-module"
+# 常量：模块 D ToonCrafter 帧填充模式（持久化用户偏好）
+TASK_MODULE_D_TOONCRAFTER_MODE_API_PATH = "/api/module-d/tooncrafter-mode"
+# 常量：模块 D ToonCrafter 帧填充模式配置文件
+TOONCRAFTER_MODE_FILE_NAME = "tooncrafter_mode.json"
+# 常量：模块 D 按 segment 选择重新输出成片
+TASK_MODULE_D_REBUILD_FINAL_API_PATH = "/api/module-d/rebuild-final"
+# 常量：模块 D 输出成片音频候选列表
+TASK_MODULE_D_REBUILD_AUDIO_CANDIDATES_API_PATH = "/api/module-d/rebuild-audio-candidates"
 # 常量：模块 B 活跃重跑子进程状态文件名
 ACTIVE_MODULE_B_RERUN_PROCESS_FILE_NAME = "active_module_b_rerun_process.json"
 # 常量：模块 B 已完成重跑元数据文件名（持久化 duration_ms 等）

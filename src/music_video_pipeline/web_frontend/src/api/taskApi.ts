@@ -1,5 +1,6 @@
 import { fetchJson } from "@/api/client";
 import { appLogger } from "@/app/logger";
+import { z } from "zod";
 import { taskModuleADataSchema, taskModuleALyricDetailSchema, taskModuleALyricsSearchSchema } from "@/schemas/moduleA";
 import { moduleAVisualizationPayloadSchema } from "@/schemas/moduleAVisualization";
 import { taskModuleBDataSchema } from "@/schemas/moduleB";
@@ -357,6 +358,141 @@ export async function rerunModuleDAll(
     })}`,
     taskActionResponseSchema,
   );
+}
+
+export async function rerunModuleDSegmentToonCrafter(taskId: string, segmentId: string, mode?: string, transitionBg?: string) {
+  appLogger.info("模块D", "开始触发模块 D segment ToonCrafter 重跑", { taskId, segmentId, mode, transitionBg });
+  const params: Record<string, string> = { task_id: taskId, segment_id: segmentId };
+  if (mode && mode !== "slow") {
+    params.mode = mode;
+  }
+  if (transitionBg) {
+    params.transition_bg = transitionBg;
+  }
+  return fetchJson(
+    `/api/module-d/rerun-tooncrafter?${buildQueryString(params)}`,
+    taskActionResponseSchema,
+  );
+}
+
+export async function rerunModuleDAllToonCrafter(taskId: string) {
+  appLogger.info("模块D", "开始触发模块 D 全量 ToonCrafter 重跑", { taskId });
+  return fetchJson(
+    `/api/module-d/rerun-tooncrafter-module?${buildQueryString({
+      task_id: taskId,
+    })}`,
+    taskActionResponseSchema,
+  );
+}
+
+export async function rerunModuleDSegmentRemotion(taskId: string, segmentId: string, mode?: string, transitionBg?: string) {
+  appLogger.info("模块D", "开始触发模块 D segment Remotion 重渲", { taskId, segmentId, mode, transitionBg });
+  const params: Record<string, string> = { task_id: taskId, segment_id: segmentId };
+  if (mode && mode !== "slow") {
+    params.mode = mode;
+  }
+  if (transitionBg) {
+    params.transition_bg = transitionBg;
+  }
+  return fetchJson(
+    `/api/module-d/rerun-remotion?${buildQueryString(params)}`,
+    taskActionResponseSchema,
+  );
+}
+
+export async function rerunModuleDAllRemotion(taskId: string) {
+  appLogger.info("模块D", "开始触发模块 D 全量 Remotion 重渲", { taskId });
+  return fetchJson(
+    `/api/module-d/rerun-remotion-module?${buildQueryString({
+      task_id: taskId,
+    })}`,
+    taskActionResponseSchema,
+  );
+}
+
+const tooncrafterModeResponseSchema = z.object({
+  ok: z.boolean(),
+  mode: z.string().optional(),
+  modes: z.record(z.string(), z.string()).optional(),
+});
+
+export interface ToonCrafterModeResult {
+  mode: string;
+  modes?: Record<string, string>;
+}
+
+export async function getToonCrafterMode(taskId: string, segmentId: string): Promise<ToonCrafterModeResult> {
+  try {
+    const data = await fetchJson(
+      `/api/module-d/tooncrafter-mode?${buildQueryString({ task_id: taskId, segment_id: segmentId })}`,
+      tooncrafterModeResponseSchema,
+    );
+    return { mode: data.mode || "slow", modes: data.modes };
+  } catch {
+    return { mode: "slow" };
+  }
+}
+
+export async function setToonCrafterMode(taskId: string, segmentId: string, mode: string): Promise<void> {
+  await fetchJson(
+    `/api/module-d/tooncrafter-mode?${buildQueryString({ task_id: taskId, segment_id: segmentId, mode })}`,
+    tooncrafterModeResponseSchema,
+  );
+}
+
+export async function setToonCrafterShotMode(taskId: string, segmentId: string, shotId: string, mode: string): Promise<void> {
+  await fetchJson(
+    `/api/module-d/tooncrafter-mode?${buildQueryString({ task_id: taskId, segment_id: segmentId, shot_id: shotId, mode })}`,
+    tooncrafterModeResponseSchema,
+  );
+}
+
+export async function rebuildModuleDFinal(taskId: string, segmentIds: string[], audioPath?: string) {
+  appLogger.info("模块D", "开始触发模块 D segment 选择输出成片", { taskId, segmentCount: segmentIds.length, audioPath });
+  const params: Record<string, string> = {
+    task_id: taskId,
+    segment_ids: segmentIds.join(","),
+  };
+  if (audioPath) {
+    params.audio_path = audioPath;
+  }
+  return fetchJson(
+    `/api/module-d/rebuild-final?${buildQueryString(params)}`,
+    taskActionResponseSchema,
+  );
+}
+
+export interface AudioCandidate {
+  label: string;
+  path: string;
+  size_bytes: number;
+  default?: boolean;
+}
+
+const audioCandidatesResponseSchema = z.object({
+  ok: z.boolean(),
+  candidates: z.array(z.object({
+    label: z.string(),
+    path: z.string(),
+    size_bytes: z.number(),
+    default: z.boolean().optional(),
+  })).optional(),
+  default_path: z.string().optional(),
+});
+
+export async function getRebuildAudioCandidates(taskId: string): Promise<{candidates: AudioCandidate[]; defaultPath: string}> {
+  try {
+    const data = await fetchJson(
+      `/api/module-d/rebuild-audio-candidates?${buildQueryString({ task_id: taskId })}`,
+      audioCandidatesResponseSchema,
+    );
+    return {
+      candidates: data.candidates || [],
+      defaultPath: data.default_path || "",
+    };
+  } catch {
+    return { candidates: [], defaultPath: "" };
+  }
 }
 
 export async function rerunModuleCShot(

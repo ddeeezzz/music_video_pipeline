@@ -27,6 +27,8 @@ from music_video_pipeline.comfyui import (
 )
 # 项目内模块：运行上下文。
 from music_video_pipeline.context import RuntimeContext
+# 项目内模块：Windows 路径回映射。
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path
 # 项目内模块：模块 D FFmpeg 工具。
 from music_video_pipeline.modules.module_d.finalizer import _run_ffmpeg_command
 # 项目内模块：模块 D 单元模型。
@@ -37,6 +39,14 @@ from music_video_pipeline.modules.module_d.unit_models import ModuleDUnit
 TOONCRAFTER_CLIP_MODEL_NAME = "stable-diffusion-2-1-clip-fp16.safetensors"
 # 常量：ToonCrafter 内部 clip vision 模型名称，交给 wrapper 首次自动下载。
 TOONCRAFTER_CLIP_VISION_MODEL_NAME = "CLIP-ViT-H-fp16.safetensors"
+
+
+def _resolve_root_dir(*, project_root: Path, root_dir_raw: str) -> Path:
+    """将 ComfyUI root_dir（可能为 Windows 盘符绝对路径）解析为 Linux 有效路径。"""
+    remapped = remap_windows_absolute_path(workspace_root=project_root, path_text=root_dir_raw)
+    if remapped is not None:
+        return remapped
+    return (project_root / root_dir_raw).resolve()
 
 
 def prewarm_comfyui_runtime(context: RuntimeContext, device_override: str | None = None) -> dict[str, str]:
@@ -191,7 +201,165 @@ def render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> dict[
 
 
 
-def _resize_image_for_tooncrafter(source_path: Path, target_path: Path, width: int, height: int) -> None:
+def generate_tooncrafter_frames(
+    unit: ModuleDUnit,
+    comfy_cfg: Any,
+    comfyui_global_cfg: Any,
+    contract_path: str | Path,
+    frames_output_dir: Path | None = None,
+    pad_to_fit: bool = False,
+) -> list[Path]:
+    """
+    功能说明：执行单个模块 D 单元的 ToonCrafter ComfyUI 工作流，只返回帧 PNG 路径列表（不编码视频）。
+    参数说明：
+    - unit: 模块 D 单元对象。
+    - comfy_cfg: module_d.comfyui 配置。
+    - comfyui_global_cfg: 全局 comfyui 配置。
+    - contract_path: 工作流契约文件路径。
+    - frames_output_dir: 帧输出目录；不传时默认使用 unit.segment_path.parent。
+    - pad_to_fit: 为 True 时保持原图比例用白边填充（用于多主体裁切图），否则直接拉伸。
+    返回值：
+    - list[Path]: 重采样后的帧 PNG 路径列表。
+    异常说明：
+    - RuntimeError: 契约不完整、服务失败、提示词缺失、关键帧缺失时抛出。
+    边界条件：本函数不输出 mp4，由调用方决定如何消费帧序列（如传入 Remotion）。
+    """
+    contract = load_workflow_contract(contract_path)
+    project_root = Path(__file__).resolve().parents[5]
+    client = ComfyUIClient(
+        ComfyUIServiceOptions(
+            root_dir=_resolve_root_dir(project_root=project_root, root_dir_raw=str(comfyui_global_cfg.root_dir)),
+            server_url=str(comfyui_global_cfg.server_url),
+            request_timeout_seconds=float(getattr(comfyui_global_cfg, "request_timeout_seconds", 30.0)),
+            poll_interval_seconds=float(getattr(comfyui_global_cfg, "poll_interval_seconds", 1.0)),
+            execution_timeout_seconds=float(getattr(comfyui_global_cfg, "execution_timeout_seconds", 600.0)),
+        )
+    )
+    client.ensure_service_ready()
+
+    prompt_text = str(unit.shot.get("video_prompt_en", "")).strip()
+    if not prompt_text:
+        raise RuntimeError(f"模块D ToonCrafter 帧生成失败：缺失 video_prompt_en，unit_id={unit.unit_id}")
+    start_image = str(unit.shot.get("frame_path_start", "")).strip()
+    end_image = str(unit.shot.get("frame_path_end", "")).strip()
+    if (not start_image) or (not end_image):
+        raise RuntimeError(
+            "模块D ToonCrafter 帧生成失败：缺失双关键帧字段，"
+            f"unit_id={unit.unit_id}，frame_path_start={start_image}，frame_path_end={end_image}"
+        )
+
+    if frames_output_dir is not None:
+        sequence_dir = frames_output_dir
+    else:
+        sequence_dir = unit.segment_path.parent / f"{unit.unit_id}_frames"
+    if sequence_dir.exists():
+        shutil.rmtree(sequence_dir)
+    sequence_dir.mkdir(parents=True, exist_ok=True)
+
+    resized_dir = unit.segment_path.parent / f".{unit.unit_id}_tooncrafter_inputs"
+    if resized_dir.exists():
+        shutil.rmtree(resized_dir)
+    resized_dir.mkdir(parents=True, exist_ok=True)
+
+    resized_start_path = resized_dir / "start_512x320.png"
+    resized_end_path = resized_dir / "end_512x320.png"
+    _resize_image_for_tooncrafter(
+        source_path=Path(start_image),
+        target_path=resized_start_path,
+        width=int(comfy_cfg.generation_width),
+        height=int(comfy_cfg.generation_height),
+        pad_to_fit=pad_to_fit,
+    )
+    _resize_image_for_tooncrafter(
+        source_path=Path(end_image),
+        target_path=resized_end_path,
+        width=int(comfy_cfg.generation_width),
+        height=int(comfy_cfg.generation_height),
+        pad_to_fit=pad_to_fit,
+    )
+
+    workflow_prompt = render_workflow_from_contract(
+        contract=contract,
+        binding_values={
+            "checkpoint_name": str(comfy_cfg.checkpoint_name),
+            "start_image": client.stage_input_image(resized_start_path, prefix=f"{unit.unit_id}_start"),
+            "end_image": client.stage_input_image(resized_end_path, prefix=f"{unit.unit_id}_end"),
+            "positive_prompt": prompt_text if bool(comfy_cfg.use_video_prompt_as_positive) else "",
+            "negative_prompt": str(comfy_cfg.negative_prompt),
+            "steps": int(comfy_cfg.steps),
+            "cfg": float(comfy_cfg.cfg),
+            "eta": float(comfy_cfg.eta),
+            "frames": int(comfy_cfg.generation_frames),
+            "seed": _resolve_seed_value(unit=unit),
+            "fs": int(comfy_cfg.generation_fps),
+            "vae_dtype": str(comfy_cfg.vae_dtype),
+            "image_embed_ratio": float(comfy_cfg.image_embed_ratio),
+            "augmentation_level": float(comfy_cfg.augmentation_level),
+            "filename_prefix": f"mvpl/module_d/{unit.unit_id}/tooncrafter",
+        },
+    )
+    native_output_files = client.execute_prompt(
+        workflow_prompt=workflow_prompt,
+        output_node_id=contract.output_node_id,
+    )
+    expected_native_frames = int(comfy_cfg.generation_frames)
+    if len(native_output_files) != expected_native_frames:
+        raise RuntimeError(
+            "模块D ToonCrafter 帧生成失败：原生输出帧数异常，"
+            f"unit_id={unit.unit_id}，expected={expected_native_frames}，actual={len(native_output_files)}"
+        )
+
+    resampled_files = _resample_frame_sequence(
+        source_files=native_output_files,
+        target_count=int(unit.exact_frames),
+        sequence_dir=sequence_dir,
+    )
+
+    # 如果 pad_to_fit，把每帧的白边填充区域转为透明
+    if pad_to_fit:
+        orig_start = Path(start_image)
+        if orig_start.exists():
+            with Image.open(orig_start) as ref_img:
+                ref_w, ref_h = ref_img.size
+            target_w = int(comfy_cfg.generation_width)
+            target_h = int(comfy_cfg.generation_height)
+            # 计算和 _resize_image_for_tooncrafter thumbnail 同样的缩放逻辑
+            ratio = min(target_w / ref_w, target_h / ref_h)
+            subject_w = int(ref_w * ratio)
+            subject_h = int(ref_h * ratio)
+            offset_x = (target_w - subject_w) // 2
+            offset_y = (target_h - subject_h) // 2
+            for fp in resampled_files:
+                _add_transparent_padding(fp, offset_x, offset_y, subject_w, subject_h, target_w, target_h)
+
+    return resampled_files
+
+
+def _add_transparent_padding(
+    frame_path: Path, offset_x: int, offset_y: int, subject_w: int, subject_h: int, canvas_w: int, canvas_h: int,
+) -> None:
+    """
+    功能说明：将 ToonCrafter 输出帧的白边 padding 区域转为透明。
+    参数说明：
+    - frame_path: 帧 PNG 路径（原地覆盖为 RGBA）。
+    - offset_x/y: 主体在画布中的起始坐标。
+    - subject_w/h: 主体宽高。
+    - canvas_w/h: 画布总尺寸。
+    返回值：无。
+    边界条件：只有 pad_to_fit=True 的多主体裁切图才需要此处理。
+    """
+    with Image.open(frame_path) as img:
+        rgba = img.convert("RGBA")
+        alpha = Image.new("L", (canvas_w, canvas_h), 0)
+        subject = Image.new("L", (subject_w, subject_h), 255)
+        alpha.paste(subject, (offset_x, offset_y))
+        rgba.putalpha(alpha)
+        rgba.save(frame_path, "PNG")
+
+
+def _resize_image_for_tooncrafter(
+    source_path: Path, target_path: Path, width: int, height: int, pad_to_fit: bool = False,
+) -> None:
     """
     功能说明：将输入关键帧统一缩放到 ToonCrafter v1 固定分辨率。
     参数说明：
@@ -199,16 +367,24 @@ def _resize_image_for_tooncrafter(source_path: Path, target_path: Path, width: i
     - target_path: 缩放后输出路径。
     - width: 目标宽度。
     - height: 目标高度。
+    - pad_to_fit: 为 True 时保持原图比例，用白边填充空白区域（用于多主体裁切图）。
     返回值：无。
     异常说明：
     - RuntimeError: 原图不存在时抛出。
-    边界条件：当前按固定尺寸直接缩放，不做留边与裁切策略。
+    边界条件：pad_to_fit=False 时直接拉伸（单主体全屏素材）。
     """
     if not source_path.exists():
         raise RuntimeError(f"模块D ToonCrafter 关键帧不存在：path={source_path}")
     with Image.open(source_path) as image_obj:
-        resized = image_obj.convert("RGB").resize((int(width), int(height)), resample=Image.Resampling.LANCZOS)
-        resized.save(target_path)
+        img = image_obj.convert("RGB")
+        if pad_to_fit:
+            img.thumbnail((width, height), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", (width, height), (255, 255, 255))
+            offset = ((width - img.width) // 2, (height - img.height) // 2)
+            canvas.paste(img, offset)
+            canvas.save(target_path)
+        else:
+            img.resize((int(width), int(height)), resample=Image.Resampling.LANCZOS).save(target_path)
 
 
 
@@ -278,7 +454,7 @@ def _build_comfyui_client(context: RuntimeContext) -> ComfyUIClient:
     comfyui_cfg = context.config.comfyui
     return ComfyUIClient(
         ComfyUIServiceOptions(
-            root_dir=(project_root / str(comfyui_cfg.root_dir)).resolve(),
+            root_dir=_resolve_root_dir(project_root=project_root, root_dir_raw=str(comfyui_cfg.root_dir)),
             server_url=str(comfyui_cfg.server_url),
             request_timeout_seconds=float(comfyui_cfg.request_timeout_seconds),
             poll_interval_seconds=float(comfyui_cfg.poll_interval_seconds),

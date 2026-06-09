@@ -33,6 +33,7 @@ const moduleDActiveRerunSchema = z.object({
   started_at_ms: z.number().optional().default(0),
   last_error: z.string().optional().default(""),
   failure_reason: z.string().optional().default(""),
+  video_url: z.string().optional(),
 });
 
 const moduleDUnitSummarySchema = z.object({

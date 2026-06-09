@@ -35,12 +35,14 @@ from music_video_pipeline.modules.module_a_v2.network_lyrics_state import (
     write_module_a_network_lyrics_state,
 )
 from music_video_pipeline.modules.module_a_v2.utils.media_probe import probe_audio_duration
+from music_video_pipeline.modules.module_a_v2.visualization import collect_visualization_payload
 from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_A_API_PATH,
     TASK_MODULE_A_CANDIDATE_LYRICS_API_PATH,
     TASK_MODULE_A_SEARCH_LYRICS_API_PATH,
     TASK_MODULE_A_SEARCH_LYRICS_WS_PATH,
     TASK_MODULE_A_SELECT_LYRICS_API_PATH,
+    TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH,
 )
 
 try:
@@ -409,6 +411,48 @@ class ModuleAHandlers:
             "provider_groups": self._build_module_a_provider_group_summaries(raw_state.get("provider_groups", [])),
             "selected_candidate": self._build_module_a_candidate_summary(raw_state.get("selected_candidate", {})),
         }
+
+    def _handle_module_a_visualization_payload_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：处理模块 A 可视化数据负载请求。
+        参数说明：
+        - parsed: 已解析的请求URL对象。
+        返回值：
+        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
+        异常说明：无；错误统一转为 JSON。
+        边界条件：任务不存在时返回 404，数据文件缺失时返回 404。
+        """
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"任务不存在：{task_id}"}, HTTPStatus.NOT_FOUND
+        task_dir = self._resolve_task_dir(task_id=task_id)
+        try:
+            payload = collect_visualization_payload(task_dir=task_dir)
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning(
+                "[监督服务] 模块A可视化负载加载失败，task_id=%s，错误=%s",
+                task_id,
+                error,
+            )
+            return {
+                "ok": False,
+                "error": f"可视化数据加载失败：{error}",
+                "task_id": task_id,
+            }, HTTPStatus.NOT_FOUND
+        audio_path = Path(str(payload.get("audio_path", "")))
+        audio_available = audio_path.exists() and audio_path.is_file()
+        if audio_available:
+            audio_url = self._build_task_file_url(task_id=task_id, file_path=audio_path)
+        else:
+            audio_url = ""
+        payload["ok"] = True
+        payload["task_id"] = task_id
+        payload["task_dir"] = str(task_dir)
+        payload["audio_url"] = audio_url
+        payload["audio_available"] = audio_available
+        return payload, HTTPStatus.OK
 
     def _fetch_module_a_candidate_synced_lyrics(self, candidate: dict[str, Any]) -> str:
         """

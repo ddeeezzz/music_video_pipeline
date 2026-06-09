@@ -299,3 +299,50 @@ def _looks_like_absolute_path_text(path_text: str) -> bool:
     if normalized_path_text.startswith(("/", "\\")):
         return True
     return bool(WINDOWS_DRIVE_ABSOLUTE_PATTERN.match(normalized_path_text))
+
+
+def is_windows_drive_absolute_path(path_text: str) -> bool:
+    """
+    功能说明：判断路径文本是否为 Windows 盘符绝对路径（如 ``M:\\foo\\bar``）。
+    参数说明：
+    - path_text: 原始路径文本。
+    返回值：
+    - bool: 匹配盘符模式时返回 True。
+    边界条件：不匹配以 ``/`` 或 ``\\`` 开头的 Linux/POSIX 绝对路径。
+    """
+    normalized = str(path_text).strip()
+    if not normalized:
+        return False
+    return bool(WINDOWS_DRIVE_ABSOLUTE_PATTERN.match(normalized))
+
+
+def remap_windows_absolute_path(*, workspace_root: Path, path_text: str) -> Path | None:
+    """
+    功能说明：将 Windows 盘符绝对路径回映射到当前工作区下的等价路径，
+              若非 Windows 盘符路径则返回 None。
+    参数说明：
+    - workspace_root: 当前 Linux 工作区根目录。
+    - path_text: 原始路径文本（可能来自 DB 中的 Windows 路径）。
+    返回值：
+    - Path | None: 回映射后的工作区绝对路径，或 None（无法处理时）。
+    边界条件：若找不到已知项目目录标记（configs/resources/runs），
+              则退化为取文件名拼接 workspace_root。
+    """
+    normalized = str(path_text).strip()
+    if not normalized:
+        return None
+    if not is_windows_drive_absolute_path(normalized):
+        return None
+    # 统一分隔符以便后续匹配
+    normalized = normalized.replace("\\", "/")
+    # 按优先级查找已知项目目录标记
+    for marker in ("configs", "resources", "runs"):
+        marker_pattern = f"/{marker}/"
+        if marker_pattern in normalized:
+            marker_index = normalized.index(marker_pattern)
+            # 取标记及之后的部分作为工作区相对路径
+            relative_path = normalized[marker_index + 1:]
+            return (workspace_root / relative_path).resolve()
+    # 无已知标记：取文件名兜底
+    raw = Path(normalized)
+    return (workspace_root / raw.name).resolve()

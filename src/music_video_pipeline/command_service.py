@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from music_video_pipeline.config import AppConfig
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path
 
 
 MonitorHandler = Callable[[str | None, Any, Any], dict]
@@ -228,6 +229,10 @@ class MvplCommandService:
         return self._resolve_path(audio_path)
 
     def _resolve_path(self, input_path: Path) -> Path:
+        path_text = str(input_path)
+        remapped = remap_windows_absolute_path(workspace_root=self.workspace_root, path_text=path_text)
+        if remapped is not None:
+            return remapped
         if input_path.is_absolute():
             return input_path.resolve()
         return (self.workspace_root / input_path).resolve()

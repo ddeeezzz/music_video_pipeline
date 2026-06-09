@@ -91,7 +91,7 @@
       "steps": 30,
       "cfg": 3.0,
       "eta": 1.0,
-      "frames": 32,
+      "frames": 16,
       "seed": 1,
       "fs": 16,
       "vae_dtype": "fp16",

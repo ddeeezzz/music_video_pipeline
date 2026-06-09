@@ -976,33 +976,81 @@ class StateStore:
 
     def list_bcd_chain_status(self, task_id: str) -> list[dict[str, Any]]:
         """
-        功能说明：按 unit_index 汇总 B/C/D 链路单元状态，输出链路级排障摘要。
+        功能说明：按 segment 粒度汇总 B/C/D 链路状态。
         参数说明：
         - task_id: 任务唯一标识。
         返回值：
-        - list[dict[str, Any]]: 链路数组（按 unit_index 升序）。
+        - list[dict[str, Any]]: 链路数组（按 segment 升序）。
         异常说明：查询失败时抛出 sqlite3.Error。
-        边界条件：任一模块缺失单元时，链路仍按并集索引输出。
+        边界条件：C 的 shot_id 格式为 ``shot_NNNN_M``，从中提取 seg_NNNN 做关联。
         """
+        import re as _re
         b_rows = self.list_module_units(task_id=task_id, module_name="B")
         c_rows = self.list_module_units(task_id=task_id, module_name="C")
         d_rows = self.list_module_units(task_id=task_id, module_name="D")
-        b_by_index = {int(item["unit_index"]): item for item in b_rows}
-        c_by_index = {int(item["unit_index"]): item for item in c_rows}
-        d_by_index = {int(item["unit_index"]): item for item in d_rows}
-        all_indexes = sorted(set(b_by_index.keys()) | set(c_by_index.keys()) | set(d_by_index.keys()))
+
+        # B/D 以 seg_NNNN 为 unit_id
+        b_by_seg: dict[str, dict[str, Any]] = {}
+        for row in b_rows:
+            uid = str(row.get("unit_id", "")).strip()
+            if uid.startswith("seg_"):
+                b_by_seg[uid] = row
+
+        # C 的 shot_id = shot_NNNN_M，推导 seg_NNNN
+        shot_match_pattern = _re.compile(r"^shot_(\d{4})_\d+$")
+        c_by_seg: dict[str, list[dict[str, Any]]] = {}
+        for row in c_rows:
+            uid = str(row.get("unit_id", "")).strip()
+            m = shot_match_pattern.match(uid)
+            if m:
+                seg_id = f"seg_{m.group(1)}"
+                c_by_seg.setdefault(seg_id, []).append(row)
+
+        d_by_seg: dict[str, dict[str, Any]] = {}
+        for row in d_rows:
+            uid = str(row.get("unit_id", "")).strip()
+            if uid.startswith("seg_"):
+                d_by_seg[uid] = row
+
+        all_segments: set[str] = set()
+        all_segments.update(b_by_seg.keys())
+        all_segments.update(c_by_seg.keys())
+        all_segments.update(d_by_seg.keys())
+
+        # 按 seg 编号排序
+        def _seg_sort_key(seg_id: str) -> tuple[int, ...]:
+            parts = _re.findall(r"\d+", seg_id)
+            return tuple(int(p) for p in parts) if parts else (0,)
+
+        sorted_segments = sorted(all_segments, key=_seg_sort_key)
 
         chain_rows: list[dict[str, Any]] = []
-        for unit_index in all_indexes:
-            b_row = b_by_index.get(unit_index, {})
-            c_row = c_by_index.get(unit_index, {})
-            d_row = d_by_index.get(unit_index, {})
-            segment_id = str(b_row.get("unit_id", "")).strip()
-            c_shot_id = str(c_row.get("unit_id", "")).strip()
-            d_shot_id = str(d_row.get("unit_id", "")).strip()
-            shot_id = c_shot_id or d_shot_id or segment_id
+        for idx, segment_id in enumerate(sorted_segments):
+            b_row = b_by_seg.get(segment_id, {})
+            c_rows_for_seg = c_by_seg.get(segment_id, [])
+            d_row = d_by_seg.get(segment_id, {})
+
+            # C 的 shot_id 取该 segment 的第一个 shot
+            c_shot_id = ""
+            if c_rows_for_seg:
+                c_rows_for_seg.sort(key=lambda r: int(r.get("unit_index", 0)))
+                c_shot_id = str(c_rows_for_seg[0].get("unit_id", "")).strip()
+            # 没有匹配 C 单元时 shot_id 回退到 segment_id
+            if not c_shot_id:
+                c_shot_id = segment_id
+
             b_status = str(b_row.get("status", "pending"))
-            c_status = str(c_row.get("status", "pending"))
+            # C 的状态聚合：有任一 failed 则 failed，全 done 则 done，任一 running 则 running
+            c_status = "pending"
+            if c_rows_for_seg:
+                statuses = {str(r.get("status", "pending")) for r in c_rows_for_seg}
+                if "failed" in statuses:
+                    c_status = "failed"
+                elif all(s == "done" for s in statuses):
+                    c_status = "done"
+                elif "running" in statuses:
+                    c_status = "running"
+
             d_status = str(d_row.get("status", "pending"))
 
             chain_status = "pending"
@@ -1015,15 +1063,15 @@ class StateStore:
 
             chain_rows.append(
                 {
-                    "unit_index": unit_index,
+                    "unit_index": idx,
                     "segment_id": segment_id,
-                    "shot_id": shot_id,
+                    "shot_id": c_shot_id,
                     "b_status": b_status,
                     "c_status": c_status,
                     "d_status": d_status,
                     "chain_status": chain_status,
                     "b_error_message": str(b_row.get("error_message", "")),
-                    "c_error_message": str(c_row.get("error_message", "")),
+                    "c_error_message": "；".join(filter(None, [str(r.get("error_message", "")).strip() for r in c_rows_for_seg])),
                     "d_error_message": str(d_row.get("error_message", "")),
                 }
             )

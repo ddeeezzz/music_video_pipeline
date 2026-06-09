@@ -28,6 +28,22 @@ from music_video_pipeline.modules.module_d.finalizer import apply_camera_plan_to
 # 项目内模块：模块 D 单元模型。
 from music_video_pipeline.modules.module_d.unit_models import ModuleDUnit
 
+# 第三方库：用于处理图片白底变透明。
+try:
+    from PIL import Image
+except ImportError:
+    Image = None  # type: ignore[assignment]
+
+
+# 常量：模板画布固定宽高，与 Remotion 模板工程对齐。
+_TEMPLATE_WIDTH = 512
+_TEMPLATE_HEIGHT = 320
+# 常量：符号占画布比例（多主体模板，基于单格宽度 visible_cell_count=3）。
+_GRID_WIDTH_RATIO = 0.28   # 每格约 512*0.28 ≈ 143px，小于 170px 单格宽度
+_GRID_HEIGHT_RATIO = 0.80  # 320*0.80 = 256px 纵向空间
+# 常量：检测白底的亮度阈值（0-255），高于此值的像素视为白底。
+_WHITE_THRESHOLD = 200
+
 
 def prewarm_comfyui_runtime(context: RuntimeContext, device_override: str | None = None) -> dict[str, str]:
     """
@@ -410,10 +426,13 @@ def _render_one_unit_remotion_template(context: RuntimeContext, unit: ModuleDUni
         normalized_slots.append(dict(normalized_slots[-1]))
     normalized_slots = normalized_slots[:3]
 
+    symbol_trim_dir = context.artifacts_dir / "symbols_trimmed"
     slots: list[dict[str, Any]] = []
     for slot in normalized_slots:
-        start_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_start", unit_id=unit.unit_id)
-        end_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_end", unit_id=unit.unit_id)
+        start_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_start", unit_id=unit.unit_id,
+                                          trim_dir=symbol_trim_dir)
+        end_sym = _build_symbol_payload(slot=slot, frame_key="frame_path_end", unit_id=unit.unit_id,
+                                        trim_dir=symbol_trim_dir)
         slots.append({"frames": [start_sym, end_sym]})
 
     props: dict[str, Any] = {
@@ -489,6 +508,18 @@ def _render_one_unit_transition_template(
         else before_sym
     )
 
+    # 查找 ToonCrafter 插值帧序列作为 frames 输入
+    unit_id_text = str(unit.unit_id)
+    shot_id = str(unit.shot.get("shot_id", "")).strip()
+    tc_base = context.artifacts_dir / "tooncrafter_frames" / unit_id_text / shot_id
+    extra_frames: list[dict[str, Any]] = []
+    if tc_base.is_dir():
+        tc_files = sorted(tc_base.glob("frame_*.png"), key=lambda p: int(p.stem.split("_")[1]))
+        if tc_files:
+            for fp in tc_files:
+                uri = fp.resolve().as_uri()
+                extra_frames.append({"src": uri, "width_ratio": 1.0, "height_ratio": 1.0})
+
     # travel_px：TiltUp/TiltDown 使用高度 320，PanRight 使用宽度 512
     travel_px = 512 if remotion_id == "PanRightTemplate" else 320
 
@@ -507,6 +538,8 @@ def _render_one_unit_transition_template(
         },
         "motion": {"travel_px": travel_px, "easing": "ease_in_out"},
     }
+    if extra_frames:
+        props["frames"] = extra_frames
 
     props_dir = context.artifacts_dir / "template_requests"
     props_dir.mkdir(parents=True, exist_ok=True)
@@ -531,18 +564,70 @@ def _render_one_unit_transition_template(
     }
 
 
-def _build_symbol_payload(slot: dict[str, Any], frame_key: str, unit_id: str) -> dict[str, Any]:
+def _trim_white_to_transparent(src_path: Path, output_dir: Path, target_w: int, target_h: int) -> Path:
+    """
+    功能说明：将图片白底转为透明，裁剪有效内容并缩放到目标尺寸。
+    参数说明：
+    - src_path: 原始 PNG 路径。
+    - output_dir: 处理后图片输出目录。
+    - target_w: 目标宽度（像素）。
+    - target_h: 目标高度（像素）。
+    返回值：
+    - Path: 处理后的图片路径。
+    边界条件：不含 PIL 时跳过处理直接返回原路径。
+    """
+    if Image is None:
+        return src_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{src_path.stem}_trimmed.png"
+    if out_path.exists():
+        return out_path
+    try:
+        with Image.open(src_path) as img:
+            rgba = img.convert("RGBA")
+            pixels = rgba.load()
+            w, h = rgba.size
+            # 将白/灰像素(各通道均 > threshold)设为透明
+            threshold = _WHITE_THRESHOLD
+            for y in range(h):
+                for x in range(w):
+                    r, g, b, a = pixels[x, y]  # type: ignore[misc]
+                    if r > threshold and g > threshold and b > threshold:
+                        pixels[x, y] = (r, g, b, 0)  # type: ignore[index]
+            # 裁剪非透明区域边界
+            min_x, min_y, max_x, max_y = w, h, 0, 0
+            for y in range(h):
+                for x in range(w):
+                    _, _, _, a = pixels[x, y]  # type: ignore[misc]
+                    if a > 0:
+                        min_x = min(min_x, x)
+                        min_y = min(min_y, y)
+                        max_x = max(max_x, x)
+                        max_y = max(max_y, y)
+            if max_x > min_x and max_y > min_y:
+                rgba = rgba.crop((min_x, min_y, max_x + 1, max_y + 1))
+            # 缩放到目标尺寸
+            rgba = rgba.resize((int(target_w), int(target_h)), Image.LANCZOS)
+            rgba.save(out_path, "PNG")
+        return out_path
+    except Exception:
+        return src_path
+
+
+def _build_symbol_payload(slot: dict[str, Any], frame_key: str, unit_id: str,
+                          trim_dir: Path | None = None) -> dict[str, Any]:
     """
     功能说明：将 template_slot 中的帧路径转换为 Remotion symbol payload。
     参数说明：
     - slot: 单个格子素材载荷。
     - frame_key: 帧路径字段名。
     - unit_id: 当前模块 D 单元标识。
+    - trim_dir: 白底裁剪后图片输出目录；None 时不处理直接使用原图。
     返回值：
     - dict[str, Any]: Remotion symbol 参数。
     异常说明：
     - RuntimeError: 素材路径为空或文件不存在时抛出。
-    边界条件：Grid/Scroll 固定使用保守尺寸比例。
+    边界条件：当 trim_dir 不为 None 时，白底变透明并裁剪到 _GRID_WIDTH_RATIO/_GRID_HEIGHT_RATIO 对应尺寸。
     """
     frame_path = str(slot.get(frame_key, "")).strip()
     if not frame_path:
@@ -550,10 +635,21 @@ def _build_symbol_payload(slot: dict[str, Any], frame_key: str, unit_id: str) ->
         frame_path = str(slot.get(fallback_key, "")).strip()
     if not frame_path:
         raise RuntimeError(f"模块D Remotion 渲染失败：格子素材缺失，unit_id={unit_id}，frame_key={frame_key}")
-    if not Path(frame_path).exists():
-        raise RuntimeError(f"模块D Remotion 渲染失败：格子素材不存在，unit_id={unit_id}，path={frame_path}")
+    src = Path(frame_path)
+    if not src.exists():
+        raise RuntimeError(f"模块D Remotion 渲染失败：格子素材不存在，unit_id={unit_id}，path={src}")
+    if trim_dir is not None:
+        target_w = int(round(_TEMPLATE_WIDTH * _GRID_WIDTH_RATIO))
+        target_h = int(round(_TEMPLATE_HEIGHT * _GRID_HEIGHT_RATIO))
+        processed = _trim_white_to_transparent(src_path=src, output_dir=trim_dir,
+                                                target_w=target_w, target_h=target_h)
+        return {
+            "src": processed.resolve().as_uri(),
+            "width_ratio": _GRID_WIDTH_RATIO,
+            "height_ratio": _GRID_HEIGHT_RATIO,
+        }
     return {
-        "src": Path(frame_path).resolve().as_uri(),
+        "src": src.resolve().as_uri(),
         "width_ratio": 0.26,
         "height_ratio": 0.52,
     }

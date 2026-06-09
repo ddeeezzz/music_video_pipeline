@@ -32,7 +32,7 @@ from music_video_pipeline.monitoring import TaskMonitorService
 # 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
 # 项目内模块：任务音频路径回映射
-from music_video_pipeline.task_audio_path import resolve_task_audio_path
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path
 ModuleRunner = Callable[[RuntimeContext], Path]
 
 
@@ -1545,9 +1545,15 @@ class PipelineRunner:
         返回值：
         - Path: 绝对路径。
         异常说明：文件不存在时抛 FileNotFoundError。
-        边界条件：相对路径默认相对于 workspace_root。
+        边界条件：相对路径默认相对于 workspace_root；
+                  若输入为 Windows 盘符绝对路径会自动回映射。
         """
-        resolved_path = audio_path if audio_path.is_absolute() else (self.workspace_root / audio_path)
+        path_text = str(audio_path)
+        remapped = remap_windows_absolute_path(workspace_root=self.workspace_root, path_text=path_text)
+        if remapped is not None:
+            resolved_path = remapped
+        else:
+            resolved_path = audio_path if audio_path.is_absolute() else (self.workspace_root / audio_path)
         resolved_path = resolved_path.resolve()
         if not resolved_path.exists():
             raise FileNotFoundError(f"音频文件不存在: {resolved_path}")

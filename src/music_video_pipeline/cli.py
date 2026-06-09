@@ -43,7 +43,7 @@ from music_video_pipeline.constants import TASK_WEB_ENTRY_PAGE_FILE_NAME
 # 项目内模块：日志配置
 from music_video_pipeline.logging_utils import setup_logging
 # 项目内模块：任务音频路径回映射
-from music_video_pipeline.task_audio_path import resolve_task_audio_path
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path
 # 任务监督服务类采用延迟导入，避免交互菜单启动时加载重依赖。
 TaskMonitorService: Any | None = None
 
@@ -1347,8 +1347,13 @@ def _resolve_path(workspace_root: Path, input_path: Path) -> Path:
     返回值：
     - Path: 解析后的绝对路径。
     异常说明：无。
-    边界条件：不会主动检查路径是否存在。
+    边界条件：不会主动检查路径是否存在；若输入为 Windows 盘符绝对路径
+              （如 ``M:\\foo\\bar\\configs\\...``），会自动回映射到当前工作区。
     """
+    path_text = str(input_path)
+    remapped = remap_windows_absolute_path(workspace_root=workspace_root, path_text=path_text)
+    if remapped is not None:
+        return remapped
     if input_path.is_absolute():
         return input_path.resolve()
     return (workspace_root / input_path).resolve()

@@ -26,8 +26,8 @@ export const TiltUpTemplate = (props: TiltUpTemplateRequest): ReactElement => {
 
   // 第二张放大 1.125x 居中，图片边界超出视频边界
   const SCALE = 1.125;
-  // Phase 1: 快速下移到第二张下边界和视频下边界对齐
-  const phase1Dist = H * (3 - SCALE) / 2;  // 0.9375H
+  // Phase 1: 快速下移到第二张下边界和视频下边界对齐（移动整高 H 保证首帧不可见）
+  const phase1Dist = H;
   // Phase 2: 在放大图内从下到上慢速平移
   const phase2Dist = H * (SCALE - 1);      // 0.125H
 
@@ -45,16 +45,16 @@ export const TiltUpTemplate = (props: TiltUpTemplateRequest): ReactElement => {
 
   const ty = phase1Travel + phase2Travel;
 
-  // frames 数组：首帧用 scene_after.symbol，有额外帧则在中点切换
-  const afterSymbol = (props.frames && props.frames.length > 0 && frame >= Math.floor(props.duration_in_frames / 2))
-    ? props.frames[0]
+  // frames 数组：按进度逐帧切换插值序列
+  const afterSymbol = (props.frames && props.frames.length > 0)
+    ? props.frames[Math.min(Math.floor((frame / Math.max(1, props.duration_in_frames)) * props.frames.length), props.frames.length - 1)]
     : props.scene_after.symbol;
 
   return (
     <AbsoluteFill style={{width: W, height: H, overflow: "hidden", filter: "grayscale(100%)"}}>
       <AbsoluteFill style={{transform: `translateY(${ty}px)`}}>
-        {/* 新场景在上方（9/8 缩放，超出部分被 overflow hidden 裁切） */}
-        <AbsoluteFill style={{top: -H, width: W, height: H, transform: "scale(1.125)", transformOrigin: "center center"}}>
+        {/* 新场景在上方（9/8 缩放，首帧不可见，phase1 结束后下边界对齐视口下侧） */}
+        <AbsoluteFill style={{top: -(H + H * (SCALE - 1) / 2), width: W, height: H, transform: "scale(1.125)", transformOrigin: "center center"}}>
           <BackgroundLayer background={props.scene_after.background} />
           <SymbolLayer src={afterSymbol.src} widthRatio={afterSymbol.width_ratio} heightRatio={afterSymbol.height_ratio} />
         </AbsoluteFill>

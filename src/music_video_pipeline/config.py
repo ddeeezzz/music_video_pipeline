@@ -199,8 +199,6 @@ class ModuleCConfig:
         参数说明：
         - contract_start_file: 首关键帧 txt2img 契约文件。
         - contract_end_file: 末关键帧 img2img 契约文件。
-        - contract_prop_start_file: 非人物首关键帧 txt2img 契约文件。
-        - contract_prop_end_file: 非人物末关键帧 img2img 契约文件。
         - checkpoint_file: 单文件 checkpoint 路径（相对项目根）。
         - turbo_lora_file: Turbo LoRA 文件路径（相对项目根，对应 anima-turbo-lora-v0.1）。
         - scene_lora_strength: 环境 LoRA 强度。
@@ -219,8 +217,6 @@ class ModuleCConfig:
 
         contract_start_file: str = "configs/comfyui/module_c_start.contract.json"
         contract_end_file: str = "configs/comfyui/module_c_end.contract.json"
-        contract_prop_start_file: str = "configs/comfyui/module_c_prop_start.contract.json"
-        contract_prop_end_file: str = "configs/comfyui/module_c_prop_end.contract.json"
         checkpoint_file: str = "models/base_model/15/single/anything-v5.safetensors"
         turbo_lora_file: str = "models/lora/anima-turbo-lora-v0.1.safetensors"
         scene_lora_strength: float = 1.0
@@ -294,7 +290,7 @@ class ModuleDConfig:
         sketch_encoder_name: str = "sketch_encoder-fp16.safetensors"
         generation_width: int = 512
         generation_height: int = 320
-        generation_frames: int = 32
+        generation_frames: int = 16
         generation_fps: int = 16
         steps: int = 30
         cfg: float = 3.0
@@ -613,8 +609,6 @@ def _merge_defaults(raw_data: dict) -> dict:
             "comfyui": {
                 "contract_start_file": "configs/comfyui/module_c_start.contract.json",
                 "contract_end_file": "configs/comfyui/module_c_end.contract.json",
-                "contract_prop_start_file": "configs/comfyui/module_c_prop_start.contract.json",
-                "contract_prop_end_file": "configs/comfyui/module_c_prop_end.contract.json",
                 "checkpoint_file": "models/base_model/15/single/anything-v5.safetensors",
                 "turbo_lora_file": "models/lora/anima-turbo-lora-v0.1.safetensors",
                 "scene_lora_strength": 1.0,
@@ -638,7 +632,7 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "sketch_encoder_name": "sketch_encoder-fp16.safetensors",
                 "generation_width": 512,
                 "generation_height": 320,
-                "generation_frames": 32,
+                "generation_frames": 16,
                 "generation_fps": 16,
                 "steps": 30,
                 "cfg": 3.0,
