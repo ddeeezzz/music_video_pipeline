@@ -146,7 +146,7 @@ class CenterTemplateRequest:
     返回值：不适用。
     异常说明：
     - ValueError: 关键数值字段非法时抛出。
-    边界条件：画布宽高已在模板工程中固定为 512x320，不再由契约传入。
+    边界条件：画布宽高已在模板工程中固定为 1920×1080，不再由契约传入。
     """
 
     template: Literal["center"]

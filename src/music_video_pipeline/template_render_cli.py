@@ -74,7 +74,7 @@ DEFAULT_GRID_ACTIVE_RATIO = 0.45
 # 常量：默认 grid 入场缩放超调比例。
 DEFAULT_GRID_OVERSHOOT_RATIO = 0.08
 # 常量：默认 grid 入场纵向位移距离。
-DEFAULT_GRID_ENTER_DISTANCE = 72
+DEFAULT_GRID_ENTER_DISTANCE = 240
 # 常量：默认 scroll 单图宽度比例。
 DEFAULT_SCROLL_WIDTH_RATIO = 0.28
 # 常量：默认 scroll 单图高度比例。

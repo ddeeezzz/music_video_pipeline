@@ -85,6 +85,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_A_CANDIDATE_LYRICS_API_PATH,
     TASK_MODULE_A_SEARCH_LYRICS_API_PATH,
     TASK_MODULE_A_SEARCH_LYRICS_WS_PATH,
+    TASK_MODULE_A_CORRECT_FUNASR_WS_PATH,
     TASK_MODULE_A_SELECT_LYRICS_API_PATH,
     TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH,
     TASK_MODULE_B_API_PATH,
@@ -136,6 +137,8 @@ ModuleCShotRerunHandler = Callable[[str, str], dict[str, Any]]
 ModuleCFrameRerunHandler = Callable[[str, str, str], dict[str, Any]]
 # 类型别名：用于触发模块 D segment 重跑的回调函数。
 ModuleDSegmentRerunHandler = Callable[[str, str, str], dict[str, Any]]
+# 类型别名：用于触发模块 A 轻量重跑（仅歌词 → 算法层）的回调函数。
+ModuleALyricsOnlyRerunHandler = Callable[[str], dict[str, Any]]
 
 
 class TaskMonitorService(
@@ -166,6 +169,7 @@ class TaskMonitorService(
         task_id: str,
         logger: logging.Logger,
         rerun_handler: TaskRerunHandler | None = None,
+        lyrics_only_rerun_handler: ModuleALyricsOnlyRerunHandler | None = None,
         module_b_role_rerun_handler: ModuleBRoleRerunHandler | None = None,
         module_b_role_segment_rerun_handler: ModuleBRoleSegmentRerunHandler | None = None,
         module_c_shot_rerun_handler: ModuleCShotRerunHandler | None = None,
@@ -200,6 +204,7 @@ class TaskMonitorService(
         self.task_id = task_id
         self.logger = logger
         self.rerun_handler = rerun_handler
+        self.lyrics_only_rerun_handler = lyrics_only_rerun_handler
         self.module_b_role_rerun_handler = module_b_role_rerun_handler
         self.module_b_role_segment_rerun_handler = module_b_role_segment_rerun_handler
         self.module_c_shot_rerun_handler = module_c_shot_rerun_handler
@@ -525,6 +530,9 @@ class TaskMonitorService(
         if parsed.path == TASK_MODULE_A_SEARCH_LYRICS_WS_PATH:
             await self._handle_module_a_search_lyrics_socket(websocket=websocket, parsed=parsed)
             return
+        if parsed.path == TASK_MODULE_A_CORRECT_FUNASR_WS_PATH:
+            await self._handle_module_a_correct_funasr_socket(websocket=websocket, parsed=parsed)
+            return
         if parsed.path != "/ws":
             await websocket.close(code=1008, reason="unsupported_path")
             return
@@ -564,7 +572,7 @@ class TaskMonitorService(
         边界条件：返回 None 时交由WebSocket握手流程继续处理。
         """
         parsed = urlparse(path)
-        if parsed.path in {"/ws", TASK_MODULE_A_SEARCH_LYRICS_WS_PATH}:
+        if parsed.path in {"/ws", TASK_MODULE_A_SEARCH_LYRICS_WS_PATH, TASK_MODULE_A_CORRECT_FUNASR_WS_PATH}:
             return None
         if parsed.path == "/" or parsed.path == "":
             location = TASK_LIST_ROUTE_PATH

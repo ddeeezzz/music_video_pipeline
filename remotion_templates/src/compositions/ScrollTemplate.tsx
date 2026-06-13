@@ -48,10 +48,10 @@ const getTranslateX = (
   return -travelDistance * progress;
 };
 
-// 常量：模板画布固定宽度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_WIDTH = 512;
-// 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_HEIGHT = 320;
+// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
+const TEMPLATE_WIDTH = 1920;
+// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
+const TEMPLATE_HEIGHT = 1200;
 // 常量：模板自然动画帧数（保持不变速）。
 const NATURAL_FRAMES = 144;
 // 常量：循环模式默认单轮跨越拍数，后续可继续改为音频特征直接驱动。

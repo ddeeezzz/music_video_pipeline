@@ -192,6 +192,76 @@ class TaskHandlers:
             self.logger.info("[监督服务] 后台任务强制重跑执行结束，task_id=%s", task_id)
         except Exception as error:  # noqa: BLE001
             self.logger.error("[监督服务] 后台任务强制重跑失败，task_id=%s，错误信息=%s", task_id, error)
+            try:
+                self.state_store.update_task_status(task_id=task_id, status="failed", error_message=str(error)[:500])
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            current_thread = self._rerun_threads.get(task_id)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(task_id, None)
+                self._rerun_thread_meta.pop(task_id, None)
+
+    def _submit_task_rerun_lyrics_only_request(
+        self,
+        *,
+        task_id: str,
+        success_message: str,
+        log_reason: str,
+    ) -> tuple[dict[str, Any], HTTPStatus]:
+        """提交一次"仅更新歌词→算法层"的轻量重跑请求（跳过信号处理）。"""
+        if self.lyrics_only_rerun_handler is None:
+            return {
+                "ok": False,
+                "error": "当前监督服务未配置轻量重跑能力。",
+            }, HTTPStatus.NOT_IMPLEMENTED
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"轻量重跑失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        active_thread = self._rerun_threads.get(task_id)
+        if active_thread is not None and active_thread.is_alive():
+            return {"ok": False, "error": f"轻量重跑失败：任务已在后台启动中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        task_status = str(task_record.get("status", "")).strip().lower()
+        if task_status == "running":
+            # 状态为 running 但无活跃后台线程 → 上次运行异常退出，视为过期状态自动重置
+            self.state_store.update_task_status(task_id=task_id, status="failed",
+                                                 error_message="自动重置：前一次运行异常退出（任务卡死在running状态）")
+            self.logger.warning(
+                "[监督服务] 轻量重跑检测到过期running状态，已自动重置为failed，task_id=%s",
+                task_id,
+            )
+
+        rerun_thread = threading.Thread(
+            target=self._run_rerun_task_lyrics_only_in_background,
+            name=f"task-lyrics-only-{task_id}",
+            args=(task_id,),
+            daemon=True,
+        )
+        self._rerun_threads[task_id] = rerun_thread
+        rerun_thread.start()
+        self.logger.info(
+            "[监督服务] 任务轻量重跑已提交，task_id=%s，reason=%s",
+            task_id,
+            log_reason,
+        )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "message": success_message,
+        }, HTTPStatus.OK
+
+    def _run_rerun_task_lyrics_only_in_background(self, task_id: str) -> None:
+        """在后台线程中执行轻量重跑（仅歌词→算法层，跳过信号处理）。"""
+        try:
+            self.logger.info("[监督服务] 后台开始执行轻量重跑，task_id=%s", task_id)
+            self.lyrics_only_rerun_handler(task_id)
+            self.logger.info("[监督服务] 后台轻量重跑执行结束，task_id=%s", task_id)
+        except Exception as error:  # noqa: BLE001
+            self.logger.error("[监督服务] 后台轻量重跑失败，task_id=%s，错误信息=%s", task_id, error)
+            try:
+                self.state_store.update_task_status(task_id=task_id, status="failed", error_message=str(error)[:500])
+            except Exception:  # noqa: BLE001
+                pass
         finally:
             current_thread = self._rerun_threads.get(task_id)
             if current_thread is threading.current_thread():

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-__all__ = ["run_module_a_v2"]
+__all__ = ["run_module_a_v2", "run_module_a_v2_lyrics_only"]
 
 
 def __getattr__(name: str) -> Any:
@@ -23,10 +23,14 @@ def __getattr__(name: str) -> Any:
     - Any: 对应导出的公共符号。
     异常说明：
     - AttributeError: 请求未知符号时抛出。
-    边界条件：仅支持 run_module_a_v2。
+    边界条件：仅支持 run_module_a_v2 与 run_module_a_v2_lyrics_only。
     """
     if name == "run_module_a_v2":
         from music_video_pipeline.modules.module_a_v2.orchestrator import run_module_a_v2
 
         return run_module_a_v2
+    if name == "run_module_a_v2_lyrics_only":
+        from music_video_pipeline.modules.module_a_v2.orchestrator import run_module_a_v2_lyrics_only
+
+        return run_module_a_v2_lyrics_only
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

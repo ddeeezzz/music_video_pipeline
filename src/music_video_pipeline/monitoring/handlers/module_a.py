@@ -32,10 +32,12 @@ from music_video_pipeline.modules.module_a_v2.lrclib_client import query_lrclib_
 from music_video_pipeline.modules.module_a_v2.network_lyrics_state import (
     current_time_text,
     load_module_a_network_lyrics_state,
+    merge_multi_track_lyrics,
     write_module_a_network_lyrics_state,
 )
 from music_video_pipeline.modules.module_a_v2.utils.media_probe import probe_audio_duration
 from music_video_pipeline.modules.module_a_v2.visualization import collect_visualization_payload
+from music_video_pipeline.io_utils import read_json, write_json
 from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_A_API_PATH,
     TASK_MODULE_A_CANDIDATE_LYRICS_API_PATH,
@@ -43,6 +45,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_A_SEARCH_LYRICS_WS_PATH,
     TASK_MODULE_A_SELECT_LYRICS_API_PATH,
     TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH,
+    SAVED_LYRICS_DIR_NAME,
 )
 
 try:
@@ -53,6 +56,51 @@ except Exception:
 
 class ModuleAHandlers:
     """Mixin —— 模块 A 相关方法。"""
+
+    @staticmethod
+    def _backfill_word_timed_for_saved_candidate(
+        candidate: dict[str, Any],
+        raw_state: dict[str, Any],
+        logger: Any,
+    ) -> None:
+        """
+        功能说明：对已保存候选补填 word_timed_lyrics。
+        参数说明：
+        - candidate: 从文件读取的已保存候选（可能缺 word_timed_lyrics）。
+        - raw_state: 网络歌词状态缓存（含原始搜索候选）。
+        - logger: 日志对象。
+        返回值：无。
+        边界条件：只在缺字段时查找；查找不到静默跳过。
+        """
+        candidate_id = str(candidate.get("candidate_id", "")).strip()
+        if not candidate_id:
+            return
+        # 首先检查 raw_state.selected_candidate
+        raw_selected = raw_state.get("selected_candidate", {})
+        if isinstance(raw_selected, dict):
+            raw_wt = str(raw_selected.get("word_timed_lyrics", "")).strip()
+            if raw_wt:
+                candidate["word_timed_lyrics"] = raw_wt
+                candidate["synced_lyrics"] = raw_wt
+                return
+        # 其次遍历 raw_state.candidates
+        all_candidates: list[dict] = list(raw_state.get("candidates", []))
+        for pg in list(raw_state.get("provider_groups", [])):
+            if isinstance(pg, dict):
+                all_candidates.extend(list(pg.get("candidates", [])))
+        for item in all_candidates:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("candidate_id", "")).strip() == candidate_id:
+                item_wt = str(item.get("word_timed_lyrics", "")).strip()
+                if item_wt:
+                    candidate["word_timed_lyrics"] = item_wt
+                    candidate["synced_lyrics"] = item_wt
+                    return
+        logger.info(
+            "已保存候选缺少 word_timed_lyrics 且无法从缓存找回，将使用行级 LRC，candidate_id=%s",
+            candidate_id,
+        )
 
     def _build_module_a_stream_preview_provider_group(self, provider_group: dict[str, Any]) -> dict[str, Any]:
         """
@@ -286,22 +334,18 @@ class ModuleAHandlers:
         write_module_a_network_lyrics_state(artifacts_dir=artifacts_dir, payload=raw_state)
 
     def _handle_module_a_select_lyrics_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
-        """
-        功能说明：处理模块 A 页面"选中候选歌词并决定是否启用"的请求。
-        参数说明：
-        - parsed: 已解析的请求URL对象。
-        返回值：
-        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
-        异常说明：无；错误统一转为 JSON。
-        边界条件：启用时会立即触发从模块A开始的后台重跑。
-        """
+        """处理模块 A 选中歌词候选并决定是否启用的请求。saved_ 候选优先读本地文件懒加载。"""
         query = parse_qs(parsed.query)
         task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
         candidate_id = str(query.get("candidate_id", [""])[0]).strip()
+        lyrics_text = str(query.get("lyrics_text", [""])[0]).strip()
         enable_text = str(query.get("enable", ["0"])[0]).strip().lower()
         enable_lookup = enable_text in {"1", "true", "yes", "enabled"}
-        if not candidate_id:
-            return {"ok": False, "error": "候选歌词选择失败：candidate_id 不能为空。"}, HTTPStatus.BAD_REQUEST
+        rerun_mode = str(query.get("rerun_mode", [""])[0]).strip().lower()
+        is_lyrics_only = rerun_mode == "lyrics_only"
+        is_saved = str(candidate_id).strip().startswith("saved_")
+        if not candidate_id and not lyrics_text:
+            return {"ok": False, "error": "候选歌词选择失败：candidate_id 或 lyrics_text 不能为空。"}, HTTPStatus.BAD_REQUEST
 
         task_record = self.state_store.get_task(task_id=task_id)
         if task_record is None:
@@ -310,17 +354,129 @@ class ModuleAHandlers:
         task_dir = self._resolve_task_dir(task_id=task_id)
         artifacts_dir = task_dir / "artifacts"
         raw_state = load_module_a_network_lyrics_state(artifacts_dir=artifacts_dir)
-        selected_candidate = self._find_module_a_candidate_by_id(
-            candidates=raw_state.get("candidates", []),
-            candidate_id=candidate_id,
-        )
+        selected_candidate: dict[str, Any] | None = None
+
+        saved_dir = artifacts_dir / SAVED_LYRICS_DIR_NAME
+        saved_file = saved_dir / f"{candidate_id}.json" if candidate_id else None
+        if is_saved and lyrics_text:
+            # 前端传了新的歌词文本（可能过滤/编辑过），以 lyrics_text 为准。
+            # 按时间戳从旧 word_timed 匹配找回词级数据，只保留 lyrics_text 中包含的行。
+            word_timed_matched = ""
+            try:
+                raw_selected = raw_state.get("selected_candidate", {})
+                if isinstance(raw_selected, dict) and str(raw_selected.get("word_timed_lyrics", "")).strip():
+                    _wt_text = str(raw_selected["word_timed_lyrics"]).strip()
+                    _lyric_lines = [l.strip() for l in lyrics_text.splitlines() if l.strip()]
+                    _wt_lines = [l.strip() for l in _wt_text.splitlines() if l.strip()]
+                    _matched: list[str] = []
+                    for _ll in _lyric_lines:
+                        _ts = _ll[:10]  # [MM:SS.ss]
+                        for _wl in _wt_lines:
+                            if _wl.startswith(_ts):
+                                _matched.append(_wl)
+                                break
+                        else:
+                            _matched.append(_ll)
+                    word_timed_matched = "\n".join(_matched)
+            except Exception:  # noqa: BLE001
+                pass
+            selected_candidate = {
+                "candidate_id": candidate_id or "inline_candidate",
+                "artist": str(query.get("artist", [""])[0]).strip(),
+                "title": str(query.get("title", [""])[0]).strip(),
+                "synced_lyrics": word_timed_matched or lyrics_text,
+                "translated_lyrics": str(query.get("translated_lyrics", [""])[0]).strip(),
+                "romanized_lyrics": str(query.get("romanized_lyrics", [""])[0]).strip(),
+                "word_timed_lyrics": word_timed_matched,
+                "provider": "saved",
+                "provider_id": candidate_id or "inline_candidate",
+                "status": "synced",
+            }
+            if is_saved and candidate_id and lyrics_text:
+                try:
+                    saved_dir.mkdir(parents=True, exist_ok=True)
+                    write_json(saved_file, selected_candidate)
+                except Exception:
+                    self.logger.warning("写入已保存歌词文件失败，task_id=%s，candidate_id=%s", task_id, candidate_id)
+        elif is_saved and saved_file and saved_file.exists():
+            # 没有 lyrics_text 时回退读磁盘文件
+            try:
+                saved_data = read_json(saved_file)
+                if isinstance(saved_data, dict) and str(saved_data.get("synced_lyrics", "")).strip():
+                    selected_candidate = saved_data
+                    # 如果缺少 word_timed_lyrics，尝试从 raw_state 缓存找回
+                    if not str(selected_candidate.get("word_timed_lyrics", "")).strip():
+                        _backfill_word_timed_for_saved_candidate(
+                            candidate=selected_candidate,
+                            raw_state=raw_state,
+                            logger=self.logger,
+                        )
+                        if str(selected_candidate.get("word_timed_lyrics", "")).strip():
+                            try:
+                                write_json(saved_file, selected_candidate)
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception:
+                self.logger.warning("读取已保存歌词文件失败，无视并回退 URL 参数，task_id=%s，file=%s", task_id, saved_file)
+
+        if selected_candidate is None and lyrics_text:
+            word_timed_from_raw = ""
+            try:
+                raw_selected = raw_state.get("selected_candidate", {})
+                if isinstance(raw_selected, dict) and str(raw_selected.get("word_timed_lyrics", "")).strip():
+                    word_timed_from_raw = str(raw_selected["word_timed_lyrics"]).strip()
+            except Exception:  # noqa: BLE001
+                pass
+            url_word_timed = str(query.get("word_timed_lyrics", [""])[0]).strip()
+            effective_word_timed = url_word_timed or word_timed_from_raw
+            selected_candidate = {
+                "candidate_id": candidate_id or "inline_candidate",
+                "artist": str(query.get("artist", [""])[0]).strip(),
+                "title": str(query.get("title", [""])[0]).strip(),
+                "synced_lyrics": effective_word_timed or lyrics_text,
+                "translated_lyrics": str(query.get("translated_lyrics", [""])[0]).strip(),
+                "romanized_lyrics": str(query.get("romanized_lyrics", [""])[0]).strip(),
+                "word_timed_lyrics": effective_word_timed,
+                "provider": "saved",
+                "provider_id": candidate_id or "inline_candidate",
+                "status": "synced",
+            }
+            if is_saved and candidate_id and lyrics_text:
+                try:
+                    saved_dir.mkdir(parents=True, exist_ok=True)
+                    write_json(saved_file, selected_candidate)
+                except Exception:
+                    self.logger.warning("写入已保存歌词文件失败，task_id=%s，candidate_id=%s", task_id, candidate_id)
+
         if selected_candidate is None:
-            return {
-                "ok": False,
-                "error": f"候选歌词选择失败：未找到 candidate_id={candidate_id}，请重新联网查找。",
-            }, HTTPStatus.NOT_FOUND
+            selected_candidate = self._find_module_a_candidate_by_id(
+                candidates=raw_state.get("candidates", []),
+                candidate_id=candidate_id,
+            )
+
+        if selected_candidate is None:
+            return {"ok": False, "error": f"候选歌词选择失败：未找到 candidate_id={candidate_id}，请重新联网查找。"}, HTTPStatus.NOT_FOUND
         if enable_lookup and not str(selected_candidate.get("synced_lyrics", "")).strip():
             return {"ok": False, "error": "候选歌词选择失败：当前候选不包含可用的同步lrc歌词。"}, HTTPStatus.BAD_REQUEST
+
+        # 日志输出歌词统计
+        _log_synced = str(selected_candidate.get("synced_lyrics", "")).strip()
+        _log_word = str(selected_candidate.get("word_timed_lyrics", "")).strip()
+        if is_saved and saved_file and saved_file.exists():
+            _log_source = f"磁盘文件({saved_file.name})"
+        elif is_saved and lyrics_text:
+            _log_source = "URL参数(lyrics_text)"
+        else:
+            _log_source = "raw_state.候选缓存"
+        self.logger.info(
+            "[监督服务] 选中歌词统计：synced=%d句%d字符，word_timed=%s%d句%d字符，来源=%s",
+            len([_l for _l in _log_synced.splitlines() if _l.strip()]),
+            len(_log_synced),
+            "有" if _log_word else "无",
+            len([_l for _l in _log_word.splitlines() if _l.strip()]) if _log_word else 0,
+            len(_log_word) if _log_word else 0,
+            _log_source,
+        )
 
         raw_state["selected_candidate_id"] = candidate_id
         raw_state["selected_candidate"] = dict(selected_candidate)
@@ -331,19 +487,19 @@ class ModuleAHandlers:
         write_module_a_network_lyrics_state(artifacts_dir=artifacts_dir, payload=raw_state)
 
         if not enable_lookup:
-            return {
-                "ok": True,
-                "task_id": task_id,
-                "message": "已联网查找lrc但未启用",
-            }, HTTPStatus.OK
+            return {"ok": True, "message": "已联网查找lrc但未启用"}, HTTPStatus.OK
 
-        payload, status = self._submit_task_rerun_request(
+        if is_lyrics_only:
+            return self._submit_task_rerun_lyrics_only_request(
+                task_id=task_id,
+                success_message="已经启用联网查找的lrc，开始轻量重跑（仅歌词->算法层，跳过信号处理）",
+                log_reason=f"module_a_network_lrc_lyrics_only:{candidate_id}",
+            )
+        return self._submit_task_rerun_request(
             task_id=task_id,
             success_message="已经启用联网查找的lrc，并开始重跑模块A",
             log_reason=f"module_a_network_lrc:{candidate_id}",
         )
-        return payload, status
-
     def _handle_module_a_candidate_lyrics_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
         """
         功能说明：按候选ID返回模块 A 联网歌词候选的完整同步歌词内容。
@@ -375,14 +531,24 @@ class ModuleAHandlers:
                 "error": f"候选歌词详情读取失败：未找到 candidate_id={candidate_id}。",
             }, HTTPStatus.NOT_FOUND
         candidate = self._hydrate_module_a_candidate_detail(task_id=task_id, artifacts_dir=artifacts_dir, raw_state=raw_state, candidate=candidate)
+        synced_text = str(candidate.get("synced_lyrics", "")).strip()
+        word_timed_text = str(candidate.get("word_timed_lyrics", "")).strip()
+        translated_text = str(candidate.get("translated_lyrics", "")).strip()
+        romanized_text = str(candidate.get("romanized_lyrics", "")).strip()
+        merged_lyrics = merge_multi_track_lyrics(
+            synced_lyrics=word_timed_text or synced_text,
+            translated_lyrics=translated_text,
+            romanized_lyrics=romanized_text,
+        )
         return {
             "ok": True,
             "task_id": task_id,
             "candidate": self._build_module_a_candidate_summary(candidate),
-            "synced_lyrics": str(candidate.get("synced_lyrics", "")).strip(),
-            "word_timed_lyrics": str(candidate.get("word_timed_lyrics", "")).strip(),
-            "translated_lyrics": str(candidate.get("translated_lyrics", "")).strip(),
-            "romanized_lyrics": str(candidate.get("romanized_lyrics", "")).strip(),
+            "synced_lyrics": synced_text,
+            "word_timed_lyrics": word_timed_text,
+            "translated_lyrics": translated_text,
+            "romanized_lyrics": romanized_text,
+            "merged_lyrics": merged_lyrics,
         }, HTTPStatus.OK
 
     def _build_module_a_network_lyrics_summary(self, task_dir: Path) -> dict[str, Any]:
@@ -443,10 +609,20 @@ class ModuleAHandlers:
             }, HTTPStatus.NOT_FOUND
         audio_path = Path(str(payload.get("audio_path", "")))
         audio_available = audio_path.exists() and audio_path.is_file()
+        audio_url = ""
         if audio_available:
-            audio_url = self._build_task_file_url(task_id=task_id, file_path=audio_path)
-        else:
-            audio_url = ""
+            try:
+                audio_url = self._build_task_file_url(task_id=task_id, file_path=audio_path)
+            except (ValueError, Exception):  # noqa: BLE001
+                # 原始音频不在 task_dir 内，检查 task_dir 下是否有副本
+                task_audio = task_dir / audio_path.name
+                if task_audio.exists() and task_audio.is_file():
+                    try:
+                        audio_url = self._build_task_file_url(task_id=task_id, file_path=task_audio)
+                    except (ValueError, Exception):  # noqa: BLE001
+                        audio_url = ""
+                else:
+                    audio_url = ""
         payload["ok"] = True
         payload["task_id"] = task_id
         payload["task_dir"] = str(task_dir)

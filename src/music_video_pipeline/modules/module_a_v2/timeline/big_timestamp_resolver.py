@@ -915,11 +915,6 @@ def resolve_big_timestamps_and_segments(
         windows_merged=windows_merged,
         duration_seconds=duration_seconds,
     )
-    small_timestamps = _apply_visual_lead_to_small_timestamps(
-        small_timestamps=small_timestamps,
-        duration_seconds=duration_seconds,
-        visual_lead_seconds=visual_lead_seconds,
-    )
     segments_final = build_final_segments(
         windows_merged=windows_merged,
         big_segments_a1=a1_final,

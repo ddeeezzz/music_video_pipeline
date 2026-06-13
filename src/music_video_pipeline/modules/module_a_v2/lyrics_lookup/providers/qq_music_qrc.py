@@ -18,6 +18,8 @@ QQ_MUSIC_DECRYPT = 0
 
 _QRC_XML_PATTERN = re.compile(r'<Lyric_1 LyricType="1" LyricContent="(?P<content>.*?)"/>', re.DOTALL)
 _QRC_LINE_PATTERN = re.compile(r"^\[(?P<start>\d+),(?P<duration>\d+)\](?P<content>.*)$")
+# LRC 格式回退：[mm:ss.xx]content（翻译 QRC 解密后常用此格式）
+_LRC_LINE_PATTERN = re.compile(r"^\[(?P<timestamp>\d{2}:\d{2}(?:\.\d{1,3})?)\](?P<content>.*)$")
 _QRC_WORD_PATTERN = re.compile(r"(?:\[\d+,\d+\])?(?P<content>(?:(?!\(\d+,\d+\)).)*)\((?P<start>\d+),(?P<duration>\d+)\)")
 _QRC_EMPTY_LINE_PATTERN = re.compile(r"^\(\d+,\d+\)$")
 
@@ -46,6 +48,49 @@ def decrypt_qq_music_qrc(encrypted_qrc_hex: str) -> str:
         raise ValueError(f"decrypt qq music qrc failed: {error}") from error
 
 
+
+def extract_lrc_with_fallback_from_qq_music_qrc(qrc_text: str) -> str:
+    """
+    功能说明：从 QRC 中提取带时间戳的 LRC 格式文本，失败时回退纯 LRC 格式提取。
+    参数说明：
+    - qrc_text: 解密后的 QRC 文本。
+    返回值：
+    - str: 含行级时间戳的 LRC 文本；失败时返回空字符串。
+    异常说明：无。
+    边界条件：优先 QRC XML 格式，回退纯 LRC 格式；自动过滤 "//" 占位行（无翻译标记）。
+    """
+    result = extract_lrc_from_qq_music_qrc(qrc_text=qrc_text)
+    if result:
+        # 过滤掉翻译/罗马音中 "//" 占位行（QQ 音乐以 "//" 标记该行无翻译）
+        filtered_lines = [
+            line for line in result.splitlines()
+            if str(line).strip() and not _is_qrc_placeholder_line(line)
+        ]
+        return "\n".join(filtered_lines).strip()
+    lrc_fallback = _extract_lrc_content_fallback(qrc_text=qrc_text)
+    if lrc_fallback:
+        filtered_lines = [
+            line for line in lrc_fallback.splitlines()
+            if str(line).strip() and not _is_qrc_placeholder_line(line)
+        ]
+        return "\n".join(filtered_lines).strip()
+    return ""
+
+
+# QRC 行内容提取后判断是否为占位行（如纯 "//" 或无翻译标记）
+_QRC_PLACEHOLDER_PATTERN = re.compile(r"^\[\d{2}:\d{2}(?:\.\d{1,3})?\]//\s*$")
+
+
+def _is_qrc_placeholder_line(line: str) -> bool:
+    """判断 LRC 行是否为 QQ 音乐翻译/罗马音的占位行（无对应内容）。"""
+    stripped = str(line).strip()
+    if not stripped:
+        return True
+    # 移除时间戳后仅剩 "//" 或空白
+    content = re.sub(r"\[\d{2}:\d{2}(?:\.\d{1,3})?\]", "", stripped).strip()
+    return not content or content == "//"
+
+
 def extract_plaintext_from_qq_music_qrc(qrc_text: str) -> str:
     """
     功能说明：从解密后的 QRC 文本中提取纯文本歌词行。
@@ -58,18 +103,24 @@ def extract_plaintext_from_qq_music_qrc(qrc_text: str) -> str:
     """
     lyric_content = _extract_qrc_lyric_content(qrc_text=qrc_text)
     if not lyric_content:
+        # 有些翻译 QRC 解密后是纯 LRC 格式而非 XML（如 <Lyric_1>），直接按 LRC 提取
+        lyric_content = _extract_lrc_content_fallback(qrc_text=qrc_text)
+    if not lyric_content:
         return ""
     plain_lines: list[str] = []
     for raw_line in lyric_content.splitlines():
         normalized_line = raw_line.strip()
+        # 优先 QRC 格式 [start_ms,duration]content，回退 LRC 格式 [mm:ss.xx]content
         line_match = _QRC_LINE_PATTERN.match(normalized_line)
+        if line_match is None:
+            line_match = _LRC_LINE_PATTERN.match(normalized_line)
         if line_match is None:
             continue
         line_content = str(line_match.group("content") or "").strip()
         if not line_content or _QRC_EMPTY_LINE_PATTERN.match(line_content):
             continue
         plain_text = _extract_qrc_line_text(line_content=line_content).strip()
-        if plain_text:
+        if plain_text and plain_text != "//":  # "//" 表示该行无翻译
             plain_lines.append(plain_text)
     return "\n".join(plain_lines).strip()
 
@@ -160,6 +211,36 @@ def _extract_qrc_lyric_content(qrc_text: str) -> str:
     return html.unescape(str(qrc_match.group("content") or "")).strip()
 
 
+def _extract_lrc_content_fallback(qrc_text: str) -> str:
+    """
+    功能说明：当 QRC 不是 XML 格式时，直接从纯 LRC 文本中提取歌词行。
+    参数说明：
+    - qrc_text: 解密后的 QRC 文本（可能为纯 LRC）。
+    返回值：
+    - str: 去掉 metadata 头部的 LRC 歌词正文。
+    异常说明：无。
+    边界条件：仅保留含时间戳的行；空行或 metadata 行（[ti:][ar:]等）被排除。
+    """
+    text = str(qrc_text or "").strip()
+    if not text:
+        return ""
+    lines = text.replace("\r\n", "\n").split("\n")
+    content_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 跳过 metadata 头部（[ti:], [ar:], [al:], [by:], [offset:]）
+        if stripped.startswith("[") and ":" in stripped and not stripped.startswith("[0"):
+            continue
+        # 保留含时间戳的歌词行
+        if stripped.startswith("[") and re.match(r"\[\d{2}:\d{2}", stripped):
+            content_lines.append(stripped)
+    if not content_lines:
+        return text
+    return "\n".join(content_lines)
+
+
 def _extract_qrc_line_text(line_content: str) -> str:
     """
     功能说明：从单行 QRC 内容中移除词级时间标记并拼出展示文本。
@@ -199,7 +280,7 @@ def _extract_qrc_word_units(line_content: str, line_start_ms: int) -> list[dict[
         normalized_word_text = word_text.strip()
         if not normalized_word_text:
             continue
-        word_start_ms = int(line_start_ms) + int(word_match.group("start") or 0)
+        word_start_ms = int(word_match.group("start") or 0)
         word_end_ms = word_start_ms + int(word_match.group("duration") or 0)
         word_units.append(
             {

@@ -51,13 +51,37 @@ ROLE2_PROMPT_TEMPLATE_REF = PromptTemplateRef(
     template_file="configs/prompts/module_b.role2_big_segment_director.md",
 )
 
+ROLE2A_PROMPT_TEMPLATE_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role2a_story_brainstorm.md",
+)
+
 ROLE3_PROMPT_TEMPLATE_REF = PromptTemplateRef(
     template_file="configs/prompts/module_b.role3_segment_director.md",
 )
 
-ROLE4_PROMPT_TEMPLATE_REF = PromptTemplateRef(
-    template_file="configs/prompts/module_b.role4_prompt_builder.md",
+ROLE4_PROMPT_HUMAN_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role4_human.md",
 )
+
+ROLE4_PROMPT_ANIMAL_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role4_animal.md",
+)
+
+ROLE4_PROMPT_OBJECT_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role4_object.md",
+)
+
+ROLE4_PROMPT_SCENE_REF = PromptTemplateRef(
+    template_file="configs/prompts/module_b.role4_scene.md",
+)
+
+# 查询映射：subject_kind → PromptTemplateRef
+ROLE4_PROMPT_MAP: dict[str, PromptTemplateRef] = {
+    "human": ROLE4_PROMPT_HUMAN_REF,
+    "animal": ROLE4_PROMPT_ANIMAL_REF,
+    "object": ROLE4_PROMPT_OBJECT_REF,
+    "scene": ROLE4_PROMPT_SCENE_REF,
+}
 
 
 def load_prompt_template(project_root: Path, template_file: str) -> str:

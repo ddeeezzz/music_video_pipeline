@@ -17,6 +17,7 @@ from urllib.parse import parse_qs
 
 from music_video_pipeline.modules.module_a_v2.network_lyrics_state import current_time_text
 from music_video_pipeline.modules.module_b.artifact_paths import (
+    backup_and_clear_module_b_role_outputs_from,
     get_module_b_prompt_dir,
     get_module_b_role_result_path,
     get_module_b_streaming_dir,
@@ -119,14 +120,14 @@ class ModuleBHandlers:
                 "description": "镜头规划",
                 "template_relpath": Path("configs/prompts/module_b.role3_segment_director.md"),
                 "source_relpath": Path("src/music_video_pipeline/modules/module_b/role3_shot_planner.py"),
-                "contract_fields": ["scene_desc_zh", "remotion_id"],
+                "contract_fields": ["remotion_reason", "scene_desc_zh", "remotion_id"],
                 "supports_segment_retry": True,
             },
             {
                 "role_name": "role4",
                 "title": "Role 4",
                 "description": "提示词规划",
-                "template_relpath": Path("configs/prompts/module_b.role4_prompt_builder.md"),
+                "template_relpath": Path("configs/prompts/module_b.role4_human.md"),
                 "source_relpath": Path("src/music_video_pipeline/modules/module_b/role4_prompt_builder.py"),
                 "contract_fields": [
                     "keyframe_prompt_start_zh",
@@ -196,8 +197,8 @@ class ModuleBHandlers:
                 "source_path": str(source_path),
                 "contract_fields": contract_fields,
                 "implementation_status": implementation_status,
-                "supports_role_rerun": is_implemented and role_name in {"role1", "role2", "role3", "role4"},
-                "supports_segment_retry": bool(role_spec["supports_segment_retry"]) and is_implemented,
+                "supports_role_rerun": role_name in {"role1", "role2", "role3", "role4"},
+                "supports_segment_retry": bool(role_spec["supports_segment_retry"]),
                 "segment_items": segment_items,
                 "active_rerun": role_active_rerun_payload if is_role_active else {
                     "active": False,
@@ -241,6 +242,25 @@ class ModuleBHandlers:
                 ),
             }
             role_payloads.append(role_payload)
+        # 对 role2 合并故事大纲 streaming 到主 streaming 预览，
+        # 前端轮询 stream_preview 可先看到 draft 内容，再看到分段输出
+        for rp in role_payloads:
+            if rp.get("role_name") == "role2" and rp.get("stream_preview", {}).get("path"):
+                main_path_str = str(rp["stream_preview"]["path"] or "")
+                if not main_path_str:
+                    continue
+                draft_path = Path(main_path_str).parent / "role2_story_draft.streaming.md"
+                if draft_path.parent.exists():
+                    try:
+                        draft_content = draft_path.read_text(encoding="utf-8").strip()
+                    except Exception:
+                        draft_content = ""
+                    if draft_content:
+                        existing_content = str(rp["stream_preview"].get("content", "") or "")
+                        separator = "\n\n---\n\n" if existing_content else ""
+                        rp["stream_preview"]["content"] = draft_content + separator + existing_content
+                        rp["stream_preview"]["available"] = True
+                        rp["stream_preview"]["path"] = str(main_path_str)
         return role_payloads
     def _build_module_b_active_rerun_payload(self, task_id: str) -> dict[str, Any]:
         """
@@ -295,16 +315,19 @@ class ModuleBHandlers:
             "last_error": str(meta.get("last_error", "")).strip(),
             "failure_reason": str(meta.get("failure_reason", "")).strip(),
         }
-    def _build_active_module_b_rerun_process_path(self, task_id: str) -> Path:
+    def _build_active_module_b_rerun_process_path(self, task_id: str, role_name: str = "") -> Path:
         """
         功能说明：构建模块 B 活跃重跑子进程状态文件路径。
         参数说明：
         - task_id: 任务唯一标识。
+        - role_name: 角色名（如 role1/role2），用于按角色隔离进程状态。
         返回值：
         - Path: 状态文件绝对路径。
         异常说明：无。
         边界条件：文件固定写在 runs/<task_id>/ 目录下。
         """
+        if role_name:
+            return self._resolve_task_dir(task_id=task_id) / f"active_module_b_rerun_process.{role_name}.json"
         return self._resolve_task_dir(task_id=task_id) / ACTIVE_MODULE_B_RERUN_PROCESS_FILE_NAME
     @staticmethod
     def _parse_truthy_flag(value: str) -> bool:
@@ -318,17 +341,18 @@ class ModuleBHandlers:
         边界条件：空字符串返回 False。
         """
         return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-    def _load_active_module_b_rerun_process_meta(self, task_id: str) -> dict[str, Any]:
+    def _load_active_module_b_rerun_process_meta(self, task_id: str, role_name: str = "") -> dict[str, Any]:
         """
         功能说明：从子进程状态文件恢复模块 B 活跃重跑摘要。
         参数说明：
         - task_id: 任务唯一标识。
+        - role_name: 角色名（如 role1/role2），用于按角色隔离进程状态。
         返回值：
         - dict[str, Any]: 若存在活跃子进程则返回前端可用摘要，否则返回空字典。
         异常说明：无；文件损坏时自动清理并回退为空。
         边界条件：仅在 PID 仍存活时视为 active。
         """
-        process_file_path = self._build_active_module_b_rerun_process_path(task_id=task_id)
+        process_file_path = self._build_active_module_b_rerun_process_path(task_id=task_id, role_name=role_name)
         if not process_file_path.exists():
             return {}
         try:
@@ -410,7 +434,7 @@ class ModuleBHandlers:
         except Exception:  # noqa: BLE001
             path.unlink(missing_ok=True)
             return {}
-    def _terminate_active_module_b_rerun_process(self, task_id: str) -> bool:
+    def _terminate_active_module_b_rerun_process(self, task_id: str, role_name: str = "") -> bool:
         """
         功能说明：终止当前任务的模块 B 活跃重跑子进程树。
         参数说明：
@@ -420,7 +444,7 @@ class ModuleBHandlers:
         异常说明：无；错误由调用方转成冲突提示。
         边界条件：当前实现依赖 Windows `taskkill /T /F`。
         """
-        process_file_path = self._build_active_module_b_rerun_process_path(task_id=task_id)
+        process_file_path = self._build_active_module_b_rerun_process_path(task_id=task_id, role_name=role_name)
         if not process_file_path.exists():
             return False
         try:
@@ -891,11 +915,12 @@ class ModuleBHandlers:
         task_record = self.state_store.get_task(task_id=task_id)
         if task_record is None:
             return {"ok": False, "error": f"模块B role 重跑失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
-        active_thread = self._rerun_threads.get(task_id)
+        rerun_key = f"{task_id}|{role_name}"
+        active_thread = self._rerun_threads.get(rerun_key)
         active_process_meta = self._load_active_module_b_rerun_process_meta(task_id=task_id)
         has_active_process = bool(active_process_meta.get("active"))
         if replace_running and (has_active_process or (active_thread is not None and active_thread.is_alive())):
-            terminated = self._terminate_active_module_b_rerun_process(task_id=task_id)
+            terminated = self._terminate_active_module_b_rerun_process(task_id=task_id, role_name=f"segment_{role_name}")
             if active_thread is not None and active_thread.is_alive():
                 active_thread.join(timeout=5.0)
             if not terminated and active_thread is not None and active_thread.is_alive():
@@ -905,16 +930,33 @@ class ModuleBHandlers:
                 }, HTTPStatus.CONFLICT
         if active_thread is not None and active_thread.is_alive():
             return {"ok": False, "error": f"模块B role 重跑失败：任务已有后台动作执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
-        if self._load_active_module_b_rerun_process_meta(task_id=task_id).get("active"):
+        if self._load_active_module_b_rerun_process_meta(task_id=task_id, role_name=role_name).get("active"):
             return {"ok": False, "error": f"模块B role 重跑失败：任务已有后台子进程执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        task_dir = self._resolve_task_dir(task_id=task_id)
+        try:
+            removed_paths = backup_and_clear_module_b_role_outputs_from((task_dir / "artifacts").resolve(), role_name)
+            self.state_store.reset_from_module(task_id=task_id, module_name="B")
+            self.state_store.set_module_status(task_id=task_id, module_name="B", status="running")
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            self.logger.info(
+                "[监督服务] 模块B role 重跑提交前已备份并清理旧产物，task_id=%s，role_name=%s，removed_count=%s",
+                task_id,
+                role_name,
+                len(removed_paths),
+            )
+        except Exception as error:  # noqa: BLE001
+            return {
+                "ok": False,
+                "error": f"模块B role 重跑失败：清理旧产物出错，task_id={task_id}，role_name={role_name}，错误={error}",
+            }, HTTPStatus.INTERNAL_SERVER_ERROR
         rerun_thread = threading.Thread(
             target=self._run_module_b_role_rerun_in_background,
             name=f"module-b-role-rerun-{task_id}-{role_name}",
             args=(task_id, role_name),
             daemon=True,
         )
-        self._rerun_threads[task_id] = rerun_thread
-        self._rerun_thread_meta[task_id] = {
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
             "active": True,
             "status": "queued",
             "mode": "role",
@@ -968,11 +1010,12 @@ class ModuleBHandlers:
         task_record = self.state_store.get_task(task_id=task_id)
         if task_record is None:
             return {"ok": False, "error": f"模块B segment 重跑失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
-        active_thread = self._rerun_threads.get(task_id)
-        active_process_meta = self._load_active_module_b_rerun_process_meta(task_id=task_id)
+        rerun_key = f"{task_id}|segment|{role_name}|{segment_id}"
+        active_thread = self._rerun_threads.get(rerun_key)
+        active_process_meta = self._load_active_module_b_rerun_process_meta(task_id=task_id, role_name=f"segment_{role_name}")
         has_active_process = bool(active_process_meta.get("active"))
         if replace_running and (has_active_process or (active_thread is not None and active_thread.is_alive())):
-            terminated = self._terminate_active_module_b_rerun_process(task_id=task_id)
+            terminated = self._terminate_active_module_b_rerun_process(task_id=task_id, role_name=f"segment_{role_name}")
             if active_thread is not None and active_thread.is_alive():
                 active_thread.join(timeout=5.0)
             if not terminated and active_thread is not None and active_thread.is_alive():
@@ -982,7 +1025,7 @@ class ModuleBHandlers:
                 }, HTTPStatus.CONFLICT
         if active_thread is not None and active_thread.is_alive():
             return {"ok": False, "error": f"模块B segment 重跑失败：任务已有后台动作执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
-        if self._load_active_module_b_rerun_process_meta(task_id=task_id).get("active"):
+        if self._load_active_module_b_rerun_process_meta(task_id=task_id, role_name=f"segment_{role_name}").get("active"):
             return {"ok": False, "error": f"模块B segment 重跑失败：任务已有后台子进程执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
         task_dir = self._resolve_task_dir(task_id=task_id)
         shot_id = self._resolve_module_b_shot_id_from_segment(task_dir=task_dir, task_id=task_id, segment_id=segment_id, role_name=role_name)
@@ -1001,8 +1044,8 @@ class ModuleBHandlers:
             args=(task_id, role_name, segment_id, shot_id),
             daemon=True,
         )
-        self._rerun_threads[task_id] = rerun_thread
-        self._rerun_thread_meta[task_id] = {
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
             "active": True,
             "status": "queued",
             "mode": "segment",
@@ -1277,9 +1320,10 @@ class ModuleBHandlers:
                 error,
             )
         finally:
-            current_thread = self._rerun_threads.get(task_id)
+            rerun_key = f"{task_id}|{role_name}"
+            current_thread = self._rerun_threads.get(rerun_key)
             if current_thread is threading.current_thread():
-                self._rerun_threads.pop(task_id, None)
+                self._rerun_threads.pop(rerun_key, None)
     def _run_module_b_role_segment_rerun_in_background(
         self,
         task_id: str,
@@ -1378,9 +1422,10 @@ class ModuleBHandlers:
                 error,
             )
         finally:
-            current_thread = self._rerun_threads.get(task_id)
+            rerun_key = f"{task_id}|segment|{role_name}|{segment_id}"
+            current_thread = self._rerun_threads.get(rerun_key)
             if current_thread is threading.current_thread():
-                self._rerun_threads.pop(task_id, None)
+                self._rerun_threads.pop(rerun_key, None)
     def _run_module_b_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path) -> None:
         """
         功能说明：在后台线程中执行模块 B 断点续跑，通过 CLI 子进程执行 resume 命令。

@@ -27,8 +27,6 @@ from music_video_pipeline.modules.module_a_v2.lyrics_lookup.providers.syncedlyri
     search_syncedlyrics_candidates,
     search_syncedlyrics_candidates_by_provider,
 )
-
-
 PROVIDER_DISPLAY_NAMES = {
     "netease_music": "网易云音乐",
     "qq_music": "QQ音乐",
@@ -377,7 +375,7 @@ def stream_synced_lrc_candidates(
         "message": (
             f"已通过音乐指纹找到 {len(candidates)} 个同步lrc歌词候选"
             if candidates
-            else "自动搜索未找到可用的同步lrc歌词候选，请手动输入歌曲名搜索"
+            else "自动搜索未找到可用的同步LRC歌词候选，请手动输入歌曲名搜索"
         ),
         "search_mode": "fingerprint" if candidates else "automatic",
         "suggest_manual_query": not candidates,

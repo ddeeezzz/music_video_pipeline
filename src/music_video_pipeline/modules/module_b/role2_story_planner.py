@@ -36,50 +36,13 @@ from music_video_pipeline.modules.module_b.markdown_contracts import (
 )
 # 项目内模块：提供 role2 prompt 模板装配能力。
 from music_video_pipeline.modules.module_b.prompt_templates import (
+    ROLE2A_PROMPT_TEMPLATE_REF,
     ROLE2_PROMPT_TEMPLATE_REF,
     render_prompt_asset,
 )
 
 
-def build_big_segment_catalog_stub() -> str:
-    """返回一份与 prompt 模板格式一致的占位 catalog 示例，用于后续真实数据聚合前的接通过程。"""
-    return """
-### big_001
-- label: intro | 时长: 10.2s (0.0s ~ 10.2s)
-- 人声占比: 0% | 器乐: 90% | 留白: 10%
-- 能量: low → low，趋势: flat，节奏紧张度: 0.18
-- 歌词: 无
 
-### big_002
-- label: verse | 时长: 22.6s (10.2s ~ 32.8s)
-- 人声占比: 65% | 器乐: 25% | 留白: 10%
-- 能量: low → mid，趋势: up，节奏紧张度: 0.42
-- 歌词: 有（"一个人站了很久 / 看光线慢慢移动"）
-
-### big_003
-- label: chorus | 时长: 22.3s (32.8s ~ 55.1s)
-- 人声占比: 72% | 器乐: 20% | 留白: 8%
-- 能量: mid → high，趋势: up，节奏紧张度: 0.71
-- 歌词: 有（"让它走吧 / 让它消失在风中"）
-
-### big_004
-- label: verse | 时长: 22.4s (55.1s ~ 77.5s)
-- 人声占比: 60% | 器乐: 28% | 留白: 12%
-- 能量: mid → mid，趋势: flat，节奏紧张度: 0.45
-- 歌词: 有（"那些没说出口的 / 被时间慢慢带走"）
-
-### big_005
-- label: chorus | 时长: 22.3s (77.5s ~ 99.8s)
-- 人声占比: 75% | 器乐: 18% | 留白: 7%
-- 能量: high → high，趋势: flat，节奏紧张度: 0.78
-- 歌词: 有（"不再等了 / 该走的就让它走吧"）
-
-### big_006
-- label: outro | 时长: 15.2s (99.8s ~ 115.0s)
-- 人声占比: 10% | 器乐: 70% | 留白: 20%
-- 能量: mid → low，趋势: down，节奏紧张度: 0.22
-- 歌词: 有（"一切都安静下来了"）
-""".strip()
 
 
 def build_big_segment_catalog(module_a_output: dict) -> str:
@@ -415,22 +378,28 @@ class Role2StoryPlanner:
             else None
         )
 
-    def generate(self, story_template_markdown: str, big_segment_catalog: str) -> list[ScenePlan]:
-        """根据故事模板与大段音频特征生成并校验 role2 结果。"""
+    def generate(self, story_template_markdown: str, big_segment_catalog: str, story_draft: str = "", *, clear_streaming: bool = True) -> list[ScenePlan]:
+        """根据故事模板与大段音频特征生成并校验 role2 结果。
+        可选的 story_draft 为 role2a 脑洞生成的故事大纲。
+        clear_streaming=False 时不清除已有 streaming 文件内容（用于两阶段追加模式）。"""
         prompt_template_ref = ROLE2_PROMPT_TEMPLATE_REF
         prompt_template_file_override = str(self._llm_config.prompt_template_file).strip()
         if prompt_template_file_override:
             prompt_template_ref = replace(prompt_template_ref, template_file=prompt_template_file_override)
 
+        user_variables: dict[str, str] = {
+            "模板的## 故事和## 意象": _normalize_markdown_text(
+                "role2.story_template", story_template_markdown
+            ),
+            "big_segment_catalog": str(big_segment_catalog or "").strip(),
+        }
+        if str(story_draft or "").strip():
+            user_variables["story_draft"] = str(story_draft).strip()
+
         prompt_asset = render_prompt_asset(
             project_root=self._project_root,
             prompt_template_ref=prompt_template_ref,
-            user_variables={
-                "模板的## 故事和## 意象": _normalize_markdown_text(
-                    "role2.story_template", story_template_markdown
-                ),
-                "big_segment_catalog": str(big_segment_catalog or "").strip(),
-            },
+            user_variables=user_variables,
         )
         if self._artifacts_dir is not None:
             self._work_dir.mkdir(parents=True, exist_ok=True)
@@ -439,7 +408,7 @@ class Role2StoryPlanner:
                 prompt_asset["user_prompt_markdown"], encoding="utf-8"
             )
         call_llm_config = self._llm_config
-        if self._stream_preview_path is not None:
+        if clear_streaming and self._stream_preview_path is not None:
             self._stream_preview_path.parent.mkdir(parents=True, exist_ok=True)
             self._stream_preview_path.write_text("", encoding="utf-8")
         if self._stream_preview_meta_path is not None:
@@ -462,6 +431,73 @@ class Role2StoryPlanner:
         except Exception as error:  # noqa: BLE001
             last_error = self._persist_failure_artifacts(response_text=response_text, error=error)
         raise RuntimeError(f"module_b: role2 执行失败：{last_error}")
+
+    def brainstorm_story(self, story_template_markdown: str, big_segment_catalog: str) -> str:
+        """根据故事模板与音频特征脑洞完整故事大纲，返回纯文本。
+        streaming 写到独立文件 role2_story_draft.streaming.md。"""
+        prompt_template_ref = ROLE2A_PROMPT_TEMPLATE_REF
+        prompt_template_file_override = str(self._llm_config.prompt_template_file).strip()
+        if prompt_template_file_override:
+            prompt_template_ref = replace(prompt_template_ref, template_file=prompt_template_file_override)
+
+        prompt_asset = render_prompt_asset(
+            project_root=self._project_root,
+            prompt_template_ref=prompt_template_ref,
+            user_variables={
+                "模板的## 故事和## 意象": _normalize_markdown_text(
+                    "role2a.story_template", story_template_markdown
+                ),
+                "big_segment_catalog": str(big_segment_catalog or "").strip(),
+            },
+        )
+
+        # 设置 brainstorm 专用的 streaming 路径（独立于 generate 的文件）
+        draft_stream_path: Path | None = None
+        draft_meta_path: Path | None = None
+        if self._artifacts_dir is not None:
+            self._work_dir.mkdir(parents=True, exist_ok=True)
+            self._prompt_dir.mkdir(parents=True, exist_ok=True)
+            (self._prompt_dir / "role2a_rendered_prompt.md").write_text(
+                prompt_asset["user_prompt_markdown"], encoding="utf-8"
+            )
+            if self._streaming_dir is not None:
+                self._streaming_dir.mkdir(parents=True, exist_ok=True)
+                draft_stream_path = (self._streaming_dir / "role2_story_draft.streaming.md").resolve()
+                draft_meta_path = (self._streaming_dir / "role2_story_draft.streaming.meta.json").resolve()
+                draft_stream_path.write_text("", encoding="utf-8")
+
+        # 暂存原有 streaming 路径，替换为 brainstorm 路径
+        orig_stream_path = self._stream_preview_path
+        orig_meta_path = self._stream_preview_meta_path
+        self._stream_preview_path = draft_stream_path
+        self._stream_preview_meta_path = draft_meta_path
+
+        if draft_meta_path is not None:
+            self._write_stream_preview_meta(
+                current_attempt=1,
+                first_chunk_at_ms=0,
+                last_chunk_at_ms=0,
+            )
+
+        last_error: Exception | None = None
+        response_text = ""
+        try:
+            response_text, usage = call_module_b_llm_chat(**self._build_llm_call_kwargs(
+                call_llm_config=self._llm_config,
+                prompt_asset=prompt_asset,
+            ))
+            _update_meta_with_usage(draft_meta_path, usage, fallback_text=response_text)
+            result = str(response_text or "").strip()
+            if not result:
+                raise ValueError("role2a brainstorm_story 返回空内容。")
+            return result
+        except Exception as error:  # noqa: BLE001
+            last_error = self._persist_failure_artifacts(response_text=response_text, error=error)
+            raise RuntimeError(f"module_b: role2a 执行失败：{last_error}")
+        finally:
+            # 恢复原有 streaming 路径，不影响后续 generate 调用
+            self._stream_preview_path = orig_stream_path
+            self._stream_preview_meta_path = orig_meta_path
 
     def _write_stream_preview_meta(
         self,

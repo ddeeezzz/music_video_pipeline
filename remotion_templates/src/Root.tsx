@@ -32,10 +32,10 @@ import {
   panRightTemplateSchema
 } from "./schema";
 
-// 常量：模板画布固定宽度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_WIDTH = 512;
-// 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_HEIGHT = 320;
+// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
+const TEMPLATE_WIDTH = 1920;
+// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
+const TEMPLATE_HEIGHT = 1200;
 /**
  * 功能说明：注册当前模板工程的全部 Composition。
  * 参数说明：无。
@@ -81,7 +81,7 @@ export const Root = (): ReactElement => {
             {frames: [{src: "/fixtures/grid-c.svg", width_ratio: 0.26, height_ratio: 0.52}]}
           ],
           layout: {visible_cell_count: 3},
-          motion: {active_ratio: 0.45, overshoot_ratio: 0.08, enter_distance: 72}
+          motion: {active_ratio: 0.45, overshoot_ratio: 0.08, enter_distance: 240}
         }}
       />
       <Composition
@@ -137,7 +137,7 @@ export const Root = (): ReactElement => {
             background: {kind: "solid" as const, color: "#FFFF00"},
             symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
           },
-          motion: {travel_px: 320, easing: "ease_in_out" as const}
+          motion: {travel_px: 1080, easing: "ease_in_out" as const}
         }}
       />
       <Composition
@@ -163,7 +163,7 @@ export const Root = (): ReactElement => {
             background: {kind: "solid" as const, color: "#FFFF00"},
             symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
           },
-          motion: {travel_px: 320, easing: "ease_in_out" as const}
+          motion: {travel_px: 1080, easing: "ease_in_out" as const}
         }}
       />
       <Composition
@@ -189,7 +189,7 @@ export const Root = (): ReactElement => {
             background: {kind: "solid" as const, color: "#FFFF00"},
             symbol: {src: "/fixtures/center-symbol.svg", width_ratio: 0.42, height_ratio: 0.42}
           },
-          motion: {travel_px: 512, easing: "ease_in_out" as const}
+          motion: {travel_px: 1920, easing: "ease_in_out" as const}
         }}
       />
     </>

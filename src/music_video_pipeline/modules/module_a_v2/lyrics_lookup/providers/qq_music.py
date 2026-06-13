@@ -24,7 +24,7 @@ from music_video_pipeline.modules.module_a_v2.lyrics_lookup.providers.qq_music_q
     decrypt_qq_music_qrc,
     extract_enhanced_lrc_from_qq_music_qrc,
     extract_lrc_from_qq_music_qrc,
-    extract_plaintext_from_qq_music_qrc,
+    extract_lrc_with_fallback_from_qq_music_qrc,
 )
 
 # 常量：QQ 音乐 smartbox 搜索接口
@@ -35,6 +35,8 @@ QQ_MUSIC_LYRIC_API_URL = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.
 QQ_MUSIC_MUSICU_API_URL = "https://u.y.qq.com/cgi-bin/musicu.fcg"
 # 常量：QQ 音乐 HTTP 超时时间（秒）
 QQ_MUSIC_REQUEST_TIMEOUT_SECONDS = 15.0
+# 常量：QQ 音乐 musicu 请求超时时间
+QQ_MUSIC_MUSICU_TIMEOUT_SECONDS = 30.0
 # 常量：标题尾部括注清理规则
 TRAILING_BRACKET_NOTE_PATTERN = re.compile(r"\s*[\(（\[【].*?[\)）\]】]\s*$")
 
@@ -159,7 +161,86 @@ def _build_qq_music_search_terms(query_text: str, artist: str, title: str) -> li
 
 def _search_qq_music_songs(*, search_term: str, logger, limit: int) -> list[dict[str, Any]]:
     """
-    功能说明：按关键词检索 QQ 音乐歌曲列表。
+    功能说明：按关键词检索 QQ 音乐歌曲列表（优先 MusicU，回退 smartbox）。
+    参数说明：
+    - search_term: 搜索词。
+    - logger: 日志对象。
+    - limit: 最多返回歌曲数。
+    返回值：
+    - list[dict[str, Any]]: 轻量歌曲摘要列表。
+    异常说明：网络或解析异常时返回空数组。
+    边界条件：先尝试 MusicU 搜索，失败时回退 smartbox。
+    """
+    # 方案一：MusicU 搜索
+    payload = json.dumps(
+        {
+            "comm": {"ct": 11, "cv": "1003006"},
+            "req_1": {
+                "method": "DoSearchForQQMusicDesktop",
+                "module": "music.search.SearchCgiService",
+                "param": {
+                    "num_per_page": max(1, int(limit)),
+                    "page_num": 1,
+                    "query": str(search_term).strip(),
+                    "search_type": 0,
+                },
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = Request(
+        url=QQ_MUSIC_MUSICU_API_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://y.qq.com/",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=QQ_MUSIC_REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
+            raw_body = response.read().decode("utf-8", errors="replace")
+        response_payload = json.loads(raw_body)
+    except Exception as error:
+        logger.warning("模块A V2-QQ音乐搜索MusicU失败，回退smartbox，query=%s，错误=%s", search_term, error)
+        return _search_qq_music_songs_smartbox(search_term=search_term, logger=logger, limit=limit)
+    req_data = response_payload.get("req_1", {}) if isinstance(response_payload, dict) else {}
+    if not isinstance(req_data, dict):
+        return _search_qq_music_songs_smartbox(search_term=search_term, logger=logger, limit=limit)
+    body_data = req_data.get("data", {}) if isinstance(req_data, dict) else {}
+    song_data = body_data.get("body", {}) if isinstance(body_data, dict) else {}
+    song_list = song_data.get("song", {}).get("list", []) if isinstance(song_data, dict) else []
+    if not isinstance(song_list, list) or not song_list:
+        return _search_qq_music_songs_smartbox(search_term=search_term, logger=logger, limit=limit)
+    normalized_songs: list[dict[str, Any]] = []
+    for item in song_list:
+        if not isinstance(item, dict):
+            continue
+        singer_names: list[str] = []
+        for singer_item in item.get("singer", []):
+            if isinstance(singer_item, dict):
+                singer_name = str(singer_item.get("name", "")).strip()
+                if singer_name:
+                    singer_names.append(singer_name)
+        normalized_songs.append(
+            {
+                "songmid": str(item.get("mid", "")).strip(),
+                "id": str(item.get("id", "")).strip(),
+                "title": str(item.get("title", item.get("name", ""))).strip(),
+                "artist": "/".join(singer_names),
+                "duration_seconds": float(item.get("interval", 0) or 0),
+            }
+        )
+        if len(normalized_songs) >= max(1, int(limit)):
+            break
+    return normalized_songs
+
+
+def _search_qq_music_songs_smartbox(*, search_term: str, logger, limit: int) -> list[dict[str, Any]]:
+    """
+    功能说明：按关键词检索 QQ 音乐歌曲列表（smartbox 回退方案）。
     参数说明：
     - search_term: 搜索词。
     - logger: 日志对象。
@@ -183,13 +264,13 @@ def _search_qq_music_songs(*, search_term: str, logger, limit: int) -> list[dict
         response_payload = json.loads(raw_body)
     except HTTPError as error:
         if int(getattr(error, "code", 0)) != 404:
-            logger.warning("模块A V2-QQ音乐搜索失败，query=%s，错误=%s", search_term, error)
+            logger.warning("模块A V2-QQ音乐搜索smartbox失败，query=%s，错误=%s", search_term, error)
         return []
     except URLError as error:
-        logger.warning("模块A V2-QQ音乐搜索网络异常，query=%s，错误=%s", search_term, error)
+        logger.warning("模块A V2-QQ音乐搜索smartbox网络异常，query=%s，错误=%s", search_term, error)
         return []
     except Exception as error:  # noqa: BLE001
-        logger.warning("模块A V2-QQ音乐搜索解析失败，query=%s，错误=%s", search_term, error)
+        logger.warning("模块A V2-QQ音乐搜索smartbox解析失败，query=%s，错误=%s", search_term, error)
         return []
     data_payload = response_payload.get("data", {}) if isinstance(response_payload, dict) else {}
     song_payload = data_payload.get("song", {}) if isinstance(data_payload, dict) else {}
@@ -554,7 +635,7 @@ def _qq_music_musicu_request(*, method: str, module: str, param: dict[str, Any],
         method="POST",
     )
     try:
-        with urlopen(request, timeout=QQ_MUSIC_REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
+        with urlopen(request, timeout=QQ_MUSIC_MUSICU_TIMEOUT_SECONDS) as response:  # noqa: S310
             raw_body = response.read().decode("utf-8", errors="replace")
         response_payload = json.loads(raw_body)
     except Exception as error:  # noqa: BLE001
@@ -596,7 +677,7 @@ def _extract_qq_music_musicu_text(*, payload: dict[str, Any], field_name: str, l
     返回值：
     - str: 解析后的歌词文本；失败时返回空字符串。
     异常说明：无；内部异常统一回退空字符串。
-    边界条件：原文默认保留行级时间戳；当 enhanced=True 时输出增强 LRC。
+    边界条件：翻译和罗马音也保留行级时间戳，便于前端按时间戳对齐。
     """
     encrypted_text = str(payload.get(field_name, "") or "").strip()
     timestamp_field_name = "qrc_t" if field_name == "lyric" else f"{field_name}_t"
@@ -608,7 +689,8 @@ def _extract_qq_music_musicu_text(*, payload: dict[str, Any], field_name: str, l
             if enhanced:
                 return extract_enhanced_lrc_from_qq_music_qrc(qrc_text)
             return extract_lrc_from_qq_music_qrc(qrc_text)
-        return extract_plaintext_from_qq_music_qrc(qrc_text)
+        # 翻译和罗马音也保留时间戳，使前端可按时间戳对齐而非索引偏移
+        return extract_lrc_with_fallback_from_qq_music_qrc(qrc_text)
     except Exception as error:  # noqa: BLE001
         logger.warning("模块A V2-QQ音乐 %s QRC 解析失败，错误=%s", field_name, error)
         return ""

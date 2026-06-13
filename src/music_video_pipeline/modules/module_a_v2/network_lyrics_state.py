@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from music_video_pipeline.io_utils import write_json
@@ -144,6 +145,8 @@ def build_manual_network_lyrics_result(
         "duration_seconds": float(selected_candidate.get("duration_seconds", audio_duration) or audio_duration),
         "plain_lyrics": str(selected_candidate.get("plain_lyrics", "")).strip(),
         "synced_lyrics": effective_synced_lyrics,
+        "translated_lyrics": str(selected_candidate.get("translated_lyrics", "")).strip(),
+        "romanized_lyrics": str(selected_candidate.get("romanized_lyrics", "")).strip(),
         "provider": selected_provider,
         "provider_id": str(selected_candidate.get("provider_id", "")).strip(),
         "instrumental": False,
@@ -201,3 +204,94 @@ def _build_default_state() -> dict[str, Any]:
         "candidates": [],
         "provider_groups": [],
     }
+
+
+# 常量：LRC 行解析正则（匹配 [MM:SS.xx]内容）
+_LRC_LINE_PARSE = re.compile(r"^\[(\d{1,2}:\d{2}(?:\.\d{1,3})?)\](.*)$")
+
+
+def merge_multi_track_lyrics(
+    synced_lyrics: str,
+    translated_lyrics: str = "",
+    romanized_lyrics: str = "",
+) -> list[dict[str, str]]:
+    """
+    功能说明：将原文、翻译、罗马音三轨 LRC 按时间戳合并为统一行列表，
+              自动吃掉空行和占位符（如 QQ 音乐的 "//"）。
+    参数说明：
+    - synced_lyrics: 原文 LRC（必填）。
+    - translated_lyrics: 翻译 LRC（可选）。
+    - romanized_lyrics: 罗马音 LRC（可选）。
+    返回值：
+    - list[dict[str, str]]: 合并后的行列表，每项含：
+      raw_time_label, start_time, text, translated_text, romanized_text。
+    """
+    synced_lines = _parse_lrc_lines_to_map(synced_lyrics)
+    translated_lines = _parse_lrc_lines_to_map(translated_lyrics)
+    romanized_lines = _parse_lrc_lines_to_map(romanized_lyrics)
+
+    all_timestamps: set[str] = set()
+    all_timestamps.update(synced_lines.keys())
+    all_timestamps.update(translated_lines.keys())
+    all_timestamps.update(romanized_lines.keys())
+
+    sorted_timestamps = sorted(all_timestamps, key=_lrc_timestamp_to_seconds)
+    merged: list[dict[str, str]] = []
+    for ts in sorted_timestamps:
+        original_text = synced_lines.get(ts, "")
+        translated_text = translated_lines.get(ts, "")
+        romanized_text = romanized_lines.get(ts, "")
+        # 跳过完全空行（原文/翻译/罗马音全部为空）
+        if not original_text and not translated_text and not romanized_text:
+            continue
+        merged.append({
+            "raw_time_label": ts,
+            "start_time": _lrc_timestamp_to_seconds(ts),
+            "text": original_text,
+            "translated_text": translated_text,
+            "romanized_text": romanized_text,
+        })
+    return merged
+
+
+def _parse_lrc_lines_to_map(lrc_text: str) -> dict[str, str]:
+    """
+    功能说明：将 LRC 文本解析为 {时间戳: 文本} 字典。
+    参数说明：
+    - lrc_text: LRC 格式文本。
+    返回值：
+    - dict[str, str]: 时间戳到文本的映射，空文本/占位符行被过滤。
+    """
+    result: dict[str, str] = {}
+    for raw_line in str(lrc_text).splitlines():
+        line_text = raw_line.strip()
+        if not line_text:
+            continue
+        match_result = _LRC_LINE_PARSE.match(line_text)
+        if not match_result:
+            continue
+        content = match_result.group(2).strip()
+        # 过滤占位符（QQ 音乐用 // 表示无翻译）
+        if not content or content in {"//", "/"}:
+            continue
+        result[match_result.group(1).strip()] = content
+    return result
+
+
+def _lrc_timestamp_to_seconds(ts: str) -> float:
+    """
+    功能说明：将 LRC 时间戳（MM:SS.xx）转换为秒数，用于排序。
+    参数说明：
+    - ts: LRC 时间戳字符串。
+    返回值：
+    - float: 秒数。
+    """
+    try:
+        parts = str(ts).strip().split(":")
+        minutes = int(parts[0])
+        sec_parts = parts[1].split(".")
+        seconds = int(sec_parts[0])
+        fraction = float(f"0.{sec_parts[1]}") if len(sec_parts) > 1 and sec_parts[1] else 0.0
+        return minutes * 60 + seconds + fraction
+    except Exception:
+        return 0.0

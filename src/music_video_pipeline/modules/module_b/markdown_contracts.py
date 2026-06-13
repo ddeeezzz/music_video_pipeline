@@ -23,7 +23,7 @@ ROLE1_FIELDS = ("pos_zh", "pos_en")
 # 常量：role2 当前使用的固定字段名。
 ROLE2_FIELDS = ("imagery_used", "story_outline_zh")
 # 常量：role3 镜头规划的固定字段名。
-ROLE3_FIELDS = ("scene_desc_zh", "remotion_id")
+ROLE3_FIELDS = ("remotion_reason", "scene_desc_zh", "remotion_id", "shot_subject_kind")
 # 常量：role4 当前使用的固定字段名（共 7 字段）。
 ROLE4_FIELDS = (
     "subject_kind",
@@ -67,8 +67,10 @@ class ShotPlan(BaseModel):
 
     big_segment_id: str = Field(default="")
     segment_id: str = Field(default="")
+    remotion_reason: str = Field(default="")
     scene_desc_zh: str = Field(default="")
     remotion_id: str = Field(default="")
+    shot_subject_kind: str = Field(default="human")
 
 
 class PromptPlan(BaseModel):
@@ -77,7 +79,7 @@ class PromptPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     shot_id: str = Field(default="")
-    subject_kind: str = Field(default="character")
+    subject_kind: str = Field(default="human")
     keyframe_prompt_start_zh: str = Field(default="")
     keyframe_prompt_start_en: str = Field(default="")
     keyframe_prompt_end_zh: str = Field(default="")
@@ -189,8 +191,10 @@ def parse_shot_plans(markdown_text: str) -> list[ShotPlan]:
             results.append(ShotPlan(
                 big_segment_id=big_segment_id,
                 segment_id=segment_id,
+                remotion_reason=field_map.get("remotion_reason", ""),
                 scene_desc_zh=field_map.get("scene_desc_zh", ""),
                 remotion_id=field_map.get("remotion_id", ""),
+                shot_subject_kind=field_map.get("shot_subject_kind", "human"),
             ))
 
     logger.debug("role3 成功提取 %d 条镜头规划。", len(results))
@@ -241,7 +245,7 @@ def parse_prompt_plans(markdown_text: str) -> list[PromptPlan]:
             _warn_missing_fields(field_map, expected=ROLE4_FIELDS, contract_name="role4", heading=shot_id)
             results.append(PromptPlan(
                 shot_id=shot_id,
-                subject_kind=field_map.get("subject_kind", "character"),
+                subject_kind=field_map.get("subject_kind", "human"),
                 keyframe_prompt_start_zh=field_map.get("keyframe_prompt_start_zh", ""),
                 keyframe_prompt_start_en=field_map.get("keyframe_prompt_start_en", ""),
                 keyframe_prompt_end_zh=field_map.get("keyframe_prompt_end_zh", ""),
@@ -267,12 +271,15 @@ def parse_prompt_plans(markdown_text: str) -> list[PromptPlan]:
                     if val:
                         merged[f].append(val)
 
-            # 多主体各格子类型一致，取第一个非空 subject_kind
-            subject_kind = "character"
+            # 多主体优先级：human > animal > object > scene
+            subject_kind = "human"
+            priority = {"human": 0, "animal": 1, "object": 2, "scene": 3}
+            best_priority = 999
             for val in merged.get("subject_kind", []):
-                if str(val).strip():
-                    subject_kind = str(val).strip()
-                    break
+                v = str(val).strip().lower()
+                if v in priority and priority[v] < best_priority:
+                    best_priority = priority[v]
+                    subject_kind = v
 
             results.append(PromptPlan(
                 shot_id=shot_id,

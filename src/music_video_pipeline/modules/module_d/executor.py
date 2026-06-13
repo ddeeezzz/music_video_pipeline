@@ -35,12 +35,13 @@ except ImportError:
     Image = None  # type: ignore[assignment]
 
 
-# 常量：模板画布固定宽高，与 Remotion 模板工程对齐。
-_TEMPLATE_WIDTH = 512
-_TEMPLATE_HEIGHT = 320
-# 常量：符号占画布比例（多主体模板，基于单格宽度 visible_cell_count=3）。
-_GRID_WIDTH_RATIO = 0.28   # 每格约 512*0.28 ≈ 143px，小于 170px 单格宽度
-_GRID_HEIGHT_RATIO = 0.80  # 320*0.80 = 256px 纵向空间
+# 常量：模板画布固定宽高（1920×1200 16:10），与 Remotion 模板工程对齐。
+_TEMPLATE_WIDTH = 1920
+_TEMPLATE_HEIGHT = 1200
+# 常量：符号占画布比例（多主体模板，基于单格宽度 visible_cell_count=3，格子比例 3:4）。
+# 每个格子宽度 = 1920/3 = 640，取 0.28 ≈ 538px 留边距；高度按 3:4 比例 = 538/(3/4) ≈ 717px
+_GRID_WIDTH_RATIO = 0.28   # 每格约 1920*0.28 ≈ 538px
+_GRID_HEIGHT_RATIO = round(0.28 / (3.0 / 4.0), 2)  # 538/717 ≈ 0.37，按 3:4 比例
 # 常量：检测白底的亮度阈值（0-255），高于此值的像素视为白底。
 _WHITE_THRESHOLD = 200
 
@@ -339,6 +340,11 @@ def _render_unit_via_remotion(context: RuntimeContext, unit: ModuleDUnit) -> dic
         "motion": {"breathe": True},
     }
 
+    # 传递 subject_kind 给 Remotion（object 类型触发缓慢旋转效果）
+    sk = str(unit.shot.get("subject_kind", "") or "").strip().lower()
+    if sk:
+        props["subject_kind"] = sk
+
     props_dir = context.artifacts_dir / "template_requests"
     props_dir.mkdir(parents=True, exist_ok=True)
     props_path = props_dir / f"{unit.unit_id}.{remotion_id}.json"
@@ -520,8 +526,8 @@ def _render_one_unit_transition_template(
                 uri = fp.resolve().as_uri()
                 extra_frames.append({"src": uri, "width_ratio": 1.0, "height_ratio": 1.0})
 
-    # travel_px：TiltUp/TiltDown 使用高度 320，PanRight 使用宽度 512
-    travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+    # travel_px：TiltUp/TiltDown 使用高度 1200，PanRight 使用宽度 1920
+    travel_px = 1920 if remotion_id == "PanRightTemplate" else 1200
 
     props: dict[str, Any] = {
         "template": remotion_id,
@@ -566,7 +572,9 @@ def _render_one_unit_transition_template(
 
 def _trim_white_to_transparent(src_path: Path, output_dir: Path, target_w: int, target_h: int) -> Path:
     """
-    功能说明：将图片白底转为透明，裁剪有效内容并缩放到目标尺寸。
+    功能说明：从原图中心按 3:4 比例裁切并缩放至目标尺寸。
+    不走白底变透明，直接取中心区域——GridTemplate 的格子比例固定为 3:4，
+    ToonCrafter 输出的放大重绘图取中心 3:4 区域即可得到正确的格子画面。
     参数说明：
     - src_path: 原始 PNG 路径。
     - output_dir: 处理后图片输出目录。
@@ -585,28 +593,21 @@ def _trim_white_to_transparent(src_path: Path, output_dir: Path, target_w: int, 
     try:
         with Image.open(src_path) as img:
             rgba = img.convert("RGBA")
-            pixels = rgba.load()
             w, h = rgba.size
-            # 将白/灰像素(各通道均 > threshold)设为透明
-            threshold = _WHITE_THRESHOLD
-            for y in range(h):
-                for x in range(w):
-                    r, g, b, a = pixels[x, y]  # type: ignore[misc]
-                    if r > threshold and g > threshold and b > threshold:
-                        pixels[x, y] = (r, g, b, 0)  # type: ignore[index]
-            # 裁剪非透明区域边界
-            min_x, min_y, max_x, max_y = w, h, 0, 0
-            for y in range(h):
-                for x in range(w):
-                    _, _, _, a = pixels[x, y]  # type: ignore[misc]
-                    if a > 0:
-                        min_x = min(min_x, x)
-                        min_y = min(min_y, y)
-                        max_x = max(max_x, x)
-                        max_y = max(max_y, y)
-            if max_x > min_x and max_y > min_y:
-                rgba = rgba.crop((min_x, min_y, max_x + 1, max_y + 1))
-            # 缩放到目标尺寸
+            # 取中心 3:4 区域：宽 3 : 高 4
+            crop_ratio = 3.0 / 4.0
+            img_ratio = w / h
+            if img_ratio > crop_ratio:
+                # 图更宽 → 以高度为基准，取中心 3:4 宽的区域
+                crop_w = int(round(h * crop_ratio))
+                crop_h = h
+            else:
+                # 图更高或等比例 → 以宽度为基准，取中心 3:4 高的区域
+                crop_w = w
+                crop_h = int(round(w / crop_ratio))
+            left = (w - crop_w) // 2
+            top = (h - crop_h) // 2
+            rgba = rgba.crop((left, top, left + crop_w, top + crop_h))
             rgba = rgba.resize((int(target_w), int(target_h)), Image.LANCZOS)
             rgba.save(out_path, "PNG")
         return out_path

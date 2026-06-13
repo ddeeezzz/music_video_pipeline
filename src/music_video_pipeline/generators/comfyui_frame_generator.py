@@ -8,6 +8,8 @@
 
 # 标准库：用于日志输出。
 import logging
+# 标准库：用于系统相关（路径分隔符等）。
+import os
 # 标准库：用于正则解析。
 import re
 # 标准库：用于文件复制。
@@ -26,8 +28,8 @@ from music_video_pipeline.comfyui import (
     load_workflow_contract,
     render_workflow_from_contract,
 )
-# 项目内模块：Windows 路径回映射。
-from music_video_pipeline.task_audio_path import remap_windows_absolute_path
+# 项目内模块：跨平台 ComfyUI 路径解析。
+from music_video_pipeline.task_audio_path import resolve_comfyui_root_dir
 
 
 class ComfyUIFrameGenerator:
@@ -48,12 +50,7 @@ class ComfyUIFrameGenerator:
         project_root = Path(__file__).resolve().parents[3]
         comfyui_cfg = app_config.comfyui
         self._project_root = project_root
-        comfyui_root_text = str(comfyui_cfg.root_dir)
-        remapped_root = remap_windows_absolute_path(workspace_root=project_root, path_text=comfyui_root_text)
-        if remapped_root is not None:
-            resolved_root = remapped_root
-        else:
-            resolved_root = (project_root / comfyui_root_text).resolve()
+        resolved_root = resolve_comfyui_root_dir(workspace_root=project_root, root_dir_raw=str(comfyui_cfg.root_dir))
         self._client = ComfyUIClient(
             ComfyUIServiceOptions(
                 root_dir=resolved_root,
@@ -100,14 +97,10 @@ class ComfyUIFrameGenerator:
 
     @staticmethod
     def _assemble_prompt(cfg: Any, prompt_body: str, subject_kind: str = "character") -> str:
-        """组装正向提示词：前缀 + LLM 输出主体 + （可选后缀）。
-        场景类主体跳过后缀中的白色背景约束，避免与场景描述冲突。"""
+        """组装正向提示词：前缀 + LLM 输出主体 + 后缀。所有主体类型都加后缀，场景也不例外。"""
         prefix = str(getattr(cfg, "prompt_prefix", "").strip())
         suffix = str(getattr(cfg, "prompt_suffix", "").strip())
-        parts = [p for p in [prefix, prompt_body] if p]
-        normalized_kind = str(subject_kind or "character").strip().lower()
-        if normalized_kind != "scene" and suffix:
-            parts.append(suffix)
+        parts = [p for p in [prefix, prompt_body, suffix] if p]
         return "\n".join(parts)
 
     def generate_one(
@@ -168,7 +161,7 @@ class ComfyUIFrameGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
         comfyui_cfg = self._config.module_c.comfyui
         asset_kind = _resolve_asset_kind(shot=shot)
-        contract_start, contract_end = self._resolve_contract_pair(asset_kind=asset_kind)
+        contract_start, contract_end = self._contract_start, self._contract_end
         checkpoint_name = Path(str(comfyui_cfg.checkpoint_file)).name
 
         # 解析 seg 序号与资产序号，构建文件名前缀。
@@ -186,11 +179,15 @@ class ComfyUIFrameGenerator:
             category_folder="lora",
         )
 
+        # CenterTemplate 使用低噪声（0.55），其余模板使用配置值
+        remotion_id = str(shot.get("remotion_id", "") or "")
+        is_center_template = "CenterTemplate" in remotion_id
+        end_denoise = 0.55 if is_center_template else float(comfyui_cfg.end_denoise)
+
         workflow_start = render_workflow_from_contract(
             contract=contract_start,
             binding_values=self._build_binding_values(
-                asset_kind=asset_kind,
-                checkpoint_name=checkpoint_name,
+                               checkpoint_name=checkpoint_name,
                 scene_lora_name=scene_lora_name,
                 char_lora_name=char_lora_name,
                 positive_prompt=prompt_start,
@@ -199,8 +196,7 @@ class ComfyUIFrameGenerator:
                 height=height,
                 seed=self._seed,
                 filename_prefix=f"{file_prefix}/start",
-                subject_kind=shot_subject_kind,
-            ),
+                           ),
         )
         start_outputs = self._client.execute_prompt(
             workflow_prompt=workflow_start,
@@ -217,33 +213,45 @@ class ComfyUIFrameGenerator:
             image_path_start, prefix=f"{shot_id}_end_init"
         )
 
-        workflow_end = render_workflow_from_contract(
-            contract=contract_end,
-            binding_values=self._build_binding_values(
-                asset_kind=asset_kind,
-                checkpoint_name=checkpoint_name,
-                scene_lora_name=scene_lora_name,
-                char_lora_name=char_lora_name,
-                positive_prompt=prompt_end,
-                negative_prompt=negative_prompt_end or str(comfyui_cfg.negative_prompt),
-                width=width,
-                height=height,
-                seed=self._seed,
-                filename_prefix=f"{file_prefix}/end",
-                init_image=staged_init_path,
-                denoise=comfyui_cfg.end_denoise,
-                subject_kind=shot_subject_kind,
-            ),
+        # object + CenterTemplate：首尾帧相同，直接复制首帧到尾帧，跳过二次生成
+        subject_kind = str(shot.get("subject_kind", "") or "").strip().lower()
+        remotion_id = str(shot.get("remotion_id", "") or "")
+        skip_end_generation = (
+            "CenterTemplate" in remotion_id and subject_kind == "object"
         )
-        end_outputs = self._client.execute_prompt(
-            workflow_prompt=workflow_end,
-            output_node_id=contract_end.output_node_id,
-        )
-        if not end_outputs:
-            raise RuntimeError(f"模块C ComfyUI 生成失败：末关键帧未返回产物，shot_id={shot_id}")
+        if skip_end_generation:
+            image_path_end = output_dir / f"{shot_id}_end.png"
+            shutil.copy2(start_outputs[0], image_path_end)
+            self._logger.info(
+                "模块C ComfyUI 跳过尾帧生成（object+CenterTemplate），直接复制首帧，shot_id=%s",
+                shot_id,
+            )
+        else:
+            workflow_end = render_workflow_from_contract(
+                contract=contract_end,
+                binding_values=self._build_binding_values(
+                                   checkpoint_name=checkpoint_name,
+                    scene_lora_name=scene_lora_name,
+                    char_lora_name=char_lora_name,
+                    positive_prompt=prompt_end,
+                    negative_prompt=negative_prompt_end or str(comfyui_cfg.negative_prompt),
+                    width=width,
+                    height=height,
+                    seed=self._seed,
+                    filename_prefix=f"{file_prefix}/end",
+                    init_image=staged_init_path,
+                    denoise=end_denoise,
+                               ),
+            )
+            end_outputs = self._client.execute_prompt(
+                workflow_prompt=workflow_end,
+                output_node_id=contract_end.output_node_id,
+            )
+            if not end_outputs:
+                raise RuntimeError(f"模块C ComfyUI 生成失败：末关键帧未返回产物，shot_id={shot_id}")
 
-        image_path_end = output_dir / f"{shot_id}_end.png"
-        shutil.copy2(end_outputs[0], image_path_end)
+            image_path_end = output_dir / f"{shot_id}_end.png"
+            shutil.copy2(end_outputs[0], image_path_end)
 
         start_time = float(shot["start_time"])
         end_time = float(shot["end_time"])
@@ -318,7 +326,7 @@ class ComfyUIFrameGenerator:
         output_dir.mkdir(parents=True, exist_ok=True)
         comfyui_cfg = self._config.module_c.comfyui
         asset_kind = _resolve_asset_kind(shot=shot)
-        contract_start, contract_end = self._resolve_contract_pair(asset_kind=asset_kind)
+        contract_start, contract_end = self._contract_start, self._contract_end
         checkpoint_name = Path(str(comfyui_cfg.checkpoint_file)).name
 
         big_seg = str(shot.get("big_segment_id", "")).strip()
@@ -334,6 +342,11 @@ class ComfyUIFrameGenerator:
             asset_file=str(comfyui_cfg.char_lora_file),
             category_folder="lora",
         )
+
+        # CenterTemplate 使用低噪声（0.55），其余模板使用配置值
+        remotion_id = str(shot.get("remotion_id", "") or "")
+        is_center_template = "CenterTemplate" in remotion_id
+        end_denoise = 0.55 if is_center_template else float(comfyui_cfg.end_denoise)
 
         raw_prompt_start = str(shot.get("keyframe_prompt_start_en", "")).strip()
         raw_prompt_end = str(shot.get("keyframe_prompt_end_en", "")).strip()
@@ -363,8 +376,7 @@ class ComfyUIFrameGenerator:
             workflow_prompt = render_workflow_from_contract(
                 contract=contract_start,
                 binding_values=self._build_binding_values(
-                    asset_kind=asset_kind,
-                    checkpoint_name=checkpoint_name,
+                                       checkpoint_name=checkpoint_name,
                     scene_lora_name=scene_lora_name,
                     char_lora_name=char_lora_name,
                     positive_prompt=prompt_start,
@@ -373,8 +385,7 @@ class ComfyUIFrameGenerator:
                     height=height,
                     seed=self._seed,
                     filename_prefix=f"{file_prefix}/start",
-                    subject_kind=shot_subject_kind,
-                ),
+                                   ),
             )
             outputs = self._client.execute_prompt(
                 workflow_prompt=workflow_prompt,
@@ -410,6 +421,33 @@ class ComfyUIFrameGenerator:
             raise RuntimeError(
                 f"模块C ComfyUI 尾帧生成失败：缺失尾帧提示词，shot_id={shot_id}"
             )
+        # object + CenterTemplate：尾帧直接复制首帧，跳过生成
+        remotion_id = str(shot.get("remotion_id", "") or "")
+        subject_kind = str(shot.get("subject_kind", "") or "").strip().lower()
+        if "CenterTemplate" in remotion_id and subject_kind == "object":
+            start_frame_path = output_dir / f"{shot_id}_start.png"
+            if start_frame_path.exists():
+                image_path = output_dir / f"{shot_id}_end.png"
+                shutil.copy2(start_frame_path, image_path)
+                self._logger.info(
+                    "模块C ComfyUI 跳过尾帧生成（object+CenterTemplate），直接复制首帧，shot_id=%s",
+                    shot_id,
+                )
+                return {
+                    "shot_id": shot_id,
+                    "frame_type": "end",
+                    "frame_path": str(image_path),
+                    "frame_path_start": str(start_frame_path),
+                    "frame_path_end": str(image_path),
+                    "keyframe_prompt_start_zh": keyframe_prompt_start_zh,
+                    "keyframe_prompt_start_en": prompt_start,
+                    "keyframe_prompt_end_zh": keyframe_prompt_end_zh,
+                    "keyframe_prompt_end_en": prompt_end,
+                    "video_prompt_zh": video_prompt_zh,
+                    "video_prompt_en": video_prompt_en,
+                    "scene_desc": str(shot.get("scene_desc", "")),
+                }
+
         # 单帧重跑时，从磁盘读取已存在的首帧图作为 img2img init
         start_frame_path = output_dir / f"{shot_id}_start.png"
         if start_frame_path.exists():
@@ -425,8 +463,7 @@ class ComfyUIFrameGenerator:
         workflow_prompt = render_workflow_from_contract(
             contract=contract_end,
             binding_values=self._build_binding_values(
-                asset_kind=asset_kind,
-                checkpoint_name=checkpoint_name,
+                               checkpoint_name=checkpoint_name,
                 scene_lora_name=scene_lora_name,
                 char_lora_name=char_lora_name,
                 positive_prompt=prompt_end,
@@ -436,9 +473,8 @@ class ComfyUIFrameGenerator:
                 seed=self._seed,
                 filename_prefix=f"{file_prefix}/end",
                 init_image=staged_init_path_end,
-                denoise=comfyui_cfg.end_denoise if staged_init_path_end else None,
-                subject_kind=shot_subject_kind,
-            ),
+                denoise=end_denoise if staged_init_path_end else None,
+                           ),
         )
         outputs = self._client.execute_prompt(
             workflow_prompt=workflow_prompt,
@@ -464,18 +500,9 @@ class ComfyUIFrameGenerator:
             "scene_desc": str(shot.get("scene_desc", "")),
         }
 
-    def _resolve_contract_pair(self, asset_kind: str):
-        """
-        功能说明：返回 start/end 工作流契约。
-        返回值：
-        - tuple[object, object]: 依次为 start/end 契约对象。
-        """
-        return self._contract_start, self._contract_end
-
     def _build_binding_values(
         self,
         *,
-        asset_kind: str,
         checkpoint_name: str,
         scene_lora_name: str,
         char_lora_name: str,
@@ -487,13 +514,10 @@ class ComfyUIFrameGenerator:
         filename_prefix: str,
         init_image: str | None = None,
         denoise: float | None = None,
-        subject_kind: str = "character",
     ) -> dict[str, Any]:
         """
         功能说明：构建一次 ComfyUI workflow 渲染所需的绑定值字典。
         参数说明：
-        - asset_kind: 素材类型。
-        - subject_kind: 主体类型（character/scene），场景类主体跳过角色 LoRA。
         - checkpoint_name: checkpoint 文件名。
         - scene_lora_name: 场景 LoRA 相对名。
         - char_lora_name: 角色 LoRA 相对名。
@@ -529,12 +553,8 @@ class ComfyUIFrameGenerator:
         else:
             binding_values["init_image"] = init_image
             binding_values["denoise"] = float(denoise if denoise is not None else comfyui_cfg.end_denoise)
-        normalized_sk = str(subject_kind or "character").strip().lower()
         binding_values["char_lora_name"] = char_lora_name
-        if asset_kind == "character" and normalized_sk != "scene":
-            binding_values["char_lora_strength_model"] = float(comfyui_cfg.char_lora_strength)
-        else:
-            binding_values["char_lora_strength_model"] = 0.0
+        binding_values["char_lora_strength_model"] = float(comfyui_cfg.char_lora_strength)
         return binding_values
 
 
@@ -545,7 +565,7 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
     - asset_file: 模型文件路径。
     - category_folder: 目录锚点名称，如 lora。
     返回值：
-    - str: 相对于 ComfyUI 搜索根目录的相对路径（使用正斜杠分隔符以兼容 Linux ComfyUI，亦适用于 Windows）。
+    - str: 相对于 ComfyUI 搜索根目录的相对路径（Windows 反斜杠 / Linux 正斜杠）。
     异常说明：无。
     边界条件：当无法识别目录锚点时退回文件名。
     """
@@ -555,7 +575,7 @@ def _resolve_catalog_asset_name(asset_file: str, category_folder: str) -> str:
             continue
         relative_parts = parts[index + 1 :]
         if relative_parts:
-            return "/".join(relative_parts)
+            return "\\".join(relative_parts) if os.name == "nt" else "/".join(relative_parts)
     return Path(str(asset_file)).name
 
 

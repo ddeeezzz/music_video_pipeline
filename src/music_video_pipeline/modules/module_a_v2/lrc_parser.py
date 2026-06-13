@@ -15,6 +15,26 @@ from typing import Any
 from music_video_pipeline.modules.module_a_v2.utils.time_utils import round_time
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """
+    功能说明：将任意值安全转换为浮点数。
+    参数说明：
+    - value: 待转换对象。
+    - default: 转换失败时的默认值。
+    返回值：
+    - float: 有效浮点数。
+    异常说明：异常在函数内部吞并。
+    边界条件：NaN/inf 回退 default。
+    """
+    try:
+        number = float(value)
+    except Exception:  # noqa: BLE001
+        return float(default)
+    if number != number or number in {float("inf"), float("-inf")}:
+        return float(default)
+    return number
+
+
 # 常量：LRC 行时间戳提取规则
 LRC_TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]")
 # 常量：LRC 元信息行识别规则
@@ -75,13 +95,18 @@ def parse_synced_lyrics_to_sentence_units(synced_lyrics: str, audio_duration: fl
             if index + 1 < len(parsed_rows):
                 next_start = float(parsed_rows[index + 1]["start_time"])
             end_time = round_time(max(start_time, min(safe_audio_duration, next_start)))
+            # 如果有词级时间戳，句尾裁剪到最后一个词级 token 的右边界
+            token_units = list(item.get("token_units", [])) if isinstance(item.get("token_units", []), list) else []
+            if token_units:
+                last_token_end = _safe_float(token_units[-1].get("end_time", end_time), end_time)
+                end_time = round_time(min(end_time, max(start_time, last_token_end)))
             sentence_units.append(
                 {
                     "start_time": start_time,
                     "end_time": end_time,
                     "text": str(item["text"]).strip(),
                     "confidence": DEFAULT_LRCLIB_CONFIDENCE,
-                    "token_units": list(item.get("token_units", [])) if isinstance(item.get("token_units", []), list) else [],
+                    "token_units": token_units,
                     "source_sentence_index": index,
                     "unit_transform": "original",
                 }

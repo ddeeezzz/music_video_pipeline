@@ -600,6 +600,12 @@ export function TaskModuleDPage() {
   const [transitionBg, setTransitionBg] = useState("");
   const [savedMode, setSavedMode] = useState("slow");
   const [hasSavedMode, setHasSavedMode] = useState(false);
+  const [rebuildSelectionOpen, setRebuildSelectionOpen] = useState(false);
+  const [selectedSegments, setSelectedSegments] = useState<Set<string>>(new Set());
+  const [rebuildFinalVideoUrl, setRebuildFinalVideoUrl] = useState<string | null>(null);
+  const [rebuildSubmitted, setRebuildSubmitted] = useState(false);
+  const [audioCandidates, setAudioCandidates] = useState<AudioCandidate[]>([]);
+  const [selectedAudioPath, setSelectedAudioPath] = useState<string>("");
 
   const { data } = useQuery({
     queryKey: taskQueryKeys.moduleD(taskId),
@@ -776,12 +782,6 @@ export function TaskModuleDPage() {
     },
   });
 
-  const [rebuildSelectionOpen, setRebuildSelectionOpen] = useState(false);
-  const [selectedSegments, setSelectedSegments] = useState<Set<string>>(new Set());
-  const [rebuildFinalVideoUrl, setRebuildFinalVideoUrl] = useState<string | null>(null);
-  const [rebuildSubmitted, setRebuildSubmitted] = useState(false);
-  const [audioCandidates, setAudioCandidates] = useState<AudioCandidate[]>([]);
-  const [selectedAudioPath, setSelectedAudioPath] = useState<string>("");
   const rebuildMutation = useMutation({
     mutationFn: ({ segmentIds, audioPath }: { segmentIds: string[]; audioPath?: string }) =>
       rebuildModuleDFinal(taskId, segmentIds, audioPath),

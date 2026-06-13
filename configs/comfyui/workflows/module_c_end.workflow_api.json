@@ -97,6 +97,47 @@
       "title": "VAE解码"
     }
   },
+  "60": {
+    "inputs": {
+      "model_name": "RealESRGAN_x4plus_anime_6B.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "放大模型"
+    }
+  },
+  "61": {
+    "inputs": {
+      "upscale_model": [
+        "60",
+        0
+      ],
+      "image": [
+        "50",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "高清重绘"
+    }
+  },
+  "85": {
+    "inputs": {
+      "image": [
+        "61",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1920,
+      "height": 1200,
+      "crop": "center"
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "缩放到FHD"
+    }
+  },
   "160": {
     "inputs": {
       "vae_name": "qwen_image_vae.safetensors"
@@ -159,7 +200,7 @@
     "inputs": {
       "filename_prefix": "mvpl/module_c_end",
       "images": [
-        "50",
+        "85",
         0
       ]
     },

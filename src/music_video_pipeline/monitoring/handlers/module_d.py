@@ -806,6 +806,12 @@ class ModuleDHandlers:
         task_dir = self._resolve_task_dir(task_id=task_id)
         frames_dir = task_dir / "artifacts" / "frames"
         payload = self._build_module_d_payload(task_id=task_id)
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] _build_remotion_request_props 开始，task_id=%s，segment_id=%s，frame_type=%s，segments_count=%s",
+                task_id, segment_id, frame_type, len(payload.get("segments", [])),
+            )
         segments = payload.get("segments", [])
 
         # 找到目标 segment
@@ -853,6 +859,12 @@ class ModuleDHandlers:
             "rhythm_tension": rhythm_tension,
         }
 
+        if logger:
+            logger.info(
+                "[模块D] _build_remotion_request_props props 构建完成，template=%s",
+                remotion_id,
+            )
+        
         if remotion_id == "CenterTemplate":
             first_shot = target_shots[0]
             sid = str(first_shot.get("shot_id", "")).strip()
@@ -956,7 +968,7 @@ class ModuleDHandlers:
                 **base_props,
                 "scene_before": {"background": bf_bg, "symbol": bf_sym},
                 "scene_after": {"background": {"kind": "solid", "color": "#ffffff"}, "symbol": _make_symbol(scene_after_src, 1.0, 1.0)},
-                "motion": {"travel_px": 512 if remotion_id == "PanRightTemplate" else 320, "easing": "ease_in_out"},
+                "motion": {"travel_px": 1920 if remotion_id == "PanRightTemplate" else 1080, "easing": "ease_in_out"},
             }
             if extra_frames:
                 result["frames"] = extra_frames
@@ -984,7 +996,7 @@ class ModuleDHandlers:
             }
             if remotion_id == "GridTemplate":
                 result["layout"] = {"visible_cell_count": 3}
-                result["motion"] = {"active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 72}
+                result["motion"] = {"active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 240}
             else:
                 result["layout"] = {"visible_cell_count": 3}
                 result["motion"] = {"loop": False}
@@ -1021,6 +1033,12 @@ class ModuleDHandlers:
         if frame_type not in ("start", "end", "both"):
             return {"ok": False, "error": "frame_type 必须为 start / end / both。"}, HTTPStatus.BAD_REQUEST
 
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] rerun handler 收到请求，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
         rerun_key = _build_module_d_rerun_key(task_id, segment_id) + f"_{frame_type}"
         active_thread = self._rerun_threads.get(rerun_key)
         if active_thread and active_thread.is_alive():
@@ -1112,6 +1130,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             # 1. 构建 Remotion props
@@ -1302,6 +1325,12 @@ class ModuleDHandlers:
         segment_id = str(query.get("segment_id", [""])[0]).strip()
         transition_bg_raw = str(query.get("transition_bg", [""])[0]).strip()
         transition_bg: str | None = transition_bg_raw if transition_bg_raw in ("white", "black") else None
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 首尾帧重跑请求已到达，task_id=%s，segment_id=%s，transition_bg=%s",
+                task_id, segment_id, transition_bg,
+            )
         return self._handle_module_d_rerun(
             task_id=task_id, segment_id=segment_id, frame_type="both", transition_bg=transition_bg,
         )
@@ -1395,6 +1424,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             for seg in segments:
@@ -1609,6 +1643,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             task_dir = self._resolve_task_dir(task_id=task_id)
@@ -1830,7 +1869,7 @@ class ModuleDHandlers:
                     before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
                 base_props["scene_before"] = {
                     "background": bf_bg, "symbol": before_src,
                 }
@@ -1843,7 +1882,7 @@ class ModuleDHandlers:
                     before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
                 base_props["scene_before"] = {
                     "background": bf_bg, "symbol": before_src,
                 }
@@ -1875,7 +1914,7 @@ class ModuleDHandlers:
                 base_props["layout"] = {"visible_cell_count": 3}
                 if remotion_id == "GridTemplate":
                     base_props["motion"] = {
-                        "active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 72,
+                        "active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 240,
                     }
                 else:
                     base_props["motion"] = {"loop": False}
@@ -1972,6 +2011,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             for seg in segments:
@@ -2163,6 +2207,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             task_dir = self._resolve_task_dir(task_id=task_id)
@@ -2289,7 +2338,7 @@ class ModuleDHandlers:
                     before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
                 base_props["scene_before"] = {
                     "background": bf_bg, "symbol": before_src,
                 }
@@ -2302,7 +2351,7 @@ class ModuleDHandlers:
                     before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 512 if remotion_id == "PanRightTemplate" else 320
+                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
                 base_props["scene_before"] = {
                     "background": bf_bg, "symbol": before_src,
                 }
@@ -2333,7 +2382,7 @@ class ModuleDHandlers:
                 base_props["layout"] = {"visible_cell_count": 3}
                 if remotion_id == "GridTemplate":
                     base_props["motion"] = {
-                        "active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 72,
+                        "active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 240,
                     }
                 else:
                     base_props["motion"] = {"loop": False}
@@ -2418,6 +2467,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             for seg in segments:
@@ -2598,6 +2652,11 @@ class ModuleDHandlers:
             meta["status"] = "running"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
+                task_id, segment_id, frame_type,
+            )
 
         try:
             task_dir = self._resolve_task_dir(task_id=task_id)

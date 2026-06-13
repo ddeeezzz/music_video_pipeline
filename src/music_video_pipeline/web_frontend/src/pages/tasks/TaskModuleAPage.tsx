@@ -8,6 +8,7 @@ import {
   ReloadOutlined,
   RightOutlined,
   SearchOutlined,
+  SoundOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
@@ -36,6 +37,7 @@ import {
 } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
 import { ModuleAVisualization } from "@/features/moduleA/visualization/ModuleAVisualization";
+import { CorrectFunasrModal } from "@/features/moduleA/CorrectFunasrModal";
 import { useTaskIdParam } from "@/hooks/useTaskIdParam";
 import type {
   TaskModuleALyricCandidate,
@@ -146,6 +148,9 @@ function buildLyricPreviewRows(
   const originalLines = parseLyricDisplayLines(originalText);
   const translatedLines = parseLyricDisplayLines(translatedText);
   const romanizedLines = parseLyricDisplayLines(romanizedText);
+  console.log("[buildLyricPreviewRows] originalLines[0]:", JSON.stringify(originalLines[0]), "originalLines.length:", originalLines.length);
+  console.log("[buildLyricPreviewRows] translatedLines[0]:", JSON.stringify(translatedLines[0]));
+  console.log("[buildLyricPreviewRows] romanizedLines[0]:", JSON.stringify(romanizedLines[0]));
   const baseLines = wordTimedLines.length
     ? wordTimedLines
     : originalLines.map((line) => ({
@@ -159,8 +164,9 @@ function buildLyricPreviewRows(
   return baseLines.map((line, index) => {
     const timeKey = buildLyricTimeKey(line.timeLabel, index);
     const matchedOriginalLine = originalLineMap.get(timeKey);
-    const matchedTranslatedLine = translatedLineMap.get(timeKey);
-    const matchedRomanizedLine = romanizedLineMap.get(timeKey);
+    // 若按时间戳匹配失败（如纯文本翻译），则回退到按行号 index 匹配
+    const matchedTranslatedLine = translatedLineMap.get(timeKey) || translatedLineMap.get(`index:${index}`);
+    const matchedRomanizedLine = romanizedLineMap.get(timeKey) || romanizedLineMap.get(`index:${index}`);
     return {
       timeLabel: line.timeLabel || matchedOriginalLine?.timeLabel || "",
       originalText: matchedOriginalLine?.text || line.text || "",
@@ -173,6 +179,49 @@ function buildLyricPreviewRows(
 
 function buildTokenTimestampText(token: LyricTokenUnit): string {
   return `${token.start} - ${token.end}`;
+}
+
+const LRC_TIME_PATTERN = /\[\d{2}:\d{2}(?:\.\d{1,3})?\]/g;
+const NON_WORD_PATTERN = /[\s\-_/|:：·,，.。!！?？'"]+/g;
+
+function stripLrcTimestamps(text: string): string {
+  return text.replace(LRC_TIME_PATTERN, "").trim();
+}
+
+function normalizeLyricsForCompare(text: string): string {
+  return stripLrcTimestamps(text).replace(NON_WORD_PATTERN, "").toLowerCase();
+}
+
+function computeLyricsSimilarity(textA: string, textB: string): number {
+  const cleanA = normalizeLyricsForCompare(textA);
+  const cleanB = normalizeLyricsForCompare(textB);
+  if (!cleanA || !cleanB || cleanA.length < 10 || cleanB.length < 10) return 0;
+  const setA = new Set(cleanA);
+  const setB = new Set(cleanB);
+  let common = 0;
+  for (const c of setA) { if (setB.has(c)) common++; }
+  return Math.round((2 * common * 100) / (setA.size + setB.size));
+}
+
+const MISSING_FIELD_LABELS = {
+  word_timed_lyrics: "逐字时间戳",
+  translated_lyrics: "翻译",
+  romanized_lyrics: "罗马音",
+};
+
+function getMissingFieldLabels(candidate: TaskModuleALyricCandidate | null): string[] {
+  if (!candidate) return [];
+  const labels: string[] = [];
+  if (!candidate.has_word_timed_lyrics) labels.push(MISSING_FIELD_LABELS.word_timed_lyrics);
+  if (!candidate.has_translated_lyrics) labels.push(MISSING_FIELD_LABELS.translated_lyrics);
+  if (!candidate.has_romanized_lyrics) labels.push(MISSING_FIELD_LABELS.romanized_lyrics);
+  return labels;
+}
+
+function getAvailableMergeFields(detail: { word_timed_lyrics: string; translated_lyrics: string; romanized_lyrics: string } | null, missingLabels: string[]): string[] {
+  if (!detail) return [];
+  const map: Record<string, keyof typeof detail> = { "逐字时间戳": "word_timed_lyrics", "翻译": "translated_lyrics", "罗马音": "romanized_lyrics" };
+  return missingLabels.filter((label) => { const key = map[label]; return key && Boolean(String(detail[key] || "").trim()); });
 }
 
 function renderEmbeddedMetadata(trace?: TaskModuleAMetadataTrace | null): ReactNode {
@@ -350,6 +399,26 @@ export function TaskModuleAPage() {
   const [viewportWidth, setViewportWidth] = useState<number>(() => window.innerWidth);
   const [viewportHeight, setViewportHeight] = useState<number>(() => window.innerHeight);
   const hasUserPickedCandidateRef = useRef(false);
+  const [rowIndices, setRowIndices] = useState<number[][]>([]);
+  const [savedCandidates, setSavedCandidates] = useState<TaskModuleALyricCandidate[]>([]);
+  const [correctFunasrOpen, setCorrectFunasrOpen] = useState(false);
+  const [mergeSourceModalOpen, setMergeSourceModalOpen] = useState(false);
+  const [mergeFieldSelectOpen, setMergeFieldSelectOpen] = useState(false);
+  const [mergeInspectedCandidate, setMergeInspectedCandidate] = useState<TaskModuleALyricCandidate | null>(null);
+  const [mergeInspectedSynced, setMergeInspectedSynced] = useState("");
+  const [mergeInspectedWordTimed, setMergeInspectedWordTimed] = useState("");
+  const [mergeInspectedTranslated, setMergeInspectedTranslated] = useState("");
+  const [mergeInspectedRomanized, setMergeInspectedRomanized] = useState("");
+  const [mergeInspecting, setMergeInspecting] = useState(false);
+  const [mergeSimilarity, setMergeSimilarity] = useState(0);
+  const [mergeInspectedAvailable, setMergeInspectedAvailable] = useState<string[]>([]);
+  const [mergeSelectedFields, setMergeSelectedFields] = useState<Set<string>>(new Set());
+  const [mergeMissingFields, setMergeMissingFields] = useState<string[]>([]);
+  const [compareModalOpen, setCompareModalOpen] = useState(false);
+  const [mergeCompareRows, setMergeCompareRows] = useState<Array<{timeLabel:string;original:string;romanized:string;translated:string;tokens:LyricTokenUnit[]}>>([]);
+  const [candTransOffset, setCandTransOffset] = useState(0);
+  const [savedRowsData, setSavedRowsData] = useState<Array<{ timeLabel: string; original: string; romanized: string; translated: string; tokens: LyricTokenUnit[] }> | null>(null);
+  const [previewRows, setPreviewRows] = useState<Array<{timeLabel:string;originalText:string;romanizedText:string;translatedText:string;tokens:LyricTokenUnit[]}>>([]);
 
   useEffect(() => {
     appLogger.info("模块A页面", "模块 A 可视化页已进入", { taskId });
@@ -442,8 +511,8 @@ export function TaskModuleAPage() {
   });
 
   const selectLyricsMutation = useMutation({
-    mutationFn: ({ candidateId, enable }: { candidateId: string; enable: boolean }) =>
-      selectTaskModuleALyrics(taskId, candidateId, enable),
+    mutationFn: ({ candidateId, enable, rerunMode, lyricsText, artist, title, wordTimedLyrics }: { candidateId: string; enable: boolean; rerunMode?: string; lyricsText?: string; artist?: string; title?: string; wordTimedLyrics?: string }) =>
+      selectTaskModuleALyrics(taskId, candidateId, enable, rerunMode, lyricsText, artist, title, wordTimedLyrics),
     onSuccess: async (payload, variables) => {
       await invalidateTaskScopes();
       setConfirmModalOpen(false);
@@ -451,6 +520,29 @@ export function TaskModuleAPage() {
         setLyricsModalOpen(false);
       }
       message.success(payload.message || (variables.enable ? "模块 A 已按选中歌词开始重跑" : "已联网查找lrc但未启用"));
+      // 轻量重跑：轮询等待子进程完成，显示完成横幅
+      if (variables.enable && variables.rerunMode === "lyrics_only") {
+        const pollInterval = 2000;
+        const maxPolls = 15; // 最长等待 30 秒
+        let pollCount = 0;
+        const pollTimer = setInterval(async () => {
+          pollCount++;
+          try {
+            const moduleAData = await getTaskModuleAData(taskId);
+            if (moduleAData.module_a_status === "done" || moduleAData.task_status === "done") {
+              clearInterval(pollTimer);
+              await invalidateTaskScopes();
+              message.success("轻量重跑完成，模块 A 分段已更新");
+            } else if (pollCount >= maxPolls) {
+              clearInterval(pollTimer);
+            }
+          } catch {
+            if (pollCount >= maxPolls) {
+              clearInterval(pollTimer);
+            }
+          }
+        }, pollInterval);
+      }
     },
     onError: async (mutationError) => {
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleA(taskId) });
@@ -468,6 +560,16 @@ export function TaskModuleAPage() {
       setLyricsPreviewWordTimedText(payload.word_timed_lyrics);
       setLyricsPreviewTranslatedText(payload.translated_lyrics);
       setLyricsPreviewRomanizedText(payload.romanized_lyrics);
+      // 合并三轨 LRC 为统一 previewRows
+      const merged = buildLyricPreviewRows(payload.synced_lyrics, payload.word_timed_lyrics, payload.translated_lyrics, payload.romanized_lyrics);
+      setPreviewRows(merged);
+      const m = getMissingFieldLabels(payload.candidate).filter((label) => {
+        if (label === "逐字时间戳" && !payload.word_timed_lyrics) return true;
+        if (label === "翻译" && !payload.translated_lyrics) return true;
+        if (label === "罗马音" && !payload.romanized_lyrics) return true;
+        return false;
+      });
+      setMergeMissingFields(m);
     },
     onError: (mutationError) => {
       const errorText = mutationError instanceof Error ? mutationError.message : String(mutationError);
@@ -479,17 +581,45 @@ export function TaskModuleAPage() {
     },
   });
 
+  // lyricsPreviewText 变化时重建 rowIndices
+  useEffect(() => {
+    if (lyricsPreviewText) {
+      const lines = lyricsPreviewText.split(/\r?\n/).filter(Boolean);
+      const lrcLines = lines.filter((l) => LRC_LINE_PATTERN.test(l));
+      const n = lrcLines.length;
+      const idx: number[][] = [[n, n, n, n], ...lrcLines.map((_, i) => [i, i, i, i])];
+      setRowIndices(idx);
+    }
+  }, [lyricsPreviewText]);
+
   const networkState = data?.network_lrc_state;
   const cachedProviderGroups = useMemo(
     () => sortProviderGroups(networkState?.provider_groups || []),
     [networkState?.provider_groups],
   );
+  const savedProviderGroup: TaskModuleALyricProviderGroup | null = useMemo(() => {
+    const sorted = [...savedCandidates].sort((a, b) => {
+      const ta = (a as Record<string, unknown>).__saved_at as number || 0;
+      const tb = (b as Record<string, unknown>).__saved_at as number || 0;
+      return tb - ta;
+    });
+    return sorted.length > 0 ? {
+      provider: "saved", display_name: "已保存", candidates: sorted,
+      first_result_at_ms: null, page_size: 20, total_count: sorted.length, has_more: false,
+    } : null;
+  }, [savedCandidates]);
   const hasCachedLyricsResults = Boolean((networkState?.cached_candidates_count || 0) > 0 && cachedProviderGroups.length);
-  const displayProviderGroups = providerGroups.length
-    ? orderProviderGroups(providerGroups, providerOrder)
-    : showCachedResults
-      ? orderProviderGroups(cachedProviderGroups, providerOrder)
-      : [];
+  const displayProviderGroups = (() => {
+    const groups = providerGroups.length
+      ? orderProviderGroups(providerGroups, providerOrder)
+      : showCachedResults
+        ? orderProviderGroups(cachedProviderGroups, providerOrder)
+        : [];
+    if (savedProviderGroup && !groups.find((g) => g.provider === "saved")) {
+      groups.push(savedProviderGroup);
+    }
+    return groups;
+  })();
   const displayCandidates = useMemo(() => flattenCandidates(displayProviderGroups), [displayProviderGroups]);
   const selectedCandidate = useMemo(() => {
     return displayCandidates.find((item) => item.candidate_id === selectedCandidateId) || null;
@@ -502,16 +632,6 @@ export function TaskModuleAPage() {
     return Math.min(desiredWidth, maxViewportWidth);
   }, [displayProviderGroups.length, viewportWidth]);
   const lyricsModalBodyHeight = useMemo(() => Math.max(320, viewportHeight - 260), [viewportHeight]);
-  const lyricsPreviewRows = useMemo(
-    () =>
-      buildLyricPreviewRows(
-        lyricsPreviewText,
-        lyricsPreviewWordTimedText,
-        lyricsPreviewTranslatedText,
-        lyricsPreviewRomanizedText,
-      ),
-    [lyricsPreviewRomanizedText, lyricsPreviewText, lyricsPreviewTranslatedText, lyricsPreviewWordTimedText],
-  );
 
   useEffect(() => {
     setShowWordTimedOverlay(Boolean(lyricsPreviewWordTimedText));
@@ -579,7 +699,8 @@ export function TaskModuleAPage() {
       let payload: unknown = {};
       try {
         payload = JSON.parse(String(event.data || "{}"));
-      } catch {
+      } catch (err) {
+        appLogger.error("模块A页面", "WebSocket 消息 JSON 解析失败", { error: String(err) });
         return;
       }
       const parsedPayload = payload as { event?: string; data?: Record<string, unknown> };
@@ -652,12 +773,28 @@ export function TaskModuleAPage() {
     setConfirmModalOpen(true);
   };
 
-  const submitSelectedLyrics = (enable: boolean) => {
+  const submitSelectedLyrics = (enable: boolean, rerunMode?: string) => {
     if (!selectedCandidateId) {
       message.info("请先选择一份歌词候选。");
       return;
     }
-    selectLyricsMutation.mutate({ candidateId: selectedCandidateId, enable });
+    const selCand = displayCandidates.find((c) => c.candidate_id === selectedCandidateId);
+    const isSaved = selCand?.provider === "saved";
+    let lyricsText: string | undefined;
+    let wordTimedLyrics: string | undefined;
+    if (isSaved) {
+      const _sd = selCand as Record<string, unknown>;
+      const _r = _sd.__saved_rows as Array<{ timeLabel: string; original: string; tokens?: { text: string; start: string; end: string }[] }> | undefined;
+      if (_r && _r.length > 0) {
+        lyricsText = _r.map((x) => x.timeLabel ? "[" + x.timeLabel + "]" + x.original : x.original).join("\n");
+      }
+      // 已保存候选由后端直接读文件，不传 word_timed_lyrics 避免 URL 超长
+    }
+    selectLyricsMutation.mutate({
+      candidateId: selectedCandidateId, enable, rerunMode,
+      lyricsText, wordTimedLyrics,
+      artist: selCand?.artist, title: selCand?.title,
+    });
   };
 
   const openLyricsPreview = (candidate: TaskModuleALyricCandidate) => {
@@ -668,6 +805,39 @@ export function TaskModuleAPage() {
     setLyricsPreviewWordTimedText("");
     setLyricsPreviewTranslatedText("");
     setLyricsPreviewRomanizedText("");
+    setShowRomanizedLyrics(true);
+    setRowIndices([]);
+    const _sd = candidate as Record<string, unknown>;
+    if (_sd.__saved_rows) {
+      const _r = _sd.__saved_rows as Array<{ timeLabel: string; original: string; romanized: string; translated: string; tokens: LyricTokenUnit[] }>;
+      console.log("[打开已保存] _r[0]:", JSON.stringify(_r[0]));
+      console.log("[打开已保存] _r.length:", _r.length);
+      // 如果有词级时间戳文本，重新解析 tokens 回填到每行
+      setSavedRowsData(_r);
+      setPreviewRows(_r.map((x) => ({timeLabel:x.timeLabel,originalText:x.original,romanizedText:x.romanized,translatedText:x.translated,tokens:x.tokens})));
+      // 同步重建 rowIndices：savedRows 有多少行，rowIndices 就重建多少
+      const syncedText = _r.map((x) => x.timeLabel ? "[" + x.timeLabel + "]" + x.original : x.original).join("\n");
+      const syncedLines = syncedText.split(/\r?\n/).filter(Boolean).filter((l) => LRC_LINE_PATTERN.test(l));
+      console.log("[打开已保存] syncedText第一行:", syncedText.split("\n")[0]);
+      console.log("[打开已保存] syncedLines.length:", syncedLines.length);
+      console.log("[打开已保存] syncedLines[0]:", syncedLines[0]);
+      setRowIndices([[syncedLines.length, syncedLines.length, syncedLines.length, syncedLines.length], ...syncedLines.map((_, i) => [i, i, i, i])]);
+      setLyricsPreviewText(syncedText);
+      setLyricsPreviewWordTimedText(String(_sd.__saved_word_timed || ""));
+      const rawWordTimedForDisplay = String(_sd.__saved_word_timed || "").trim();
+      const transText = _r.map((x) => x.translated ? (x.timeLabel ? `[${x.timeLabel}]${x.translated}` : x.translated) : "").join("\n");
+      const romaText = _r.map((x) => x.romanized ? (x.timeLabel ? `[${x.timeLabel}]${x.romanized}` : x.romanized) : "").join("\n");
+      console.log("[打开已保存] transText第一行:", transText.split("\n")[0]);
+      console.log("[打开已保存] romaText第一行:", romaText.split("\n")[0]);
+      setLyricsPreviewTranslatedText(transText);
+      setLyricsPreviewRomanizedText(romaText);
+      // 词级时间戳直接走 tokens 不再依赖 __saved_word_timed
+      if (!rawWordTimedForDisplay || rawWordTimedForDisplay === "tokens_present") {
+        setLyricsPreviewWordTimedText(_r.some((x) => x.tokens.length > 0) ? "tokens_present" : "");
+      }
+      return;
+    }
+    setSavedRowsData(null);
     lyricDetailMutation.mutate({ candidateId: candidate.candidate_id });
   };
 
@@ -695,6 +865,158 @@ export function TaskModuleAPage() {
       manualTitle: normalizedManualSearchTitle,
     });
   };
+
+  const openMergeSourceModal = () => { setMergeFieldSelectOpen(true); };
+
+  const confirmMergeFieldSelection = () => {
+    setMergeFieldSelectOpen(false);
+    setMergeMissingFields(Array.from(mergeSelectedFields));
+    // 生成基准行数据，供对比弹窗直接使用
+    const rows: Array<{timeLabel:string;original:string;romanized:string;translated:string;tokens:LyricTokenUnit[]}> = [];
+    for (let i = 0; i < previewRows.length; i++) {
+      const row = previewRows[i];
+      const _ri = rowIndices[i + 1];
+      if (!_ri || _ri[0] === -1) continue;
+      rows.push({
+        timeLabel: row.timeLabel || "",
+        original: row.originalText || "",
+        romanized: _ri[1] !== -1 ? (row.romanizedText || "") : "",
+        translated: row.translatedText || "",
+        tokens: row.tokens || [],
+      });
+    }
+    setMergeCompareRows(rows);
+    console.log("[合并] 生成基准行数:", rows.length, "第一行:", rows[0]?.original?.slice(0,20));
+    setMergeSourceModalOpen(true);
+    setMergeInspectedCandidate(null); setMergeInspectedSynced(""); setMergeInspectedWordTimed(""); setMergeInspectedTranslated(""); setMergeInspectedRomanized("");
+    setMergeSimilarity(0); setMergeInspectedAvailable([]); setMergeInspecting(false);
+  };
+
+  const stripLrc = (text: string): string => text.replace(LRC_TIME_PATTERN, "").trim();
+
+  const inspectMergeCandidate = async (candidate: TaskModuleALyricCandidate) => {
+    setMergeInspectedCandidate(candidate); setMergeInspecting(true);
+    setMergeInspectedSynced(""); setMergeInspectedWordTimed(""); setMergeInspectedTranslated(""); setMergeInspectedRomanized("");
+    setMergeSelectedFields(new Set()); setMergeInspectedAvailable([]);
+    try {
+      const d = await getTaskModuleALyricDetail(taskId, candidate.candidate_id);
+      setMergeInspectedSynced(d.synced_lyrics);
+      setMergeInspectedWordTimed(d.word_timed_lyrics);
+      setMergeInspectedTranslated(stripLrc(d.translated_lyrics));
+      setMergeInspectedRomanized(stripLrc(d.romanized_lyrics));
+      setMergeSimilarity(computeLyricsSimilarity(lyricsPreviewText, d.synced_lyrics));
+      const a = getAvailableMergeFields({ word_timed_lyrics: d.word_timed_lyrics, translated_lyrics: d.translated_lyrics, romanized_lyrics: d.romanized_lyrics }, mergeMissingFields);
+      setMergeInspectedAvailable(a);
+      if (a.length > 0) setMergeSelectedFields(new Set(a));
+    } catch (err) {
+      appLogger.error("模块A页面", "获取合并候选歌词详情失败", { error: String(err), candidateId: candidate.candidate_id });
+      message.warning("无法获取该候选的歌词详情。");
+    }
+    finally { setMergeInspecting(false); }
+  };
+
+  const applyMerge = () => {
+    for (const l of mergeSelectedFields) {
+      if (l === "逐字时间戳" && mergeInspectedWordTimed) setLyricsPreviewWordTimedText(mergeInspectedWordTimed);
+      if (l === "翻译" && mergeInspectedTranslated) setLyricsPreviewTranslatedText(mergeInspectedTranslated);
+      if (l === "罗马音" && mergeInspectedRomanized) setLyricsPreviewRomanizedText(mergeInspectedRomanized);
+    }
+    if (lyricsPreviewCandidate) {
+      const mwt = mergeSelectedFields.has("逐字时间戳") && mergeInspectedWordTimed ? mergeInspectedWordTimed : lyricsPreviewWordTimedText;
+      const mt = mergeSelectedFields.has("翻译") && mergeInspectedTranslated ? mergeInspectedTranslated : lyricsPreviewTranslatedText;
+      const mr = mergeSelectedFields.has("罗马音") && mergeInspectedRomanized ? mergeInspectedRomanized : lyricsPreviewRomanizedText;
+      const uc = { ...lyricsPreviewCandidate, has_word_timed_lyrics: Boolean(mwt || lyricsPreviewCandidate.has_word_timed_lyrics), has_translated_lyrics: Boolean(mt || lyricsPreviewCandidate.has_translated_lyrics), has_romanized_lyrics: Boolean(mr || lyricsPreviewCandidate.has_romanized_lyrics) };
+      setLyricsPreviewCandidate(uc);
+      setMergeMissingFields(getMissingFieldLabels(uc));
+    }
+    // 刷新 mergeCompareRows 以反映刚合并的翻译/罗马音
+    const newRows: Array<{timeLabel:string;original:string;romanized:string;translated:string;tokens:LyricTokenUnit[]}> = [];
+    for (let i = 0; i < previewRows.length; i++) {
+      const row = previewRows[i];
+      const _ri = rowIndices[i + 1];
+      if (!_ri || _ri[0] === -1) continue;
+      newRows.push({
+        timeLabel: row.timeLabel || "",
+        original: row.originalText || "",
+        romanized: _ri[1] !== -1 ? (row.romanizedText || "") : "",
+        translated: row.translatedText || "",
+        tokens: row.tokens || [],
+      });
+    }
+    setMergeCompareRows(newRows);
+    setMergeSourceModalOpen(false);
+    message.success("已合并补全所选字段。");
+  };
+
+  const extractTimeLabelFromLrc = (index: number): string => {
+    try {
+      const lines = (lyricsPreviewText || "").split(/\r?\n/).filter(Boolean);
+      return lines[index]?.match(LRC_LINE_PATTERN)?.groups?.time || "";
+    } catch (err) {
+      appLogger.error("模块A页面", "从 LRC 提取时间标签失败", { error: String(err), index });
+      return "";
+    };
+  };
+
+  const handleSaveCurrentLyrics = () => {
+    if (!lyricsPreviewCandidate) { message.info("没有可保存的歌词。"); return; }
+    const savedId = "saved_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+    const sourceRows = savedRowsData
+      ? savedRowsData.map((r) => ({ timeLabel: r.timeLabel, originalText: r.original, romanizedText: r.romanized, translatedText: r.translated, tokens: r.tokens }))
+      : previewRows;
+    const savedRows: { timeLabel: string; original: string; romanized: string; translated: string; tokens: LyricTokenUnit[] }[] = [];
+    for (let i = 0; i < sourceRows.length; i++) {
+      const row = sourceRows[i];
+      const _ri = rowIndices[i + 1];
+      if (!_ri || _ri[0] === -1) continue;
+      savedRows.push({
+        timeLabel: row.timeLabel || "",
+        original: row.originalText || "",
+        romanized: _ri[1] !== -1 ? (row.romanizedText || "") : "",
+        translated: _ri[2] !== -1 ? (row.translatedText || "") : "",
+        tokens: row.tokens,
+      });
+    }
+    // 重建词级时间戳 LRC（优先使用已编辑的 word_timed，否则从 tokens 重建）
+    let savedWordTimed = String(lyricsPreviewWordTimedText || "").trim();
+    if (!savedWordTimed || savedWordTimed === "tokens_present") {
+      const tokenLines: string[] = [];
+      for (const row of savedRows) {
+        if (row.tokens && row.tokens.length > 0) {
+          tokenLines.push((row.timeLabel ? "[" + row.timeLabel + "]" : "") + row.tokens.map((tk) => "<" + tk.start + ">" + tk.text + "<" + tk.end + ">").join(""));
+        } else {
+          tokenLines.push(row.timeLabel ? "[" + row.timeLabel + "]" + row.original : row.original);
+        }
+      }
+      savedWordTimed = tokenLines.join("\n");
+    }
+    const sc: TaskModuleALyricCandidate & Record<string, unknown> = {
+      ...lyricsPreviewCandidate, candidate_id: savedId, provider: "saved", provider_id: savedId,
+      __saved_at: Date.now(), __saved_word_timed: savedWordTimed,
+      preview_lines: savedRows.slice(0, 4).map((r) => r.original || r.romanized || ""),
+      preview_text: savedRows.map((r) => r.original).join("\n").slice(0, 200),
+      has_word_timed_lyrics: Boolean(savedWordTimed || lyricsPreviewCandidate.has_word_timed_lyrics),
+      has_translated_lyrics: Boolean(savedRows.some((r) => r.translated)),
+      has_romanized_lyrics: Boolean(savedRows.some((r) => r.romanized)),
+      __saved_rows: savedRows,
+    };
+    console.log("[保存歌词] savedRows 逐行:", savedRows.map((r, idx) => `i=${idx} tl=${r.timeLabel} orig=${r.original.slice(0,20)} roma=${(r.romanized||"").slice(0,20)} trans=${(r.translated||"").slice(0,20)}`));
+    setSavedCandidates((prev) => { const n = [...prev, sc]; try { localStorage.setItem("saved_lyrics_" + taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "保存歌词到 localStorage 失败", { error: String(err), taskId }); } return n; });
+    message.success("歌词已保存到「已保存」列。");
+  };
+
+  const deleteSavedCandidate = (candidateId: string) => {
+    setSavedCandidates((prev) => { const n = prev.filter((c) => c.candidate_id !== candidateId); try { localStorage.setItem("saved_lyrics_" + taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "删除已保存歌词时写入 localStorage 失败", { error: String(err), taskId }); } return n; });
+  };
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("saved_lyrics_" + taskId);
+      if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length > 0) setSavedCandidates(p); }
+    } catch (err) {
+      appLogger.error("模块A页面", "从 localStorage 读取已保存歌词失败", { error: String(err), taskId });
+    }
+  }, [taskId]);
 
   if (!data && !isLoading) {
     return (
@@ -951,6 +1273,13 @@ export function TaskModuleAPage() {
                                       {candidate.has_word_timed_lyrics ? <Tag color="processing">词级</Tag> : null}
                                       {candidate.has_translated_lyrics ? <Tag color="green">翻译</Tag> : null}
                                       {candidate.has_romanized_lyrics ? <Tag color="purple">罗马音</Tag> : null}
+                                      {providerGroup.provider === "saved" ? (() => {
+                                        const _st = (candidate as Record<string, unknown>).__saved_at as number || 0;
+                                        const _d = _st ? new Date(_st) : null;
+                                        return <><Typography.Text type="secondary" style={{ fontSize: 10 }}>{_d ? String(_d.getHours()).padStart(2,"0") + ":" + String(_d.getMinutes()).padStart(2,"0") : ""}</Typography.Text>
+                                          <Button type="text" size="small" danger onClick={(e) => { e.stopPropagation(); deleteSavedCandidate(candidate.candidate_id); }} style={{ padding: 0, minWidth: 20, fontSize: 14 }}>✕</Button>
+                                        </>;
+                                      })() : null}
                                     </Space>
                                   </div>
                                 </Radio>
@@ -981,31 +1310,40 @@ export function TaskModuleAPage() {
       <Modal
         title="是否根据这份歌词运行模块A"
         open={confirmModalOpen}
-        onCancel={() => void submitSelectedLyrics(false)}
+        onCancel={() => setConfirmModalOpen(false)}
         footer={[
           <Button
             key="cancel"
-            loading={
-              selectLyricsMutation.isPending &&
-              selectLyricsMutation.variables?.candidateId === selectedCandidateId &&
-              selectLyricsMutation.variables?.enable === false
-            }
-            onClick={() => void submitSelectedLyrics(false)}
+            onClick={() => setConfirmModalOpen(false)}
           >
             取消
           </Button>,
-          <Button
-            key="ok"
-            type="primary"
-            loading={
-              selectLyricsMutation.isPending &&
-              selectLyricsMutation.variables?.candidateId === selectedCandidateId &&
-              selectLyricsMutation.variables?.enable === true
+          <Button key="lyrics-only" icon={<SoundOutlined />} loading={selectLyricsMutation.isPending && selectLyricsMutation.variables?.candidateId === selectedCandidateId && selectLyricsMutation.variables?.enable === true && selectLyricsMutation.variables?.rerunMode === "lyrics_only"} onClick={() => void submitSelectedLyrics(true, "lyrics_only")}>仅更新歌词</Button>,
+          <Button key="ok" type="primary" loading={selectLyricsMutation.isPending && selectLyricsMutation.variables?.candidateId === selectedCandidateId && selectLyricsMutation.variables?.enable === true && !selectLyricsMutation.variables?.rerunMode} onClick={() => void submitSelectedLyrics(true)}>确定</Button>,
+          <Button key="correct" disabled={!selectedCandidateId} onClick={async () => {
+            setConfirmModalOpen(false);
+            if (selectedCandidateId) {
+              const cand = displayCandidates.find((c) => c.candidate_id === selectedCandidateId);
+              if (cand) {
+                setLyricsPreviewCandidate(cand);
+                const saved = cand as Record<string, unknown>;
+                const rows = saved.__saved_rows as Array<{ timeLabel: string; original: string; romanized: string; translated: string }> | undefined;
+                const wt = saved.__saved_word_timed as string || "";
+                if (rows) {
+                  setLyricsPreviewText(rows.map((r) => r.timeLabel ? "[" + r.timeLabel + "]" + r.original : r.original).join("\n"));
+                  setLyricsPreviewRomanizedText(rows.map((r) => r.romanized || "").join("\n"));
+                  setLyricsPreviewTranslatedText(rows.map((r) => r.translated || "").join("\n"));
+                  setLyricsPreviewWordTimedText(wt);
+                } else {
+                  try { const d = await getTaskModuleALyricDetail(taskId, selectedCandidateId);
+                    setLyricsPreviewText(d.synced_lyrics); setLyricsPreviewWordTimedText(d.word_timed_lyrics);
+                    setLyricsPreviewRomanizedText(d.romanized_lyrics); setLyricsPreviewTranslatedText(d.translated_lyrics);
+                  } catch (err) {
+                    appLogger.error("模块A页面", "矫正 Modal 加载歌词详情失败", { error: String(err), taskId, selectedCandidateId });
+                  } }}
             }
-            onClick={() => void submitSelectedLyrics(true)}
-          >
-            确定
-          </Button>,
+            setCorrectFunasrOpen(true);
+          }}>LLM 矫正</Button>,
         ]}
         width={760}
         maskClosable={false}
@@ -1019,7 +1357,14 @@ export function TaskModuleAPage() {
               type="info"
               showIcon
               message={buildCandidateLabel(selectedCandidate)}
-              description="确定后会把这份歌词设为已启用，并从模块 A 开始重跑；取消则只记录为已联网查找但未启用。"
+              description={
+                <>
+                  <div>确定后会把这份歌词设为已启用，并从模块 A 开始重跑。</div>
+                  <div style={{ marginTop: 8 }}>
+                    <Typography.Text type="secondary">仅更新歌词仅运行歌词+算法层（跳过信号处理），适合跳过环境检查或不需换 Demucs/Allin1 的微调场景。</Typography.Text>
+                  </div>
+                </>
+              }
             />
           </div>
         ) : (
@@ -1054,6 +1399,9 @@ export function TaskModuleAPage() {
           >
             关闭
           </Button>,
+          <Button key="save" disabled={!lyricsPreviewCandidate} onClick={handleSaveCurrentLyrics}>
+            保存
+          </Button>,
         ]}
         width={960}
         destroyOnHidden
@@ -1078,25 +1426,36 @@ export function TaskModuleAPage() {
                     罗马音
                   </Checkbox>
                 ) : null}
+                {(() => { const rows = rowIndices.slice(1); const n = rows.filter(r => r[0]===-1).length; return n > 0 ? <Button size="small" onClick={() => setRowIndices([rowIndices[0],...rowIndices.slice(1).map(r => [r[0]>=0?0:-1,r[1],r[2],r[3]])])}>原文已滤 {n}</Button> : null; })()}
+                {(() => { const rows = rowIndices.slice(1); const n = rows.filter(r => r[1]===-1).length; return n > 0 ? <Button size="small" onClick={() => setRowIndices([rowIndices[0],...rowIndices.slice(1).map(r => [r[0],r[1]>=0?0:-1,r[2],r[3]])])}>罗马音已滤 {n}</Button> : null; })()}
+                {(() => { const rows = rowIndices.slice(1); const n = rows.filter(r => r[2]===-1).length; return n > 0 ? <Button size="small" onClick={() => setRowIndices([rowIndices[0],...rowIndices.slice(1).map(r => [r[0],r[1],r[2]>=0?0:-1,r[3]])])}>翻译已滤 {n}</Button> : null; })()}
+                <Button size="small" onClick={openMergeSourceModal}>合并</Button>
               </Space>
             </div>
             {lyricDetailMutation.isPending ? (
               <Alert type="info" showIcon message="正在加载这条候选的歌词内容" />
             ) : (
               <div className="module-a-lyrics-preview-board">
-                {lyricsPreviewRows.length ? (
-                  lyricsPreviewRows.map((row, rowIndex) => (
-                    <div key={`${row.timeLabel}-${rowIndex}`} className="module-a-lyrics-row">
+                {previewRows.length ? (
+                  previewRows.map((row, rowIndex) => {
+                    const _ri = rowIndices[rowIndex + 1];
+                    if (!_ri || !row.originalText) return null;
+                    if (rowIndex < 3) console.log("渲染行", rowIndex, "_ri:", JSON.stringify(_ri), "orig:", row.originalText?.slice(0,30), "roma:", row.romanizedText?.slice(0,30));
+                    const _toggle = (fi: number) => setRowIndices((p) => { if (!p.length || !p[rowIndex + 1]) return p; const n = p.map(r=>[...r]); const idx = rowIndex + 1; n[idx][fi] = n[idx][fi]===-1 ? (n[0][fi] ?? idx) : -1; return n; });
+                    return (
+                    <div key={`${row.timeLabel}-${rowIndex}`} className="module-a-lyrics-row" style={{ display: _ri[0] === -1 ? "none" : undefined }}>
                       <div className="module-a-lyrics-row__time">
                         <Typography.Text type="secondary">{row.timeLabel || "--:--.--"}</Typography.Text>
                       </div>
                       <div className="module-a-lyrics-row__content">
-                        {showRomanizedLyrics && row.romanizedText ? (
-                          <Typography.Paragraph className="module-a-lyrics-line module-a-lyrics-line--romanized">
+                        {showRomanizedLyrics && row.romanizedText && _ri[1] !== -1 ? (
+                          <div className="module-a-lyrics-line module-a-lyrics-line--romanized">
+                            <Checkbox checked={_ri[1] !== -1} onChange={() => _toggle(1)} style={{ marginRight: 4 }} />
                             {row.romanizedText}
-                          </Typography.Paragraph>
+                          </div>
                         ) : null}
                         <div className="module-a-lyrics-line module-a-lyrics-line--original">
+                          <Checkbox checked={_ri[0] !== -1} onChange={() => _toggle(0)} style={{ marginRight: 4 }} />
                           {showWordTimedOverlay && row.tokens.length
                             ? row.tokens.map((token, tokenIndex) => {
                                 const tokenKey = `${rowIndex}-${tokenIndex}`;
@@ -1114,7 +1473,7 @@ export function TaskModuleAPage() {
                               })
                             : row.originalText}
                         </div>
-                        {showWordTimedOverlay && row.tokens.length ? (
+                        {showWordTimedOverlay && row.tokens.length && activeTokenKey.startsWith(`${rowIndex}-`) ? (
                           <div className="module-a-lyrics-token-meta">
                             {row.tokens.map((token, tokenIndex) => {
                               const tokenKey = `${rowIndex}-${tokenIndex}`;
@@ -1129,14 +1488,16 @@ export function TaskModuleAPage() {
                             })}
                           </div>
                         ) : null}
-                        {showTranslatedLyrics && row.translatedText ? (
-                          <Typography.Paragraph className="module-a-lyrics-line module-a-lyrics-line--translated">
+                        {showTranslatedLyrics && row.translatedText && _ri[2] !== -1 ? (
+                          <div className="module-a-lyrics-line module-a-lyrics-line--translated">
+                            <Checkbox checked={_ri[2] !== -1} onChange={() => _toggle(2)} style={{ marginRight: 4 }} />
                             {row.translatedText}
-                          </Typography.Paragraph>
+                          </div>
                         ) : null}
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   <Alert type="warning" showIcon message="当前来源没有返回可展示的歌词正文。" />
                 )}
@@ -1145,6 +1506,132 @@ export function TaskModuleAPage() {
           </div>
         ) : null}
       </Modal>
+
+      {/* Merge field select */}
+      <Modal title="选择要合并的字段" open={mergeFieldSelectOpen} onCancel={() => setMergeFieldSelectOpen(false)}
+        footer={[<Button key="cancel" onClick={() => setMergeFieldSelectOpen(false)}>取消</Button>, <Button key="ok" type="primary" disabled={mergeSelectedFields.size === 0} onClick={confirmMergeFieldSelection}>确认 ({mergeSelectedFields.size})</Button>]}
+        width={400} destroyOnHidden>
+        <Space direction="vertical" size={12}>
+          <Typography.Text>选择要从其他来源补充的字段：</Typography.Text>
+          <Checkbox.Group value={Array.from(mergeSelectedFields)} onChange={(values) => setMergeSelectedFields(new Set(values as string[]))}>
+            <Space direction="vertical">{["翻译","罗马音","逐字时间戳"].map((label) => (<Checkbox key={label} value={label}><Tag color="processing">{label}</Tag></Checkbox>))}</Space>
+          </Checkbox.Group>
+        </Space>
+      </Modal>
+
+      {/* Merge source */}
+      <Modal title="选择歌词来源以补全缺失字段" open={mergeSourceModalOpen} onCancel={() => setMergeSourceModalOpen(false)}
+        footer={[<Button key="close" onClick={() => setMergeSourceModalOpen(false)}>关闭</Button>, <Button key="apply" type="primary" disabled={mergeSelectedFields.size === 0 || !mergeInspectedCandidate} onClick={applyMerge}>确认补充 ({mergeSelectedFields.size})</Button>]}
+        width={lyricsModalWidth} destroyOnHidden>
+        <div style={{ height: lyricsModalBodyHeight, overflow: "auto" }}>
+          {displayProviderGroups.length ? (
+            <Radio.Group value={mergeInspectedCandidate?.candidate_id || ""} onChange={(event) => { const cid = String(event.target.value); const cand = displayCandidates.find((c) => c.candidate_id === cid); if (cand) void inspectMergeCandidate(cand); }} className="module-a-provider-group">
+              <div className="module-a-provider-viewport"><div className="module-a-provider-lane">
+                {displayProviderGroups.map((pg) => {
+                  const ps = pg.page_size || 10; const cs = pg.candidates.slice(0, ps);
+                  return <Card key={pg.provider} size="small" className="module-a-provider-column"
+                    title={<Space wrap size={[8,8]}><Typography.Text strong>{pg.display_name || pg.provider}</Typography.Text><Tag>{cs.length}</Tag></Space>}>
+                    <div className="module-a-provider-scroll"><Space direction="vertical" size={12} style={{width:"100%"}}>
+                      {cs.map((cand) => (<Radio key={cand.candidate_id} value={cand.candidate_id} className="module-a-candidate-radio">
+                        <div className="module-a-candidate-card" onClick={() => void inspectMergeCandidate(cand)} role="button" tabIndex={0}>
+                          <Space wrap size={[8,8]} className="module-a-candidate-card__headline">
+                            <Typography.Text strong>{buildCandidateLabel(cand)}</Typography.Text>
+                            {cand.has_word_timed_lyrics ? <Tag color="processing">词级</Tag> : null}
+                            {cand.has_translated_lyrics ? <Tag color="green">翻译</Tag> : null}
+                            {cand.has_romanized_lyrics ? <Tag color="purple">罗马音</Tag> : null}
+                            {mergeInspectedCandidate?.candidate_id === cand.candidate_id && mergeSimilarity > 0 ? <Tag color={mergeSimilarity>=80?"success":mergeSimilarity>=60?"warning":"error"}>相似度 {mergeSimilarity}%</Tag> : null}
+                            {mergeInspectedCandidate?.candidate_id === cand.candidate_id && mergeInspectedSynced ? <Button size="small" type="link" onClick={(e) => { e.stopPropagation(); setCompareModalOpen(true); }}>对比</Button> : null}
+                          </Space>
+                        </div>
+                      </Radio>))}
+                    </Space></div>
+                  </Card>;
+                })}
+              </div></div>
+            </Radio.Group>
+          ) : <Empty description="没有可用的歌词来源" />}
+          {mergeInspectedCandidate ? (<Card size="small" style={{marginTop:16}}>
+            {mergeInspecting ? <Alert type="info" showIcon message="正在加载该候选的歌词详情..." />
+            : <Space direction="vertical" size={12} style={{width:"100%"}}>
+                {mergeInspectedAvailable.length > 0 ? <><Typography.Text>可用补充字段（可多选）：</Typography.Text>
+                  <Checkbox.Group value={Array.from(mergeSelectedFields)} onChange={(values) => setMergeSelectedFields(new Set(values as string[]))}>
+                    <Space direction="vertical">{mergeInspectedAvailable.map((f) => <Checkbox key={f} value={f}><Tag color="processing">{f}</Tag></Checkbox>)}</Space>
+                  </Checkbox.Group>
+                </> : <Alert type="warning" showIcon message="当前来源没有可用的补充字段。" />}
+              </Space>}
+          </Card>) : null}
+        </div>
+      </Modal>
+
+      {/* Compare */}
+      <Modal title="对比合并" open={compareModalOpen} onCancel={() => setCompareModalOpen(false)}
+        footer={[<Button key="close" onClick={() => setCompareModalOpen(false)}>关闭</Button>, <Button key="save" type="primary" onClick={() => {
+          const tL = mergeInspectedTranslated ? mergeInspectedTranslated.split(/\r?\n/).filter(Boolean) : [];
+          const rL = mergeInspectedRomanized ? mergeInspectedRomanized.split(/\r?\n/).filter(Boolean) : [];
+          if (!lyricsPreviewCandidate) { message.warning("没有基础源可选"); return; }
+          if (tL.length) setLyricsPreviewTranslatedText(tL.slice(Math.max(0, candTransOffset)).join("\n"));
+          if (rL.length) setLyricsPreviewRomanizedText(rL.slice(Math.max(0, candTransOffset)).join("\n"));
+          const scId = "saved_" + Date.now() + "_" + Math.random().toString(36).slice(2,6);
+          const rd: {timeLabel:string;original:string;romanized:string;translated:string;tokens:{text:string;start:string;end:string}[]}[] = [];
+          for (let _j = 0; _j < mergeCompareRows.length; _j++) {
+            const _r = mergeCompareRows[_j];
+            const _ci = _j + candTransOffset;
+            rd.push({
+              timeLabel: _r.timeLabel,
+              original: _r.original,
+              romanized: _r.romanized,
+              translated: _ci >= 0 && _ci < tL.length ? (tL[_ci] || "") : _r.translated,
+              tokens: _r.tokens || [],
+            });
+          }
+          const cand_ = { ...(lyricsPreviewCandidate as TaskModuleALyricCandidate), candidate_id: scId, provider: "saved" as const, provider_id: scId, __saved_at: Date.now(), __saved_word_timed: mergeInspectedWordTimed || lyricsPreviewWordTimedText, preview_lines: rd.slice(0,4).map((x:any)=>x.original), preview_text: rd.map((x:any)=>x.original).join("\n").slice(0,200), has_word_timed_lyrics: Boolean(mergeInspectedWordTimed || lyricsPreviewWordTimedText), has_translated_lyrics: Boolean(tL.some(Boolean)), has_romanized_lyrics: Boolean(rd.some((r:any) => r.romanized)), __saved_rows: rd } as TaskModuleALyricCandidate & Record<string, unknown>;
+          setSavedCandidates((prev) => { const n = [...prev, cand_]; try { localStorage.setItem("saved_lyrics_"+taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "对比合并保存到 localStorage 失败", { error: String(err), taskId }); } return n; });
+          setSelectedCandidateId(scId); setLyricsPreviewCandidate(cand_ as TaskModuleALyricCandidate); setSavedRowsData(rd as any);
+          setCompareModalOpen(false); setMergeSourceModalOpen(false);
+          message.success("已合并并保存。");
+        }}>保存</Button>]}
+        width={1200} destroyOnHidden>
+        <div style={{display:"flex", gap:16, height:500}}>
+          <div style={{flex:1, overflow:"auto", border:"1px solid #e8ecf0", borderRadius:8, padding:12}}>
+            <Typography.Title level={5}>基础源{lyricsPreviewCandidate ? <Tag style={{marginLeft:8}}>{buildCandidateLabel(lyricsPreviewCandidate)}</Tag> : null}
+              <Button.Group size="small" style={{marginLeft:8}}>
+                <Button onClick={() => setCandTransOffset((v) => Math.min(20, v+1))}>↑</Button>
+                <Button disabled style={{color:"#333", cursor:"default"}}>翻译{candTransOffset}</Button>
+                <Button onClick={() => setCandTransOffset((v) => Math.max(-20, v-1))}>↓</Button>
+              </Button.Group>
+            </Typography.Title>
+            {(() => {
+              const _t = mergeInspectedTranslated ? mergeInspectedTranslated.split(/\r?\n/).filter(Boolean) : [];
+              const _res: ReactNode[] = [];
+              for (let _j = 0; _j < mergeCompareRows.length; _j++) {
+                const _r = mergeCompareRows[_j];
+                const _ci = _j + candTransOffset;
+                const _tt = _ci >= 0 && _ci < _t.length ? _t[_ci] || "" : "";
+                _res.push(<div key={"b-"+_j} style={{marginBottom:8, padding:"4px 0", borderBottom:"1px solid #f0f0f0"}}>
+                  <Typography.Text type="secondary" style={{fontSize:11}}>{_r.timeLabel}</Typography.Text>
+                  <div style={{fontSize:13}}>{_r.original}</div>
+                  {_r.romanized ? <div style={{fontSize:12, color:"#722ed1"}}>{_r.romanized}</div> : null}
+                  {_tt ? <div style={{fontSize:12, color:"#52c41a"}}>{_tt}</div> : null}
+                </div>);
+              }
+              return _res;
+            })()}
+          </div>
+          <div style={{flex:1, overflow:"auto", border:"1px solid #e8ecf0", borderRadius:8, padding:12}}>
+            <Typography.Title level={5}>候选源{mergeInspectedCandidate ? <Tag style={{marginLeft:8}}>{buildCandidateLabel(mergeInspectedCandidate)}</Tag> : null}</Typography.Title>
+            {mergeInspectedSynced ? (() => { const _cl = mergeInspectedSynced.split(/\r?\n/).filter(Boolean); return _cl.map((l,i) => { const _m = l.match(LRC_LINE_PATTERN); return <div key={"c-"+i} style={{marginBottom:8, padding:"4px 0", borderBottom:"1px solid #f0f0f0"}}><Typography.Text type="secondary" style={{fontSize:11}}>{_m?.groups?.time||""}</Typography.Text><div style={{fontSize:13}}>{_m?.groups?.text?.trim()||l}</div></div>; }); })() : mergeInspecting ? <Alert type="info" showIcon message="加载中..." /> : null}
+          </div>
+        </div>
+      </Modal>
+
+      <CorrectFunasrModal
+        open={correctFunasrOpen} onClose={() => setCorrectFunasrOpen(false)}
+        taskId={taskId} lyricsPreviewText={lyricsPreviewText} lyricsPreviewCandidate={lyricsPreviewCandidate}
+        onSave={(candidate) => { setSavedCandidates((prev) => { const n = [...prev, candidate]; try { localStorage.setItem("saved_lyrics_" + taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "LLM 矫正保存到 localStorage 失败", { error: String(err), taskId }); } return n; }); }}
+        onResegment={() => { setCorrectFunasrOpen(false); setConfirmModalOpen(true); }}
+        selectedCandidateId={selectedCandidateId}
+        lyricsPreviewWordTimedText={lyricsPreviewWordTimedText} lyricsPreviewTranslatedText={lyricsPreviewTranslatedText}
+        lyricsPreviewRomanizedText={lyricsPreviewRomanizedText} lyricsPreviewRows={previewRows} />
     </div>
   );
 }

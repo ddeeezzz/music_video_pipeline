@@ -43,7 +43,7 @@ from music_video_pipeline.constants import TASK_WEB_ENTRY_PAGE_FILE_NAME
 # 项目内模块：日志配置
 from music_video_pipeline.logging_utils import setup_logging
 # 项目内模块：任务音频路径回映射
-from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path, resolve_workspace_path
 # 任务监督服务类采用延迟导入，避免交互菜单启动时加载重依赖。
 TaskMonitorService: Any | None = None
 
@@ -229,6 +229,7 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     run_parser.add_argument("--audio-path", required=False, help="输入音频路径（默认读取配置）")
     run_parser.add_argument("--config", default=str(resolved_default_config_path), help="配置文件路径")
     run_parser.add_argument("--force-module", choices=["A", "B", "C", "D"], help="从指定模块强制重跑")
+    run_parser.add_argument("--lyrics-only", action="store_true", help="仅更新歌词→算法层，跳过信号处理")
 
     resume_parser = subparsers.add_parser("resume", help="从断点恢复运行")
     resume_parser.add_argument("--task-id", required=True, help="任务唯一标识")
@@ -387,6 +388,7 @@ def _build_command_request(
             audio_path=audio_path,
             config_path=config_path,
             force_module=args.force_module,
+            lyrics_only=bool(getattr(args, "lyrics_only", False)),
         )
 
     if args.command == "resume":
@@ -762,6 +764,7 @@ def _run_task_monitor_command_by_task(
         module_b_role_segment_rerun_handler=getattr(runner, "_rerun_module_b_role_segment_for_monitor", None),
         module_c_shot_rerun_handler=getattr(runner, "_rerun_module_c_shot_for_monitor", None),
         module_c_frame_rerun_handler=getattr(runner, "_rerun_module_c_frame_for_monitor", None),
+        lyrics_only_rerun_handler=getattr(runner, "_rerun_task_from_module_a_lyrics_only_for_monitor", None),
         app_config=getattr(runner, "config", None),
         host=monitor_host,
         port=monitor_port,
@@ -890,6 +893,11 @@ def _build_web_command_runtime(*, workspace_root: Path, request: CommandRequest,
         state_store=state_store,
         logger=logger,
     )
+    lyrics_only_rerun_handler = _build_web_lyrics_only_rerun_handler(
+        workspace_root=workspace_root,
+        state_store=state_store,
+        logger=logger,
+    )
     return SimpleNamespace(
         config=replace(
             config,
@@ -906,6 +914,7 @@ def _build_web_command_runtime(*, workspace_root: Path, request: CommandRequest,
         _rerun_module_b_role_segment_for_monitor=module_b_role_segment_rerun_handler,
         _rerun_module_c_shot_for_monitor=module_c_shot_rerun_handler,
         _rerun_module_c_frame_for_monitor=module_c_frame_rerun_handler,
+        _rerun_task_from_module_a_lyrics_only_for_monitor=lyrics_only_rerun_handler,
     )
 
 
@@ -966,6 +975,54 @@ def _build_web_rerun_handler(*, workspace_root: Path, state_store: Any, logger: 
         }
 
     return _rerun_task_from_module_a_for_web
+
+
+def _build_web_lyrics_only_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
+    """为 web 服务中的"仅更新歌词"按钮构建后台重跑回调（轻量模式，跳过信号处理）。"""
+
+    def _rerun_lyrics_only_for_web(task_id: str) -> dict:
+        task_record = state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行轻量重跑：task_id={task_id}")
+        audio_path_text = str(task_record.get("audio_path", "")).strip()
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not audio_path_text or not config_path_text:
+            raise RuntimeError(f"任务缺少 audio_path 或 config_path，无法执行轻量重跑：task_id={task_id}")
+        resolved_audio_path = resolve_task_audio_path(
+            raw_audio_path=audio_path_text,
+            config_path=config_path_text,
+            workspace_roots=[workspace_root],
+        )
+        if str(resolved_audio_path) != audio_path_text:
+            state_store.init_task(task_id=task_id, audio_path=str(resolved_audio_path), config_path=config_path_text)
+        command = [
+            sys.executable,
+            "-m",
+            "music_video_pipeline.cli",
+            "run",
+            "--task-id",
+            task_id,
+            "--audio-path",
+            str(resolved_audio_path),
+            "--config",
+            config_path_text,
+            "--lyrics-only",
+        ]
+        logger.info("Web 服务触发轻量重跑（歌词→算法层，跳过信号），task_id=%s，command=%s", task_id, command)
+        completed = subprocess.run(
+            command,
+            cwd=str(workspace_root),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if completed.returncode != 0:
+            error_output = str(completed.stderr or "").strip() or str(completed.stdout or "").strip()
+            raise RuntimeError(f"轻量重跑子进程执行失败，task_id={task_id}，exit_code={completed.returncode}，原因={error_output[:500]}")
+        return {"task_id": task_id, "exit_code": completed.returncode}
+
+    return _rerun_lyrics_only_for_web
 
 
 def _build_web_module_b_role_rerun_handler(*, workspace_root: Path, state_store: Any, logger: Any) -> Any:
@@ -1349,6 +1406,8 @@ def _resolve_path(workspace_root: Path, input_path: Path) -> Path:
     异常说明：无。
     边界条件：不会主动检查路径是否存在；若输入为 Windows 盘符绝对路径
               （如 ``M:\\foo\\bar\\configs\\...``），会自动回映射到当前工作区。
+              若输入为 Linux 风格绝对路径（如 ``/root/data/...``），在 Windows 上
+              会尝试按已知项目目录标记（configs/resources/runs）回映射到工作区。
     """
     path_text = str(input_path)
     remapped = remap_windows_absolute_path(workspace_root=workspace_root, path_text=path_text)
@@ -1356,7 +1415,7 @@ def _resolve_path(workspace_root: Path, input_path: Path) -> Path:
         return remapped
     if input_path.is_absolute():
         return input_path.resolve()
-    return (workspace_root / input_path).resolve()
+    return resolve_workspace_path(workspace_root=workspace_root, path_text=path_text)
 
 
 def _resolve_request_config_path(*, args: argparse.Namespace, workspace_root: Path, default_config_path: Path) -> Path:

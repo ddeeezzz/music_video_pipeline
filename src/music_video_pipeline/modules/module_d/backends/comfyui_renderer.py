@@ -27,8 +27,8 @@ from music_video_pipeline.comfyui import (
 )
 # 项目内模块：运行上下文。
 from music_video_pipeline.context import RuntimeContext
-# 项目内模块：Windows 路径回映射。
-from music_video_pipeline.task_audio_path import remap_windows_absolute_path
+# 项目内模块：跨平台 ComfyUI 路径解析。
+from music_video_pipeline.task_audio_path import resolve_comfyui_root_dir
 # 项目内模块：模块 D FFmpeg 工具。
 from music_video_pipeline.modules.module_d.finalizer import _run_ffmpeg_command
 # 项目内模块：模块 D 单元模型。
@@ -42,11 +42,8 @@ TOONCRAFTER_CLIP_VISION_MODEL_NAME = "CLIP-ViT-H-fp16.safetensors"
 
 
 def _resolve_root_dir(*, project_root: Path, root_dir_raw: str) -> Path:
-    """将 ComfyUI root_dir（可能为 Windows 盘符绝对路径）解析为 Linux 有效路径。"""
-    remapped = remap_windows_absolute_path(workspace_root=project_root, path_text=root_dir_raw)
-    if remapped is not None:
-        return remapped
-    return (project_root / root_dir_raw).resolve()
+    """跨平台解析 ComfyUI 根目录（Linux 相对路径 / Windows 绝对路径均可）。"""
+    return resolve_comfyui_root_dir(workspace_root=project_root, root_dir_raw=root_dir_raw)
 
 
 def prewarm_comfyui_runtime(context: RuntimeContext, device_override: str | None = None) -> dict[str, str]:
@@ -117,8 +114,8 @@ def render_one_unit_comfyui(context: RuntimeContext, unit: ModuleDUnit) -> dict[
         shutil.rmtree(resized_dir)
     resized_dir.mkdir(parents=True, exist_ok=True)
 
-    resized_start_path = resized_dir / "start_512x320.png"
-    resized_end_path = resized_dir / "end_512x320.png"
+    resized_start_path = resized_dir / "start_tooncrafter_input.png"
+    resized_end_path = resized_dir / "end_tooncrafter_input.png"
     _resize_image_for_tooncrafter(
         source_path=Path(start_image),
         target_path=resized_start_path,
@@ -261,8 +258,8 @@ def generate_tooncrafter_frames(
         shutil.rmtree(resized_dir)
     resized_dir.mkdir(parents=True, exist_ok=True)
 
-    resized_start_path = resized_dir / "start_512x320.png"
-    resized_end_path = resized_dir / "end_512x320.png"
+    resized_start_path = resized_dir / "start_tooncrafter_input.png"
+    resized_end_path = resized_dir / "end_tooncrafter_input.png"
     _resize_image_for_tooncrafter(
         source_path=Path(start_image),
         target_path=resized_start_path,

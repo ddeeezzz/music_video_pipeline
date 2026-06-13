@@ -1,6 +1,8 @@
 import { useVisualizationStore } from "@/stores/visualizationStore";
 import { useCallback, useRef } from "react";
 
+const LANE_LABEL_WIDTH = 132;
+
 export function TimelineShell({ children }: { children: React.ReactNode }) {
   const duration = useVisualizationStore((s) => s.duration);
   const pxPerSec = useVisualizationStore((s) => s.pxPerSec);
@@ -12,14 +14,14 @@ export function TimelineShell({ children }: { children: React.ReactNode }) {
 
   const handleTimelineClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      // 只在点击空白区域时跳转（非段落/歌词等元素）
       const target = e.target as HTMLElement;
       if (target.closest(".vis-seg, .vis-lyric, .vis-energy, .vis-beat, .vis-onset, .vis-rms-line")) {
         return;
       }
       const rect = e.currentTarget.getBoundingClientRect();
       const scrollLeft = scrollRef.current?.scrollLeft ?? 0;
-      const x = e.clientX - rect.left + scrollLeft;
+      // 减去标签列宽，使点击位置与 track 内元素坐标对齐
+      const x = Math.max(0, e.clientX - rect.left + scrollLeft - LANE_LABEL_WIDTH);
       const seek = Math.max(0, Math.min(duration, x / pxPerSec));
       if (audioRef) {
         audioRef.currentTime = seek;

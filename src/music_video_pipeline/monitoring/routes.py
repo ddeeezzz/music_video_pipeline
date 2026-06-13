@@ -37,8 +37,18 @@ TASK_MODULE_A_SEARCH_LYRICS_WS_PATH = "/ws/module-a/search-lyrics"
 TASK_MODULE_A_SELECT_LYRICS_API_PATH = "/api/module-a/select-lyrics"
 # 常量：模块 A 候选歌词详情接口路径
 TASK_MODULE_A_CANDIDATE_LYRICS_API_PATH = "/api/module-a/candidate-lyrics"
+# 常量：模块 A 已保存歌词保存接口路径
+TASK_MODULE_A_SAVE_LYRICS_API_PATH = "/api/module-a/save-lyrics"
+# 常量：模块 A 已保存歌词列表接口路径
+TASK_MODULE_A_SAVED_LYRICS_LIST_API_PATH = "/api/module-a/saved-lyrics"
+# 常量：模块 A 已保存歌词内容接口路径
+TASK_MODULE_A_SAVED_LYRICS_CONTENT_API_PATH = "/api/module-a/saved-lyrics-content"
+# 常量：已保存歌词文件存储目录名
+SAVED_LYRICS_DIR_NAME = "module_a_saved_lyrics"
 # 常量：模块 A 可视化数据负载接口路径
 TASK_MODULE_A_VISUALIZATION_PAYLOAD_API_PATH = "/api/module-a/visualization-payload"
+# 常量：模块 A FunASR 矫正 WebSocket 路径
+TASK_MODULE_A_CORRECT_FUNASR_WS_PATH = "/ws/module-a/correct-funasr"
 # 常量：模块 B role 重跑接口路径
 TASK_MODULE_B_RERUN_ROLE_API_PATH = "/api/module-b/rerun-role"
 # 常量：模块 B role 内 segment 重跑接口路径

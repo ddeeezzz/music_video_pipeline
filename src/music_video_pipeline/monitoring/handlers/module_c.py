@@ -17,12 +17,79 @@ from urllib.parse import parse_qs
 import requests
 
 from music_video_pipeline.modules.module_a_v2.network_lyrics_state import current_time_text
+from music_video_pipeline.modules.module_b.orchestrator import (
+    _build_shot_id,
+    _parse_subject_descriptions,
+)
 from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_C_API_PATH,
     TASK_MODULE_C_RERUN_FRAME_API_PATH,
     TASK_MODULE_C_REBUILD_UNITS_API_PATH,
     TASK_MODULE_C_RERUN_SHOT_API_PATH,
 )
+
+
+def _load_seg_timing(task_dir: Path) -> dict[str, dict[str, float]]:
+    """从 module_a_output.json 读取 segment 时间映射。"""
+    module_a_path = task_dir / "artifacts" / "module_a_output.json"
+    if not module_a_path.exists():
+        return {}
+    try:
+        module_a_output = json.loads(module_a_path.read_text(encoding="utf-8"))
+        seg_timing: dict[str, dict[str, float]] = {}
+        for seg_item in module_a_output.get("segments", []) if isinstance(module_a_output, dict) else []:
+            seg_id = str(seg_item.get("segment_id", "")).strip()
+            if seg_id:
+                seg_timing[seg_id] = {
+                    "start_time": float(seg_item.get("start_time", 0) or 0),
+                    "end_time": float(seg_item.get("end_time", 0) or 0),
+                }
+        return seg_timing
+    except Exception:
+        return {}
+
+
+def _update_seg_status_from_shot(seg_obj: dict[str, Any], shot_item: dict[str, Any]) -> None:
+    """用 shot 状态更新 segment 聚合状态。"""
+    shot_status = str(shot_item.get("status", "pending")).strip()
+    seg_status = str(seg_obj.get("status", "pending")).strip()
+
+    if shot_status == "running":
+        seg_obj["status"] = "running"
+    elif shot_status == "failed" and seg_status != "running":
+        seg_obj["status"] = "failed"
+    elif shot_status == "pending" and seg_status not in ("running", "failed"):
+        seg_obj["status"] = "pending"
+    elif shot_status == "done":
+        # 只有所有 shot 都 done，segment 才是 done
+        all_done = all(
+            str(s.get("status", "pending")).strip() in ("done", "running")
+            for s in seg_obj.get("shots", [])
+        )
+        if seg_status != "running":
+            seg_obj["status"] = "done" if all_done else "running"
+
+    frame_s = str(shot_item.get("frame_status_start", "pending")).strip()
+    seg_frame_s = str(seg_obj.get("frame_status_start", "pending")).strip()
+    if frame_s == "running":
+        seg_obj["frame_status_start"] = "running"
+    elif frame_s == "failed" and seg_frame_s != "running":
+        seg_obj["frame_status_start"] = "failed"
+    elif frame_s == "done" and seg_frame_s == "pending":
+        seg_obj["frame_status_start"] = "done"
+
+    frame_e = str(shot_item.get("frame_status_end", "pending")).strip()
+    seg_frame_e = str(seg_obj.get("frame_status_end", "pending")).strip()
+    if frame_e == "running":
+        seg_obj["frame_status_end"] = "running"
+    elif frame_e == "failed" and seg_frame_e != "running":
+        seg_obj["frame_status_end"] = "failed"
+    elif frame_e == "done" and seg_frame_e == "pending":
+        seg_obj["frame_status_end"] = "done"
+
+    err = str(shot_item.get("error_message", "")).strip()
+    if err and not str(seg_obj.get("error_message", "")).strip():
+        seg_obj["error_message"] = err
 
 
 
@@ -141,6 +208,122 @@ class ModuleCHandlers:
             module_name="C",
             statuses=["pending", "running", "done", "failed"],
         )
+        # 从 B 中间产物（role3 streaming 文件）重建 C 单元
+        if not all_units:
+            try:
+                task_dir = self._resolve_task_dir(task_id=normalized_task_id)
+                role3_streaming_dir = task_dir / "artifacts" / "module_b_work" / "role3" / "streaming"
+                if role3_streaming_dir.exists():
+                    stream_files = sorted(role3_streaming_dir.glob("role3_segment_output.streaming.*.md"))
+                    if stream_files:
+                        seg_timing = _load_seg_timing(task_dir)
+
+                        c_unit_payloads: list[dict[str, Any]] = []
+                        c_seg_shot_map: dict[str, list[dict[str, Any]]] = {}
+                        unit_index = 0
+                        for stream_path in stream_files:
+                            text = stream_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+                            current_big = stream_path.stem.replace("role3_segment_output.streaming.", "").strip()
+                            for block in re.split(r"\n(?=### )", text):
+                                block = block.strip()
+                                if not block:
+                                    continue
+                                lines = block.split("\n")
+                                heading = lines[0].strip()
+                                if heading.startswith("## "):
+                                    current_big = heading[3:].strip().split(" / ")[0].strip()
+                                    continue
+                                if not heading.startswith("### "):
+                                    continue
+                                seg_id = heading[4:].strip()
+                                if not seg_id:
+                                    continue
+                                scene_desc = ""
+                                remotion_id = ""
+                                for line in lines[1:]:
+                                    stripped = line.strip()
+                                    if stripped.startswith("- scene_desc_zh:"):
+                                        scene_desc = stripped[len("- scene_desc_zh:"):].strip()
+                                    elif stripped.startswith("- remotion_id:"):
+                                        remotion_id = stripped[len("- remotion_id:"):].strip()
+
+                                subjects = _parse_subject_descriptions(scene_desc, remotion_id)
+                                timing = seg_timing.get(seg_id, {})
+                                seg_shots: list[dict[str, Any]] = []
+                                for subj_idx, _ in enumerate(subjects, start=1):
+                                    shot_id = _build_shot_id(seg_id, subj_idx)
+                                    c_unit_payloads.append({
+                                        "unit_id": shot_id,
+                                        "unit_index": unit_index,
+                                        "segment_id": seg_id,
+                                        "start_time": timing.get("start_time", 0.0),
+                                        "end_time": timing.get("end_time", 0.0),
+                                        "duration": max(0.5, timing.get("end_time", 0.0) - timing.get("start_time", 0.0)),
+                                    })
+                                    seg_shots.append({"shot_id": shot_id, "subject_index": subj_idx})
+                                    unit_index += 1
+
+                                c_seg_shot_map[seg_id] = {
+                                    "segment_id": seg_id,
+                                    "big_segment_id": current_big,
+                                    "scene_desc": scene_desc,
+                                    "remotion_id": remotion_id,
+                                    "shots": seg_shots,
+                                    "start_time": timing.get("start_time", 0.0),
+                                    "end_time": timing.get("end_time", 0.0),
+                                }
+
+                        if c_unit_payloads:
+                            self.state_store.sync_module_units(
+                                task_id=task_id,
+                                module_name="C",
+                                units=c_unit_payloads,
+                            )
+                            all_units = self.state_store.list_module_units_by_status(
+                                task_id=task_id,
+                                module_name="C",
+                                statuses=["pending", "running", "done", "failed"],
+                            )
+                            unit_summary = self.state_store.get_module_unit_status_summary(
+                                task_id=normalized_task_id, module_name="C",
+                            )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 读取/构造 segment 结构
+        task_dir = self._resolve_task_dir(task_id=normalized_task_id)
+        frames_dir = task_dir / "artifacts" / "frames"
+        role4_streaming_dir = task_dir / "artifacts" / "module_b_work" / "role4" / "streaming"
+
+        # 建立 unit_id→unit 索引
+        units_by_id: dict[str, dict[str, Any]] = {}
+        for unit in all_units:
+            uid = str(unit.get("unit_id", "")).strip()
+            if uid:
+                units_by_id[uid] = unit
+
+        # 构造 segment 数据
+        seen_seg_order: list[str] = []
+        seen_seg_map: dict[str, dict[str, Any]] = {}
+        for unit in sorted(all_units, key=lambda row: int(row.get("unit_index", 0))):
+            uid = str(unit.get("unit_id", "")).strip()
+            seg_id = str(unit.get("segment_id", "")).strip()
+            if seg_id and seg_id not in seen_seg_map:
+                seen_seg_order.append(seg_id)
+                seen_seg_map[seg_id] = {
+                    "segment_id": seg_id,
+                    "big_segment_id": "",
+                    "scene_desc": "",
+                    "remotion_id": "",
+                    "start_time": float(unit.get("start_time", 0) or 0),
+                    "end_time": float(unit.get("end_time", 0) or 0),
+                    "status": "pending",
+                    "frame_status_start": "pending",
+                    "frame_status_end": "pending",
+                    "error_message": "",
+                    "shots": [],
+                }
+
         shots: list[dict[str, Any]] = []
         for unit in sorted(all_units, key=lambda row: int(row.get("unit_index", 0))):
             shot_id = str(unit.get("unit_id", "")).strip()
@@ -149,62 +332,51 @@ class ModuleCHandlers:
             end_time = float(unit.get("end_time", 0) or 0)
             duration = round(max(0.0, end_time - start_time), 2)
             error_message = str(unit.get("error_message", "")).strip()
+            segment_id = str(unit.get("segment_id", "")).strip()
 
             frame_status_start = str(unit.get("frame_status_start", "pending")).strip()
             frame_status_end = str(unit.get("frame_status_end", "pending")).strip()
-            segment_id = str(unit.get("segment_id", "")).strip()
 
             frame_url_start = ""
             frame_url_end = ""
-            task_dir = self._resolve_task_dir(task_id=normalized_task_id)
-            frames_dir = task_dir / "artifacts" / "frames"
-            frame_path_start = frames_dir / f"{shot_id}_start.png"
-            frame_path_end = frames_dir / f"{shot_id}_end.png"
             try:
+                frame_path_start = frames_dir / f"{shot_id}_start.png"
                 if frame_path_start.exists():
                     frame_url_start = self._build_task_file_url(
-                        task_id=normalized_task_id,
-                        file_path=frame_path_start,
-                    )
-                    # 用文件修改时间做缓存破坏
-                    frame_url_start += f"?t={int(frame_path_start.stat().st_mtime)}"
+                        task_id=normalized_task_id, file_path=frame_path_start,
+                    ) + f"?t={int(frame_path_start.stat().st_mtime)}"
+                    frame_status_start = "done"
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                frame_path_end = frames_dir / f"{shot_id}_end.png"
                 if frame_path_end.exists():
                     frame_url_end = self._build_task_file_url(
-                        task_id=normalized_task_id,
-                        file_path=frame_path_end,
-                    )
-                    frame_url_end += f"?t={int(frame_path_end.stat().st_mtime)}"
+                        task_id=normalized_task_id, file_path=frame_path_end,
+                    ) + f"?t={int(frame_path_end.stat().st_mtime)}"
+                    frame_status_end = "done"
             except Exception:  # noqa: BLE001
                 pass
 
-            # 读取 role4 streaming prompt（按 seg 文件 + subject_index）
-            role4_streaming_dir = task_dir / "artifacts" / "module_b_work" / "role4" / "streaming"
             role4_prompt = self._parse_role4_streaming_prompt(role4_streaming_dir, shot_id)
 
-            # 从 config 读取正向 prompt 前缀/后缀（与 ComfyUIFrameGenerator._assemble_prompt 保持一致）
             comfyui_cfg = self.app_config.module_c.comfyui if hasattr(self, "app_config") else None
             prompt_prefix = str(getattr(comfyui_cfg, "prompt_prefix", "")).strip() if comfyui_cfg else ""
             prompt_suffix = str(getattr(comfyui_cfg, "prompt_suffix", "")).strip() if comfyui_cfg else ""
-
-            # 场景类主体跳过白色背景 suffix，避免与场景描述冲突
             shot_subject_kind = str(role4_prompt.get("subject_kind", "character") or "character").strip().lower()
-            effective_suffix = prompt_suffix if shot_subject_kind != "scene" else ""
-
-            # 组装完整 prompt：前缀 + LLM 输出 + （可选后缀）
+            effective_suffix = prompt_suffix
             assembled_prompt_start = prompt_prefix
             if role4_prompt.get("keyframe_prompt_start_en", "").strip():
                 assembled_prompt_start += "\n" + role4_prompt["keyframe_prompt_start_en"].strip()
             if effective_suffix:
                 assembled_prompt_start += "\n" + effective_suffix
-
             assembled_prompt_end = prompt_prefix
             if role4_prompt.get("keyframe_prompt_end_en", "").strip():
                 assembled_prompt_end += "\n" + role4_prompt["keyframe_prompt_end_en"].strip()
             if effective_suffix:
                 assembled_prompt_end += "\n" + effective_suffix
 
-            # 自愈：首尾帧都已 done 但 unit 状态不对时，覆盖为 done
-            # 跳过正在被重跑的 shot，避免把 running 状态改回去
+            # 自愈
             if (
                 shot_id not in active_rerun_shot_ids
                 and frame_status_start == "done"
@@ -213,7 +385,7 @@ class ModuleCHandlers:
             ):
                 status = "done"
 
-            shots.append({
+            shot_item = {
                 "shot_id": shot_id,
                 "unit_index": int(unit.get("unit_index", 0)),
                 "segment_id": segment_id,
@@ -229,7 +401,48 @@ class ModuleCHandlers:
                 "role4_prompt": role4_prompt,
                 "assembled_prompt_start": assembled_prompt_start,
                 "assembled_prompt_end": assembled_prompt_end,
-            })
+            }
+            shots.append(shot_item)
+
+            # 归入 segment
+            if segment_id in seen_seg_map:
+                seg_obj = seen_seg_map[segment_id]
+                seg_obj["shots"].append(shot_item)
+                _update_seg_status_from_shot(seg_obj, shot_item)
+
+        # 将角色信息回填到 segment
+        for seg_obj in seen_seg_map.values():
+            seg_id = seg_obj["segment_id"]
+            for shot_item in seg_obj["shots"]:
+                sid = str(shot_item.get("shot_id", "")).strip()
+                if sid and sid in units_by_id:
+                    break
+
+        # segment 级别 summary
+        seg_total = len(seen_seg_order)
+        seg_status_counts: dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
+        for seg_id in seen_seg_order:
+            s = seen_seg_map[seg_id]["status"]
+            seg_status_counts[s] = seg_status_counts.get(s, 0) + 1
+
+        segments_ordered = [seen_seg_map[sid] for sid in seen_seg_order]
+
+        unit_summary = {
+            "module_name": "C",
+            "total_units": seg_total,
+            "status_counts": seg_status_counts,
+        }
+        # unit 级别 ID 列表（前端 schema 兼容，从 state_store 获取）
+        try:
+            raw_unit_summary = self.state_store.get_module_unit_status_summary(
+                task_id=normalized_task_id, module_name="C",
+            )
+            if isinstance(raw_unit_summary, dict):
+                for id_key in ("pending_unit_ids", "running_unit_ids", "failed_unit_ids", "done_unit_ids", "problem_unit_ids"):
+                    unit_summary[id_key] = raw_unit_summary.get(id_key, [])
+        except Exception:  # noqa: BLE001
+            for id_key in ("pending_unit_ids", "running_unit_ids", "failed_unit_ids", "done_unit_ids", "problem_unit_ids"):
+                unit_summary[id_key] = []
 
         active_rerun: dict[str, Any] | None = None
         for key, meta in self._rerun_thread_meta.items():
@@ -265,6 +478,7 @@ class ModuleCHandlers:
             "module_c_status": str(module_status_map.get("C", "unknown")),
             "unit_summary": unit_summary,
             "shots": shots,
+            "segments": segments_ordered,
             "active_rerun": active_rerun,
         }
 
@@ -415,7 +629,7 @@ class ModuleCHandlers:
             # 重置被重跑帧的状态，让前端立即反映"正在重跑"
             self.state_store.set_module_unit_frame_status(
                 task_id=task_id, module_name="C", unit_id=shot_id,
-                frame_type=normalized_frame_type, status="running",
+                frame_type=frame_type, status="running",
             )
             self.state_store.set_module_status(
                 task_id=task_id,

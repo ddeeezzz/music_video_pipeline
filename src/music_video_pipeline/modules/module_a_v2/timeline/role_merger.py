@@ -1302,104 +1302,89 @@ def _pick_merge_target_index_by_similarity(
     f0_points: list[dict[str, Any]],
 ) -> tuple[int | None, dict[str, Any]]:
     """
-    功能说明：按左右相似度选择 tiny 并段目标。
+    功能说明：按 RMS 能量选择 tiny 并段目标——计算源窗口与左右邻窗的平均 RMS，
+              并入 RMS 与源窗口更接近的一侧。
     参数说明：
     - windows: 当前窗口列表。
     - source_index: 待吸收窗口索引。
-    - onset_points/accompaniment_rms_times/accompaniment_rms_values/chroma_points/f0_points: 相似度特征输入。
+    - accompaniment_rms_times/accompaniment_rms_values: 伴奏 RMS 序列（能量参考）。
+    - onset_points/chroma_points/f0_points: 保留签名兼容但不再参与决策。
     返回值：
     - tuple[int | None, dict[str, Any]]: (目标索引, 决策元数据)。
-    异常说明：无。
     边界条件：平分固定选左；边界窗直接选唯一邻居。
     """
     left_index = source_index - 1 if source_index - 1 >= 0 else None
     right_index = source_index + 1 if source_index + 1 < len(windows) else None
 
     if left_index is None and right_index is None:
-        return None, {"reason": "no_neighbor", "decision_strategy": "similarity"}
+        return None, {"reason": "no_neighbor", "decision_strategy": "rms_energy"}
     if left_index is None:
-        return right_index, {
-            "reason": "edge_right_only",
-            "decision_strategy": "similarity",
-            "selected_side": "right",
-            "tie_break_applied": False,
-        }
+        return right_index, {"reason": "edge_right_only", "decision_strategy": "rms_energy", "selected_side": "right", "tie_break_applied": False}
     if right_index is None:
+        return left_index, {"reason": "edge_left_only", "decision_strategy": "rms_energy", "selected_side": "left", "tie_break_applied": False}
+
+    def _window_avg_rms(widx: int) -> float:
+        ws = _safe_float(windows[widx].get("start_time", 0.0), 0.0)
+        we = _safe_float(windows[widx].get("end_time", ws), ws)
+        values = [
+            v for t, v in zip(accompaniment_rms_times, accompaniment_rms_values)
+            if ws - 1e-6 <= t <= we + 1e-6
+        ]
+        if not values:
+            return 0.0
+        return sum(values) / max(1, len(values))
+
+    # 保护规则：右邻是 lyricsentence 窗口（左边界是句子起始）时禁止向右并
+    right_hint = str(windows[right_index].get("window_role_hint", "")).lower().strip()
+    if right_hint == "lyric":
         return left_index, {
-            "reason": "edge_left_only",
-            "decision_strategy": "similarity",
+            "reason": "right_is_lyric_sentence_boundary",
+            "decision_strategy": "lyric_boundary_protect",
             "selected_side": "left",
             "tie_break_applied": False,
         }
 
-    source_summary = _build_tiny_window_summary(
-        window_item=windows[source_index],
-        onset_points=onset_points,
-        accompaniment_rms_times=accompaniment_rms_times,
-        accompaniment_rms_values=accompaniment_rms_values,
-        chroma_points=chroma_points,
-        f0_points=f0_points,
-    )
-    left_summary = _build_tiny_window_summary(
-        window_item=windows[left_index],
-        onset_points=onset_points,
-        accompaniment_rms_times=accompaniment_rms_times,
-        accompaniment_rms_values=accompaniment_rms_values,
-        chroma_points=chroma_points,
-        f0_points=f0_points,
-    )
-    right_summary = _build_tiny_window_summary(
-        window_item=windows[right_index],
-        onset_points=onset_points,
-        accompaniment_rms_times=accompaniment_rms_times,
-        accompaniment_rms_values=accompaniment_rms_values,
-        chroma_points=chroma_points,
-        f0_points=f0_points,
-    )
-    left_components = _compute_tiny_similarity_components(source_summary=source_summary, neighbor_summary=left_summary)
-    right_components = _compute_tiny_similarity_components(source_summary=source_summary, neighbor_summary=right_summary)
-    left_total = _safe_float(left_components.get("total_similarity", 0.0), 0.0)
-    right_total = _safe_float(right_components.get("total_similarity", 0.0), 0.0)
-    if left_total > right_total + EPSILON_SECONDS:
+    source_rms = _window_avg_rms(source_index)
+    left_rms = _window_avg_rms(left_index)
+    right_rms = _window_avg_rms(right_index)
+
+    left_diff = abs(source_rms - left_rms)
+    right_diff = abs(source_rms - right_rms)
+
+    if left_diff + EPSILON_SECONDS < right_diff:
         return left_index, {
-            "reason": "similarity_left_higher",
-            "decision_strategy": "similarity",
+            "reason": "rms_closer_to_left",
+            "decision_strategy": "rms_energy",
             "selected_side": "left",
             "tie_break_applied": False,
-            "source_summary": source_summary,
-            "left_summary": left_summary,
-            "right_summary": right_summary,
-            "left_similarity_total": round(float(left_total), 6),
-            "right_similarity_total": round(float(right_total), 6),
-            "left_similarity_components": left_components,
-            "right_similarity_components": right_components,
+            "source_avg_rms": round(source_rms, 6),
+            "left_avg_rms": round(left_rms, 6),
+            "right_avg_rms": round(right_rms, 6),
+            "left_diff": round(left_diff, 6),
+            "right_diff": round(right_diff, 6),
         }
-    if right_total > left_total + EPSILON_SECONDS:
+    if right_diff + EPSILON_SECONDS < left_diff:
         return right_index, {
-            "reason": "similarity_right_higher",
-            "decision_strategy": "similarity",
+            "reason": "rms_closer_to_right",
+            "decision_strategy": "rms_energy",
             "selected_side": "right",
             "tie_break_applied": False,
-            "source_summary": source_summary,
-            "left_summary": left_summary,
-            "right_summary": right_summary,
-            "left_similarity_total": round(float(left_total), 6),
-            "right_similarity_total": round(float(right_total), 6),
-            "left_similarity_components": left_components,
-            "right_similarity_components": right_components,
+            "source_avg_rms": round(source_rms, 6),
+            "left_avg_rms": round(left_rms, 6),
+            "right_avg_rms": round(right_rms, 6),
+            "left_diff": round(left_diff, 6),
+            "right_diff": round(right_diff, 6),
         }
     return left_index, {
-        "reason": "similarity_tie_left",
-        "decision_strategy": "similarity",
+        "reason": "rms_tie_left",
+        "decision_strategy": "rms_energy",
         "selected_side": "left",
         "tie_break_applied": True,
-        "source_summary": source_summary,
-        "left_summary": left_summary,
-        "right_summary": right_summary,
-        "left_similarity_total": round(float(left_total), 6),
-        "right_similarity_total": round(float(right_total), 6),
-        "left_similarity_components": left_components,
-        "right_similarity_components": right_components,
+        "source_avg_rms": round(source_rms, 6),
+        "left_avg_rms": round(left_rms, 6),
+        "right_avg_rms": round(right_rms, 6),
+        "left_diff": round(left_diff, 6),
+        "right_diff": round(right_diff, 6),
     }
 
 

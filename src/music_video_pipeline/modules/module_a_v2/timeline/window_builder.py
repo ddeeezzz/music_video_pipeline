@@ -34,7 +34,7 @@ PUNCTUATION_PATTERN = re.compile(r"[，、；：。！？!?,.;:]")
 
 def _is_effective_lyric_token_text(text: str) -> bool:
     """
-    功能说明：判断 token 文本是否属于“有效发音内容”（非纯标点/空白）。
+    功能说明：判断 token 文本是否属于"有效发音内容"（非纯标点/空白）。
     参数说明：
     - text: token 文本。
     返回值：
@@ -59,7 +59,7 @@ def _is_effective_lyric_token_text(text: str) -> bool:
 
 def _extract_effective_token_bounds(token_units: list[dict[str, Any]]) -> tuple[float, float] | None:
     """
-    功能说明：提取句内“有效发音 token”首尾时间边界。
+    功能说明：提取句内"有效发音 token"首尾时间边界。
     参数说明：
     - token_units: 规范化 token 列表。
     返回值：
@@ -461,7 +461,7 @@ def _collect_punctuation_boundary_gap_candidates(
     segment_end: float,
 ) -> list[dict[str, float]]:
     """
-    功能说明：收集窗口内“标点左右内容 token”边界 gap 候选。
+    功能说明：收集窗口内"标点左右内容 token"边界 gap 候选。
     参数说明：
     - token_units: token 列表。
     - segment_start/segment_end: 目标窗口边界。
@@ -605,15 +605,108 @@ def _split_window_with_boundaries(
     return output
 
 
+LONG_TOKEN_ENERGY_FLOOR = 0.003
+LONG_TOKEN_MIN_DURATION_SECONDS = 1.5
+
+
+def _find_energy_split_points_in_window(
+    token_units: list[dict[str, Any]],
+    segment_start: float,
+    segment_end: float,
+    vocal_rms_times: list[float],
+    vocal_rms_values: list[float],
+    logger=None,
+) -> list[float]:
+    """
+    功能说明：在 token 间 gap=0 时，查找超过 LONG_TOKEN_MIN_DURATION_SECONDS 的长 token，
+              在其内部按人声 RMS 能量找切分点。
+    返回切分点列表（segment_end 开区间内的时间点）。
+    """
+    if logger is None:
+        logger = __import__('logging').getLogger(__name__)
+    if not vocal_rms_times or not vocal_rms_values:
+        return []
+    split_points: list[float] = []
+    for tok in token_units:
+        tok_s = _safe_float(tok.get("start_time", 0.0), 0.0)
+        tok_e = _safe_float(tok.get("end_time", tok_s), tok_s)
+        tok_dur = tok_e - tok_s
+        if tok_dur < LONG_TOKEN_MIN_DURATION_SECONDS + EPSILON_SECONDS:
+            continue
+        # 窗口裁剪
+        clip_s = max(tok_s, segment_start)
+        clip_e = min(tok_e, segment_end)
+        if clip_e - clip_s <= EPSILON_SECONDS:
+            continue
+        # 收集人声能量
+        rms_samples: list[tuple[float, float]] = []
+        for t, v in zip(vocal_rms_times, vocal_rms_values):
+            if clip_s - 1e-6 <= t <= clip_e + 1e-6:
+                rms_samples.append((float(t), float(v)))
+        if not rms_samples:
+            split_points.append(clip_e)
+            continue
+        rms_values = [v for _, v in rms_samples]
+        min_rms = min(rms_values)
+        max_rms = max(rms_values)
+        avg_rms = sum(rms_values) / max(1, len(rms_values))
+
+        # 判断是否有静音段（RMS 低于静音阈值的连续区域）
+        silent_intervals: list[list[float]] = []
+        current_interval: list[float] | None = None
+        for t, v in rms_samples:
+            if v <= LONG_TOKEN_ENERGY_FLOOR:
+                if current_interval is None:
+                    current_interval = [t, t]
+                else:
+                    current_interval[1] = t
+            else:
+                if current_interval is not None:
+                    if current_interval[1] - current_interval[0] > EPSILON_SECONDS:
+                        silent_intervals.append(current_interval)
+                    current_interval = None
+        if current_interval is not None and current_interval[1] - current_interval[0] > EPSILON_SECONDS:
+            silent_intervals.append(current_interval)
+
+        if silent_intervals:
+            # 取最长的静音段的最右点
+            longest = max(silent_intervals, key=lambda iv: iv[1] - iv[0])
+            split_points.append(round(max(clip_s, longest[1]), 3))
+            logger.info(
+                "模块A V2-长token能量切分(静音段)：tok=%s %.3f-%.3f，静音段% .3f-%.3f，取右%.3f",
+                str(tok.get("text", ""))[:4], tok_s, tok_e,
+                longest[0], longest[1], longest[1],
+            )
+        elif max_rms - min_rms > avg_rms * 0.5 and min_rms < avg_rms * 0.3:
+            # 尖锐低点：取RMS最低点
+            min_time = min(rms_samples, key=lambda pair: pair[1])[0]
+            split_points.append(round(max(clip_s, min_time), 3))
+            logger.info(
+                "模块A V2-长token能量切分(尖锐低点)：tok=%s %.3f-%.3f，最低RMS=%.4f@%.3f",
+                str(tok.get("text", ""))[:4], tok_s, tok_e, min_rms, min_time,
+            )
+        else:
+            # 平且中 → 取长token最右
+            split_points.append(round(clip_e, 3))
+            logger.info(
+                "模块A V2-长token能量切分(平坦→最右)：tok=%s %.3f-%.3f，取右%.3f",
+                str(tok.get("text", ""))[:4], tok_s, tok_e, clip_e,
+            )
+    return split_points
+
+
 def _resplit_one_long_lyric_window(
     window_item: dict[str, Any],
     token_units: list[dict[str, Any]],
     max_lyric_window_seconds: float,
     dynamic_gap_threshold_seconds: float,
     events: list[dict[str, Any]],
+    vocal_rms_times: list[float] | None = None,
+    vocal_rms_values: list[float] | None = None,
+    logger=None,
 ) -> list[dict[str, Any]]:
     """
-    功能说明：对单个超长 lyric 窗口执行“标点动态阈值 + token gap 排名”递进切分。
+    功能说明：对单个超长 lyric 窗口执行"标点动态阈值 + token gap 排名"递进切分。
     参数说明：
     - window_item: 原 lyric 窗口。
     - token_units: 对应句级 token 列表。
@@ -625,6 +718,8 @@ def _resplit_one_long_lyric_window(
     异常说明：无。
     边界条件：无法继续切分时保留剩余超长窗口。
     """
+    if logger is None:
+        logger = __import__('logging').getLogger(__name__)
     source_window_id = str(window_item.get("window_id", ""))
     working_windows = [dict(window_item)]
     safe_max_duration = max(EPSILON_SECONDS, float(max_lyric_window_seconds))
@@ -786,7 +881,7 @@ def _pick_long_lyric_local_tiny_merge_target_index(
     source_index: int,
 ) -> tuple[int | None, str]:
     """
-    功能说明：在“同一长句切分子窗”内选择 tiny 并段目标。
+    功能说明：在"同一长句切分子窗"内选择 tiny 并段目标。
     参数说明：
     - split_windows: 同一长句重切后的子窗列表（仅句内窗口）。
     - source_index: 待并入的 tiny 子窗索引。
@@ -797,6 +892,14 @@ def _pick_long_lyric_local_tiny_merge_target_index(
     """
     left_index = source_index - 1 if source_index - 1 >= 0 else None
     right_index = source_index + 1 if source_index + 1 < len(split_windows) else None
+
+    # 能量切分方向约束：左片（end_time=切点）只能向左并，右片（start_time=切点）只能向右并
+    edge = str(split_windows[source_index].get("energy_split_edge", "")).strip()
+    if edge == "must_merge_left":
+        return (left_index, "energy_split_must_left") if left_index is not None else (None, "energy_split_no_left_target")
+    if edge == "must_merge_right":
+        return (right_index, "energy_split_must_right") if right_index is not None else (None, "energy_split_no_right_target")
+
     if left_index is None and right_index is None:
         return None, "no_neighbor"
     if left_index is None:
@@ -824,7 +927,7 @@ def _merge_one_long_lyric_local_tiny_window(
     reason: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    功能说明：执行单次“长句内部 tiny 并段”。
+    功能说明：执行单次"长句内部 tiny 并段"。
     参数说明：
     - split_windows: 同一长句切分子窗列表。
     - source_index: 被并入的 tiny 子窗索引。
@@ -937,17 +1040,17 @@ def _merge_tiny_within_long_lyric_window(
     return working_windows, merge_events
 
 
-def _append_long_lyric_major_fallback_events(
+def _append_long_lyric_major_split_events(
     events: list[dict[str, Any]],
     source_window_id: str,
     split_windows: list[dict[str, Any]],
 ) -> None:
     """
-    功能说明：为长歌词重拍兜底切分补充调试事件。
+    功能说明：为长歌词重拍切分补充调试事件。
     参数说明：
     - events: 长歌词重切事件列表。
     - source_window_id: 原始长歌词窗口ID。
-    - split_windows: 重拍兜底切分后的子窗列表。
+    - split_windows: 重拍切分后的子窗列表。
     返回值：无。
     异常说明：无。
     边界条件：不足两个子窗时不记录事件。
@@ -959,7 +1062,7 @@ def _append_long_lyric_major_fallback_events(
         events.append(
             {
                 "source_window_id": str(source_window_id),
-                "split_basis": "major_fallback",
+                "split_basis": "major_beat",
                 "split_rank": int(split_rank),
                 "boundary_time": _round_time(_safe_float(item.get("end_time", 0.0), 0.0)),
                 "segment_start_time": _round_time(_safe_float(item.get("start_time", 0.0), 0.0)),
@@ -978,9 +1081,12 @@ def resplit_long_lyric_windows(
     dynamic_gap_threshold_seconds: float,
     tiny_merge_bars: float,
     long_lyric_resplit_max_bars: float,
+    vocal_rms_times: list[float] | None = None,
+    vocal_rms_values: list[float] | None = None,
+    logger=None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
-    功能说明：对超长 lyric 窗口执行递进重切（先标点动态阈值，再 token gap 排名兜底）。
+    功能说明：对超长 lyric 窗口执行递进重切（先 token gap 排名、再重拍切分）。
     参数说明：
     - windows_raw: 初始窗口列表。
     - sentence_units: 句级歌词列表（含 token_units）。
@@ -1027,24 +1133,29 @@ def resplit_long_lyric_windows(
             continue
         sentence_index = int(_safe_float(rewritten.get("source_sentence_index", -1), -1))
         token_units = sentence_lookup.get(sentence_index, [])
-        if not token_units:
-            output_windows.append(rewritten)
-            continue
-        split_windows = _resplit_one_long_lyric_window(
-            window_item=rewritten,
-            token_units=token_units,
-            max_lyric_window_seconds=max_lyric_window_seconds,
-            dynamic_gap_threshold_seconds=safe_dynamic_gap_threshold,
-            events=resplit_events,
-        )
-        split_result_windows = split_windows if split_windows else [rewritten]
-        if not all(
-            _window_duration(item) <= max_lyric_window_seconds + EPSILON_SECONDS
-            for item in split_result_windows
+
+        # 第一遍：token gap 切分（需要词级时间戳 token_units）
+        current_windows = [rewritten]
+        if token_units:
+            current_windows = _resplit_one_long_lyric_window(
+                window_item=rewritten,
+                token_units=token_units,
+                max_lyric_window_seconds=max_lyric_window_seconds,
+                dynamic_gap_threshold_seconds=safe_dynamic_gap_threshold,
+                events=resplit_events,
+                vocal_rms_times=vocal_rms_times,
+                vocal_rms_values=vocal_rms_values,
+                logger=logger,
+            ) or [rewritten]
+
+        # 第二遍：重拍切分（对仍超限的子窗独立应用）
+        if any(
+            _window_duration(item) > max_lyric_window_seconds + EPSILON_SECONDS
+            for item in current_windows
         ):
-            fallback_input_windows = [dict(item) for item in split_result_windows]
-            fallback_split_windows = split_long_other_windows_by_major(
-                windows=fallback_input_windows,
+            major_input_windows = [dict(item) for item in current_windows]
+            major_split_windows = split_long_other_windows_by_major(
+                windows=major_input_windows,
                 beats=beats,
                 bar_length_seconds=bar_length_seconds,
                 long_window_split_min_bars=safe_long_lyric_resplit_max_bars,
@@ -1052,25 +1163,70 @@ def resplit_long_lyric_windows(
                 eligible_window_role_hints={"lyric"},
                 score_role="other",
             )
-            if len(fallback_split_windows) > len(split_result_windows):
-                _append_long_lyric_major_fallback_events(
+            if len(major_split_windows) > len(current_windows):
+                _append_long_lyric_major_split_events(
                     events=resplit_events,
                     source_window_id=str(rewritten.get("window_id", "")),
-                    split_windows=fallback_split_windows,
+                    split_windows=major_split_windows,
                 )
-                split_result_windows = fallback_split_windows
+                current_windows = major_split_windows
+
+        # 第三遍：长token能量切分（先于 tiny_merge）
+        if token_units and vocal_rms_times and vocal_rms_values:
+            energy_splits = _find_energy_split_points_in_window(
+                token_units=token_units,
+                segment_start=_safe_float(current_windows[0].get("start_time", 0.0), 0.0),
+                segment_end=_safe_float(current_windows[-1].get("end_time", 0.0), 0.0),
+                vocal_rms_times=vocal_rms_times,
+                vocal_rms_values=vocal_rms_values,
+                logger=logger,
+            )
+            if energy_splits:
+                old_end = _safe_float(current_windows[-1].get("end_time", 0.0), 0.0)
+                sorted_splits = sorted(set([current_windows[0]["start_time"]] + energy_splits + [old_end]))
+                energy_windows = _split_window_with_boundaries(
+                    window_item=current_windows[0],
+                    boundary_points=sorted_splits,
+                    split_basis="energy_low",
+                    split_rank_map={},
+                    split_source_window_id=str(rewritten.get("window_id", "")),
+                )
+                if len(energy_windows) > 1:
+                    for sp in sorted_splits[1:-1]:
+                        resplit_events.append({
+                            "source_window_id": str(rewritten.get("window_id", "")),
+                            "split_basis": "energy_low",
+                            "boundary_time": sp,
+                            "segment_start_time": _round_time(current_windows[0]["start_time"]),
+                            "segment_end_time": _round_time(old_end),
+                        })
+                    for ew in energy_windows:
+                        ew["duration"] = _round_time(_window_duration(ew))
+                    # 标记能量切分边界方向：end_time 在切点上的只能向左并，
+                    # start_time 在切点上的只能向右并，防止两片重新合并
+                    energy_set = set(energy_splits)
+                    for ew in energy_windows:
+                        _es = _safe_float(ew.get("start_time", 0.0), 0.0)
+                        _ee = _safe_float(ew.get("end_time", 0.0), 0.0)
+                        if _es in energy_set:
+                            ew["energy_split_edge"] = "must_merge_right"
+                        elif _ee in energy_set:
+                            ew["energy_split_edge"] = "must_merge_left"
+                    current_windows = energy_windows
+
         all_within_max_lyric_window = all(
             _window_duration(item) <= max_lyric_window_seconds + EPSILON_SECONDS
-            for item in split_result_windows
+            for item in current_windows
         )
         if all_within_max_lyric_window:
-            split_result_windows, local_merge_events = _merge_tiny_within_long_lyric_window(
-                split_windows=split_result_windows,
+            current_windows, local_merge_events = _merge_tiny_within_long_lyric_window(
+                split_windows=current_windows,
                 tiny_merge_seconds=long_lyric_inner_tiny_merge_seconds,
                 max_lyric_window_seconds=max_lyric_window_seconds,
             )
             long_lyric_inner_tiny_merge_events.extend(local_merge_events)
-        output_windows.extend(split_result_windows)
+
+        output_windows.extend(current_windows)
 
     normalized_output_windows = _normalize_windows_continuity(windows=output_windows, duration_seconds=safe_duration)
     remaining_over_limit_count = 0
@@ -1098,7 +1254,7 @@ def build_windows_from_sentences(
     dynamic_gap_threshold_seconds: float,
 ) -> list[dict[str, Any]]:
     """
-    功能说明：根据句级歌词构建“歌词句窗口 + 其他窗口”。
+    功能说明：根据句级歌词构建"歌词句窗口 + 其他窗口"。
     参数说明：
     - sentence_units: 句级歌词单元列表。
     - duration_seconds: 音频总时长（秒）。

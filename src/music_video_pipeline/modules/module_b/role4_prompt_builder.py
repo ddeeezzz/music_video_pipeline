@@ -6,8 +6,6 @@
 维护说明：role4 按 shot 独立调用，每个 shot 写入独立 streaming 预览文件。
 """
 
-# 标准库：用于复制 dataclass 配置对象。
-from dataclasses import replace
 # 标准库：用于路径类型标注。
 from pathlib import Path
 # 标准库：用于 JSON 元信息写盘。
@@ -31,7 +29,8 @@ from music_video_pipeline.modules.module_b.artifact_paths import (
 from music_video_pipeline.modules.module_b.role1_imagery_describer import _update_meta_with_usage
 # 项目内模块：提供 role4 prompt 模板装配能力。
 from music_video_pipeline.modules.module_b.prompt_templates import (
-    ROLE4_PROMPT_TEMPLATE_REF,
+    PromptTemplateRef,
+    ROLE4_PROMPT_MAP,
     render_prompt_asset,
 )
 
@@ -69,13 +68,29 @@ class Role4PromptBuilder:
         self._stream_preview_path: Path | None = None
         self._stream_preview_meta_path: Path | None = None
 
-    def generate(self, user_variables: dict[str, str], shot_id: str) -> str:
-        """为单个 shot 生成 role4 Markdown 提示词，返回 LLM 原始响应文本。"""
+    def generate(self, user_variables: dict[str, str], shot_id: str, subject_kind: str = "") -> str:
+        """为单个 shot 生成 role4 Markdown 提示词，返回 LLM 原始响应文本。
+        subject_kind 用于选择对应类别的 prompt 模板（character_human/animal/object/scene）。"""
         sid = str(shot_id).strip()
-        prompt_template_ref = ROLE4_PROMPT_TEMPLATE_REF
         prompt_template_file_override = str(self._llm_config.prompt_template_file).strip()
         if prompt_template_file_override:
-            prompt_template_ref = replace(prompt_template_ref, template_file=prompt_template_file_override)
+            prompt_template_ref = PromptTemplateRef(template_file=prompt_template_file_override)
+        else:
+            # 从 subject_kind 选择对应 prompt
+            sk = str(subject_kind or "").strip().lower()
+            if sk in ROLE4_PROMPT_MAP:
+                prompt_template_ref = ROLE4_PROMPT_MAP[sk]
+            else:
+                # 从 shot_brief 回退解析
+                shot_brief = str(user_variables.get("shot_brief", "") or "")
+                for line in shot_brief.split("\n"):
+                    if line.strip().startswith("- subject_kind:"):
+                        sk_from_brief = line.split(":", 1)[1].strip().lower()
+                        if sk_from_brief in ROLE4_PROMPT_MAP:
+                            prompt_template_ref = ROLE4_PROMPT_MAP[sk_from_brief]
+                            break
+                else:
+                    prompt_template_ref = ROLE4_PROMPT_MAP["human"]
 
         prompt_asset = render_prompt_asset(
             project_root=self._project_root,

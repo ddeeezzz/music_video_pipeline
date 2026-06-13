@@ -54,9 +54,10 @@ def build_module_b_output(
         except Exception:
             pass
 
-    # 2. 解析 role3 streaming 文件，构建有效 shot_id 集合（与 role4 选择器同源）
-    #    确保只保留 role3 当前产出的 shot，排除旧 run 残留
+    # 2. 解析 role3 streaming 文件，构建有效 shot_id 集合 + shot_subject_kind 映射
+    #    与 role4 选择器同源，确保只保留 role3 当前产出的 shot
     valid_shot_ids: set[str] = set()
+    shot_subject_kind_map: dict[str, str] = {}  # shot_id → shot_subject_kind
     role3_streaming_dir = get_module_b_streaming_dir(artifacts_dir, "role3")
     if role3_streaming_dir.exists():
         for stream_path in sorted(role3_streaming_dir.glob("role3_segment_output.streaming.*.md")):
@@ -81,15 +82,20 @@ def build_module_b_output(
                     continue
                 scene_desc = ""
                 remotion_id = ""
+                seg_subject_kind = "human"
                 for line in lines[1:]:
                     stripped = line.strip()
                     if stripped.startswith("- scene_desc_zh:"):
                         scene_desc = stripped[len("- scene_desc_zh:"):].strip()
                     elif stripped.startswith("- remotion_id:"):
                         remotion_id = stripped[len("- remotion_id:"):].strip()
+                    elif stripped.startswith("- shot_subject_kind:"):
+                        seg_subject_kind = stripped[len("- shot_subject_kind:"):].strip()
                 subjects = _parse_subject_descriptions(scene_desc, remotion_id)
                 for subj_idx, _ in enumerate(subjects, start=1):
-                    valid_shot_ids.add(_build_shot_id(seg_id, subj_idx))
+                    shot_id = _build_shot_id(seg_id, subj_idx)
+                    valid_shot_ids.add(shot_id)
+                    shot_subject_kind_map[shot_id] = seg_subject_kind
 
     # 3. 解析 role4 per-shot streaming 文件 → {shot_id: {7 prompt 字段}}
     #    文件名: role4_prompt_output.streaming.{shot_id}.md
@@ -155,7 +161,7 @@ def build_module_b_output(
         timing = seg_timing.get(seg_key, {})
         output.append({
             "shot_id": shot_id,
-            "subject_kind": fields.get("subject_kind", "character"),
+            "subject_kind": fields.get("subject_kind") or shot_subject_kind_map.get(shot_id, "human"),
             "big_segment_id": meta.get("big_segment_id", ""),
             "remotion_id": meta.get("remotion_id", ""),
             "start_time": timing.get("start_time", 0.0),

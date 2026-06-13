@@ -60,7 +60,13 @@ def render_template_segment(
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=300.0,
         )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "Remotion 模板渲染超时（300秒）："
+            f"composition_id={composition_id}，output_path={normalized_output_path}"
+        ) from None
     except subprocess.CalledProcessError as error:
         stderr_text = str(error.stderr or "").strip()
         stdout_text = str(error.stdout or "").strip()

@@ -1,13 +1,12 @@
 /**
- * 文件用途：实现最小可用的 GridTemplate 正式模板组件。
- * 核心流程：读取背景请求 -> 计算三槽位布局 -> 按总激活时长比例依次执行跳出动画。
+ * 文件用途：实现 GridTemplate 正式模板组件。
+ * 核心流程：读取背景请求 -> 计算三槽位布局 -> 左右格从上往下、中间格从下往上依次入场保持。
  * 输入输出：输入为 GridTemplateRequest，输出为可直接渲染的视频画面 JSX。
- * 依赖说明：依赖 remotion 当前帧上下文、插值工具，以及共享背景层与多图条带层。
- * 维护说明：当前只验证“三图横排 + 依次进入”的最小正式闭环，不在此阶段引入更多模板语言。
+ * 维护说明：入场顺序为左→中→右，每格入场后保持静止。
  */
 
 // 第三方库：用于读取当前帧并执行插值动画。
-import {AbsoluteFill, interpolate, spring, useCurrentFrame} from "remotion";
+import {AbsoluteFill, interpolate, useCurrentFrame} from "remotion";
 // 第三方库：用于声明组件返回类型。
 import type {ReactElement} from "react";
 // 项目内模块：用于渲染背景层。
@@ -36,10 +35,10 @@ const getSlotLeftList = (
   return [0, 1, 2].map((index) => startLeft + index * slotWidth);
 };
 
-// 常量：模板画布固定宽度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_WIDTH = 512;
-// 常量：模板画布固定高度，和 Tooncrafter 推荐分辨率对齐。
-const TEMPLATE_HEIGHT = 320;
+// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
+const TEMPLATE_WIDTH = 1920;
+// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
+const TEMPLATE_HEIGHT = 1200;
 // 常量：模板自然动画帧数（保持不变速）。
 const NATURAL_FRAMES = 84;
 
@@ -60,9 +59,6 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
   const visibleCellCount = Math.max(1, props.layout.visible_cell_count);
   const slotWidth = TEMPLATE_WIDTH / visibleCellCount;
   const leftList = getSlotLeftList(TEMPLATE_WIDTH, slotWidth);
-  const topList = props.slots.map(
-    (slot) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52)) / 2
-  );
   const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.26));
   const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52));
   // 图片容器宽度小于格子宽度时，将每个图片容器在格子内居中偏移
@@ -70,6 +66,8 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
     const imgW = widthList[i] ?? slotWidth;
     return slotLeft + (slotWidth - imgW) / 2;
   });
+  // 用实际渲染高度居中，避免 top 与 heightList 不一致导致垂直偏移
+  const topList = heightList.map((h) => (TEMPLATE_HEIGHT - h) / 2);
   const totalActiveFrames = Math.max(
     3,
     Math.round(NATURAL_FRAMES * props.motion.active_ratio)
@@ -96,21 +94,18 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
       <BackgroundLayer background={props.background} />
       {props.slots.map((_slot, index) => {
         const localFrame = Math.max(0, animFrame - enterFrames * index);
-        const progress = spring({
-          fps: props.fps,
-          frame: localFrame,
-          durationInFrames: enterFrames
-        });
-        const overshootScale = 1 + props.motion.overshoot_ratio;
-        const scale = interpolate(progress, [0, 0.8, 1], [1.2, 1.0, 1.0], {
+        const rawProgress = Math.min(1, localFrame / Math.max(1, enterFrames));
+        // easeInOutCubic 缓动
+        const eased = rawProgress < 0.5
+          ? 4 * rawProgress * rawProgress * rawProgress
+          : 1 - Math.pow(-2 * rawProgress + 2, 3) / 2;
+        // 方向：左右格从上往下（负→0），中间格从下往上（正→0）
+        const direction = index === 1 ? 1 : -1;
+        const translateY = interpolate(eased, [0, 1], [direction * props.motion.enter_distance, 0], {
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp"
         });
-        const translateY = interpolate(progress, [0, 1], [props.motion.enter_distance, 0], {
-          extrapolateLeft: "clamp",
-          extrapolateRight: "clamp"
-        });
-        const opacity = interpolate(progress, [0, 0.15, 1], [0, 0.65, 1], {
+        const opacity = interpolate(eased, [0, 0.15, 1], [0, 1, 1], {
           extrapolateLeft: "clamp",
           extrapolateRight: "clamp"
         });
@@ -121,7 +116,7 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
           <AbsoluteFill
             key={`${currentSymbol.src}-${index}`}
             style={{
-              transform: `translateY(${translateY}px) scale(${scale})`,
+              transform: `translateY(${translateY}px)`,
               transformOrigin: "center center",
               opacity
             }}

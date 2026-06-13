@@ -165,18 +165,43 @@ export function buildTaskModuleALyricsSearchSocketUrl(
   return `${baseUrl}/ws/module-a/search-lyrics?${searchParams.toString()}`;
 }
 
+export function buildTaskModuleACorrectFunasrSocketUrl(taskId: string) {
+  const configuredBaseUrl = import.meta.env.VITE_WS_BASE_URL?.trim();
+  const baseUrl = configuredBaseUrl
+    ? configuredBaseUrl.replace(/\/+$/, "")
+    : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+  return `${baseUrl}/ws/module-a/correct-funasr?${new URLSearchParams({ task_id: taskId }).toString()}`;
+}
+
 export async function selectTaskModuleALyrics(
   taskId: string,
   candidateId: string,
   enable: boolean,
+  rerunMode?: string,
+  lyricsText?: string,
+  artist?: string,
+  title?: string,
+  wordTimedLyrics?: string,
 ) {
-  appLogger.info("模块A", "开始提交 lrc 歌词选择", { taskId, candidateId, enable });
+  const params: Record<string, string> = {
+    task_id: taskId,
+    candidate_id: candidateId,
+    enable: enable ? "1" : "0",
+  };
+  if (rerunMode) {
+    params.rerun_mode = rerunMode;
+  }
+  if (lyricsText) {
+    params.lyrics_text = lyricsText;
+  }
+  if (wordTimedLyrics) {
+    params.word_timed_lyrics = wordTimedLyrics;
+  }
+  if (artist) params.artist = artist;
+  if (title) params.title = title;
+  appLogger.info("模块A", "开始提交 lrc 歌词选择", { taskId, candidateId, enable, rerunMode, hasLyricsText: Boolean(lyricsText) });
   return fetchJson(
-    `/api/module-a/select-lyrics?${buildQueryString({
-      task_id: taskId,
-      candidate_id: candidateId,
-      enable: enable ? "1" : "0",
-    })}`,
+    `/api/module-a/select-lyrics?${buildQueryString(params)}`,
     taskActionResponseSchema,
   );
 }

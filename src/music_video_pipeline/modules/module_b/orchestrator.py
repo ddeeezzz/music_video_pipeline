@@ -25,7 +25,6 @@ from music_video_pipeline.modules.module_b.role1_imagery_describer import Role1I
 from music_video_pipeline.modules.module_b.role2_story_planner import (
     Role2StoryPlanner,
     build_big_segment_catalog,
-    build_big_segment_catalog_stub,
     build_big_segment_catalog_with_segments,
 )
 # 项目内模块：提供 role3 真实执行逻辑。
@@ -172,26 +171,46 @@ def run_module_b_role1(context: RuntimeContext) -> Path:
 
 def run_module_b_role2(context: RuntimeContext) -> Path:
     """
-    功能说明：仅执行模块 B 的 role2，并写出 role2 Markdown 产物。
+    功能说明：执行模块 B 的 role2，分为两阶段：
+    1. role2a：脑洞完整故事大纲（800-1200字）
+    2. role2b：基于大纲为每个 big_segment 填充剧情
     参数说明：
     - context: 运行上下文对象。
     返回值：
     - Path: role2 Markdown 产物路径。
-    异常说明：按 role2 真实执行逻辑定义。
-    边界条件：优先从 module_a_output.json 读取真实音频特征，缺失时 fallback 到占位数据。
+    异常说明：任一阶段失败时抛出异常；step1 失败时保留失败产物，不执行 step2。
     """
     project_root = _resolve_project_root()
     storyboard_template_path = _resolve_storyboard_template_path(context=context, project_root=project_root)
     storyboard_template_markdown = _strip_remotion_section(storyboard_template_path.read_text(encoding="utf-8"))
+    big_segment_catalog = _load_big_segment_catalog(context)
 
+    # Step 1: 脑洞完整故事大纲
     planner = Role2StoryPlanner(
         logger=context.logger,
         llm_config=context.config.module_b.llm,
         project_root=project_root,
         artifacts_dir=context.artifacts_dir,
     )
-    big_segment_catalog = _load_big_segment_catalog(context)
-    scene_plans = planner.generate(storyboard_template_markdown, big_segment_catalog)
+    context.logger.info("模块B role2a 开始执行：脑洞完整故事大纲")
+    story_draft = planner.brainstorm_story(
+        story_template_markdown=storyboard_template_markdown,
+        big_segment_catalog=big_segment_catalog,
+    )
+    _write_role2_story_draft(context=context, story_draft=story_draft)
+    context.logger.info(
+        "模块B role2a 执行完成，task_id=%s，draft_chars=%s",
+        context.task_id,
+        len(story_draft),
+    )
+
+    # Step 2: 基于大纲为每个 big_segment 填充剧情
+    context.logger.info("模块B role2b 开始执行：基于大纲填充各段剧情")
+    scene_plans = planner.generate(
+        story_template_markdown=storyboard_template_markdown,
+        big_segment_catalog=big_segment_catalog,
+        story_draft=story_draft,
+    )
     output_path = _write_role2_markdown_output(context=context, scene_plans=scene_plans)
     context.logger.info(
         "模块B role2 执行完成，task_id=%s，scene_plan_count=%s，artifact=%s",
@@ -236,6 +255,18 @@ def run_module_b_role3(context: RuntimeContext) -> Path:
     # 解析 catalog 中每个 big_segment 的镜头信息（用于构建 big_segment_context）
     segment_catalog_by_big = _parse_segment_catalog_by_big(big_segment_catalog)
 
+    # 加载 role1 视觉注册表，用于为 role3 提供各意象的外观描述
+    visual_registry: dict[str, str] = {}
+    try:
+        role1_output_path = get_module_b_role_result_path(context.artifacts_dir, "role1")
+        role1_streaming_path = role1_output_path.parent / "streaming" / f"{role1_output_path.stem}.streaming.md"
+        role1_source_path = role1_streaming_path if role1_streaming_path.exists() else role1_output_path
+        if role1_source_path.exists():
+            role1_markdown = role1_source_path.read_text(encoding="utf-8")
+            visual_registry = _parse_visual_registry(role1_markdown)
+    except Exception:
+        context.logger.warning("模块B role3 读取 role1 视觉参考失败，跳过。")
+
     scene_plan_map: dict[str, Any] = {}
     for scene_plan in scene_plans:
         bid = str(scene_plan.big_segment_id).strip()
@@ -257,7 +288,6 @@ def run_module_b_role3(context: RuntimeContext) -> Path:
                 big_segment_id=bid,
                 big_segment_catalog=big_segment_catalog,
             )
-            _write_role3_streaming_preview_for_big(context=context, big_segment_id=bid, shot_plans=direct_plans)
             all_shot_plans.extend(direct_plans)
             continue
 
@@ -268,7 +298,6 @@ def run_module_b_role3(context: RuntimeContext) -> Path:
                 big_segment_id=bid,
                 big_segment_catalog=big_segment_catalog,
             )
-            _write_role3_streaming_preview_for_big(context=context, big_segment_id=bid, shot_plans=direct_plans)
             all_shot_plans.extend(direct_plans)
             continue
 
@@ -277,6 +306,19 @@ def run_module_b_role3(context: RuntimeContext) -> Path:
         context_lines.append(f"## {bid} 剧情")
         context_lines.append(str(scene_plan.story_outline_zh).strip())
         context_lines.append("")
+        # 注入视觉参考：筛选 role1 中与当前大段意象匹配的描述
+        if visual_registry:
+            imagery_used_text = str(getattr(scene_plan, "imagery_used", "")).strip()
+            if imagery_used_text:
+                matched_blocks: list[str] = []
+                for name in re.split(r"[、,，]", imagery_used_text):
+                    name = str(name).strip()
+                    if name and name in visual_registry:
+                        matched_blocks.append(visual_registry[name])
+                if matched_blocks:
+                    context_lines.append(f"## {bid} 视觉参考")
+                    context_lines.extend(matched_blocks)
+                    context_lines.append("")
         shots_section = segment_catalog_by_big.get(bid, "")
         if shots_section:
             context_lines.append(f"## {bid} 的镜头")
@@ -318,9 +360,6 @@ def run_module_b_role3(context: RuntimeContext) -> Path:
                         big_segment_id=bid,
                         big_segment_catalog=big_segment_catalog,
                     )
-                    _write_role3_streaming_preview_for_big(
-                        context=context, big_segment_id=bid, shot_plans=direct_plans,
-                    )
                     all_shot_plans.extend(direct_plans)
 
     # 按原始 big_segment 顺序排序，保持输出稳定
@@ -359,12 +398,6 @@ def _run_role3_llm_big_segment(
     )
     for sp in shot_plans:
         sp.big_segment_id = bid
-    _write_role3_streaming_preview_for_big(
-        context=context,
-        big_segment_id=bid,
-        shot_plans=shot_plans,
-        story_outline_zh=story_outline_zh,
-    )
     context.logger.info(
         "模块B role3 大段 %s 完成，shot_count=%s",
         bid, len(shot_plans),
@@ -420,7 +453,6 @@ def run_module_b_role3_big_segment(context: RuntimeContext, big_segment_id: str)
             big_segment_id=bid,
             big_segment_catalog=big_segment_catalog,
         )
-        _write_role3_streaming_preview_for_big(context=context, big_segment_id=bid, shot_plans=direct_plans)
         existing_plans: list = []
         role3_streaming_dir = get_module_b_streaming_dir(context.artifacts_dir, "role3")
         if role3_streaming_dir.exists():
@@ -439,6 +471,29 @@ def run_module_b_role3_big_segment(context: RuntimeContext, big_segment_id: str)
     context_lines.append(f"## {bid} 剧情")
     context_lines.append(str(target_scene.story_outline_zh).strip())
     context_lines.append("")
+    # 注入视觉参考
+    visual_registry: dict[str, str] = {}
+    try:
+        role1_output_path = get_module_b_role_result_path(context.artifacts_dir, "role1")
+        role1_streaming_path = role1_output_path.parent / "streaming" / f"{role1_output_path.stem}.streaming.md"
+        role1_source_path = role1_streaming_path if role1_streaming_path.exists() else role1_output_path
+        if role1_source_path.exists():
+            role1_markdown = role1_source_path.read_text(encoding="utf-8")
+            visual_registry = _parse_visual_registry(role1_markdown)
+    except Exception:
+        pass
+    if visual_registry:
+        imagery_used_text = str(getattr(target_scene, "imagery_used", "")).strip()
+        if imagery_used_text:
+            matched_blocks: list[str] = []
+            for name in re.split(r"[、,，]", imagery_used_text):
+                name = str(name).strip()
+                if name and name in visual_registry:
+                    matched_blocks.append(visual_registry[name])
+            if matched_blocks:
+                context_lines.append(f"## {bid} 视觉参考")
+                context_lines.extend(matched_blocks)
+                context_lines.append("")
     shots_section = segment_catalog_by_big.get(bid, "")
     if shots_section:
         context_lines.append(f"## {bid} 的镜头")
@@ -452,14 +507,6 @@ def run_module_b_role3_big_segment(context: RuntimeContext, big_segment_id: str)
     )
     for sp in shot_plans:
         sp.big_segment_id = bid
-    # 重写 streaming 文件，加入 story_outline_zh
-    _write_role3_streaming_preview_for_big(
-        context=context,
-        big_segment_id=bid,
-        shot_plans=shot_plans,
-        story_outline_zh=str(target_scene.story_outline_zh).strip(),
-    )
-
     existing_plans: list = []
     role3_streaming_dir = get_module_b_streaming_dir(context.artifacts_dir, "role3")
     if role3_streaming_dir.exists():
@@ -611,32 +658,6 @@ def _load_module_a_big_segment_ids(context: RuntimeContext) -> list[str]:
     return result
 
 
-def _write_role3_streaming_preview_for_big(*, context: RuntimeContext, big_segment_id: str, shot_plans: list[ShotPlan], story_outline_zh: str = "") -> None:
-    """为直接落地的大段同步写入 role3 streaming 预览文件。"""
-    streaming_dir = context.artifacts_dir / "module_b_work" / "role3" / "streaming"
-    streaming_dir.mkdir(parents=True, exist_ok=True)
-    output_path = streaming_dir / f"role3_segment_output.streaming.{str(big_segment_id).strip()}.md"
-    meta_path = streaming_dir / f"role3_segment_output.streaming.{str(big_segment_id).strip()}.meta.json"
-    outline = str(story_outline_zh or "").strip()
-    header = f"## {str(big_segment_id).strip()} / {outline}" if outline else f"## {str(big_segment_id).strip()}"
-    lines: list[str] = [header]
-    if outline:
-        lines.append(f"- story_outline_zh: {outline}")
-    for plan in shot_plans:
-        lines.append(f"### {str(plan.segment_id).strip()}")
-        lines.append(f"- scene_desc_zh: {str(plan.scene_desc_zh).strip()}")
-        lines.append(f"- remotion_id: {str(plan.remotion_id).strip()}")
-    output_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    meta_payload = {
-        "current_attempt": 1,
-        "first_chunk_at_ms": 0,
-        "first_chunk_at": "",
-        "last_chunk_at_ms": 0,
-        "last_chunk_at": "",
-    }
-    meta_path.write_text(json.dumps(meta_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
 def _write_role3_markdown_output(context: RuntimeContext, shot_plans: list) -> Path:
     """
     功能说明：把 role3 的结构化结果回写为 Markdown 主产物。
@@ -658,8 +679,10 @@ def _write_role3_markdown_output(context: RuntimeContext, shot_plans: list) -> P
             markdown_lines.append(f"## {bid}")
         segment_id = str(getattr(plan, "segment_id", "")).strip()
         markdown_lines.append(f"### {segment_id}")
+        markdown_lines.append(f"- remotion_reason: {str(getattr(plan, 'remotion_reason', '')).strip()}")
         markdown_lines.append(f"- scene_desc_zh: {str(getattr(plan, 'scene_desc_zh', '')).strip()}")
         markdown_lines.append(f"- remotion_id: {str(getattr(plan, 'remotion_id', '')).strip()}")
+        markdown_lines.append(f"- shot_subject_kind: {str(getattr(plan, 'shot_subject_kind', 'human')).strip()}")
         markdown_lines.append("")
     output_path.write_text("\n".join(markdown_lines).strip() + "\n", encoding="utf-8")
     return output_path
@@ -703,6 +726,8 @@ def _run_role4_llm_shot(
     sp: ShotPlan,
     subj_idx: int,
     subject_desc: str,
+    prompt_prefix: str = "",
+    prompt_suffix: str = "",
 ) -> str:
     """为单个 shot 调 LLM 执行 role4（线程安全，每次创建独立 planner 实例）。"""
     segment_id = str(sp.segment_id).strip()
@@ -723,6 +748,8 @@ def _run_role4_llm_shot(
     shot_brief_lines.append(f"- big_segment_id: {str(sp.big_segment_id).strip()}")
     shot_brief_lines.append(f"- scene_desc_zh: {scene_desc}")
     shot_brief_lines.append(f"- remotion_id: {remotion_id}")
+    shot_subject_kind = str(getattr(sp, "shot_subject_kind", "human")).strip()
+    shot_brief_lines.append(f"- subject_kind: {shot_subject_kind}")
     subjects = _parse_subject_descriptions(scene_desc, remotion_id)
     if len(subjects) > 1:
         shot_brief_lines.append(f"- subject_index: {subj_idx}")
@@ -738,9 +765,11 @@ def _run_role4_llm_shot(
         "shot_brief": shot_brief,
         "subject_desc": subject_desc,
         "visual_reference": shot_visual_reference,
+        "prompt_prefix": prompt_prefix,
+        "prompt_suffix": prompt_suffix,
     }
 
-    return planner.generate(user_variables=user_variables, shot_id=shot_id)
+    return planner.generate(user_variables=user_variables, shot_id=shot_id, subject_kind=shot_subject_kind)
 
 
 def run_module_b_role4(context: RuntimeContext) -> Path:
@@ -757,6 +786,11 @@ def run_module_b_role4(context: RuntimeContext) -> Path:
     project_root = _resolve_project_root()
     storyboard_template_path = _resolve_storyboard_template_path(context=context, project_root=project_root)
     storyboard_template_text = storyboard_template_path.read_text(encoding="utf-8")
+    # 从 config 读取全局前后缀，作为告知性信息注入到 role4 prompt
+    comfyui_cfg = context.config.module_c.comfyui if hasattr(context.config, "module_c") else None
+    role4_prompt_prefix = str(getattr(comfyui_cfg, "prompt_prefix", "")).strip() if comfyui_cfg else ""
+    role4_prompt_suffix = str(getattr(comfyui_cfg, "prompt_suffix", "")).strip() if comfyui_cfg else ""
+
     # 解析模板目录为 {模板ID: 模板描述}，供 role4 按 remotion_id 精确匹配
     remotion_catalog = _parse_remotion_catalog(storyboard_template_text)
 
@@ -825,6 +859,8 @@ def run_module_b_role4(context: RuntimeContext) -> Path:
                 sp=task["sp"],
                 subj_idx=task["subj_idx"],
                 subject_desc=task["subject_desc"],
+                prompt_prefix=role4_prompt_prefix,
+                prompt_suffix=role4_prompt_suffix,
             )
             future_to_index[future] = idx
 
@@ -939,21 +975,29 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
     shot_brief_lines.append(f"- big_segment_id: {str(target_sp.big_segment_id).strip()}")
     shot_brief_lines.append(f"- scene_desc_zh: {scene_desc}")
     shot_brief_lines.append(f"- remotion_id: {remotion_id}")
+    shot_subject_kind = str(getattr(target_sp, "shot_subject_kind", "human")).strip()
+    shot_brief_lines.append(f"- subject_kind: {shot_subject_kind}")
     if len(subjects) > 1:
         shot_brief_lines.append(f"- subject_index: {subject_index}")
         shot_brief_lines.append(f"- subject_count: {len(subjects)}")
         shot_brief_lines.append(f"- subject_desc: {subject_desc}")
     shot_visual_reference = _filter_visual_reference(visual_registry, scene_desc)
 
+    comfyui_cfg = context.config.module_c.comfyui if hasattr(context.config, "module_c") else None
+    prompt_prefix_inject = str(getattr(comfyui_cfg, "prompt_prefix", "")).strip() if comfyui_cfg else ""
+    prompt_suffix_inject = str(getattr(comfyui_cfg, "prompt_suffix", "")).strip() if comfyui_cfg else ""
+
     user_variables: dict[str, str] = {
         "remotion_template": remotion_template,
         "shot_brief": "\n".join(shot_brief_lines),
         "subject_desc": subject_desc,
         "visual_reference": shot_visual_reference,
+        "prompt_prefix": prompt_prefix_inject,
+        "prompt_suffix": prompt_suffix_inject,
     }
 
     context.logger.info("模块B role4 单 shot 重跑开始：%s", sid)
-    planner.generate(user_variables=user_variables, shot_id=sid)
+    planner.generate(user_variables=user_variables, shot_id=sid, subject_kind=shot_subject_kind)
     context.logger.info("模块B role4 单 shot 重跑完成：%s", sid)
 
     # 级联回填：segment → role(1-4) → module B
@@ -1069,48 +1113,50 @@ def _write_role2_markdown_output(context: RuntimeContext, scene_plans: list[Any]
     return output_path
 
 
+def _write_role2_story_draft(*, context: RuntimeContext, story_draft: str) -> Path:
+    """
+    功能说明：把 role2a 脑洞的故事大纲写入角色目录。
+    参数说明：
+    - context: 运行上下文。
+    - story_draft: 故事大纲纯文本。
+    返回值：
+    - Path: 产物路径。
+    """
+    draft_text = str(story_draft or "").strip()
+    if not draft_text:
+        draft_text = "（为空）"
+    from music_video_pipeline.modules.module_b.artifact_paths import get_module_b_role_dir
+    role2_dir = get_module_b_role_dir(context.artifacts_dir, "role2")
+    role2_dir.mkdir(parents=True, exist_ok=True)
+    output_path = role2_dir / "role2_story_draft.md"
+    output_path.write_text(draft_text + "\n", encoding="utf-8")
+    context.logger.info(
+        "模块B role2a 故事大纲已落盘，task_id=%s，chars=%s，path=%s",
+        context.task_id,
+        len(draft_text),
+        output_path,
+    )
+    return output_path
+
+
 def _load_big_segment_catalog(context: RuntimeContext) -> str:
-    """尝试从 module_a_output.json 读取真实 catalog；失败时 fallback 到 stub。"""
+    """从 module_a_output.json 读取 big_segment 音频特征 catalog。文件不存在或解析失败时抛出异常。"""
     module_a_path = context.artifacts_dir / "module_a_output.json"
-    if module_a_path.exists():
-        try:
-            data = json.loads(module_a_path.read_text(encoding="utf-8"))
-            context.logger.info("模块B role2 从 %s 读取真实音频特征。", module_a_path)
-            return build_big_segment_catalog(data)
-        except Exception as exc:  # noqa: BLE001
-            context.logger.warning(
-                "模块B role2 读取 %s 失败：%s，fallback 到占位数据。",
-                module_a_path,
-                exc,
-            )
-    else:
-        context.logger.warning(
-            "模块B role2 未找到 %s，fallback 到占位数据。",
-            module_a_path,
-        )
-    return build_big_segment_catalog_stub()
+    if not module_a_path.exists():
+        raise FileNotFoundError(f"模块B role2 执行失败：缺少模块 A 输出 {module_a_path}")
+    data = json.loads(module_a_path.read_text(encoding="utf-8"))
+    context.logger.info("模块B role2 从 %s 读取真实音频特征。", module_a_path)
+    return build_big_segment_catalog(data)
 
 
 def _load_big_segment_catalog_with_segments(context: RuntimeContext) -> str:
-    """尝试从 module_a_output.json 读取带子段的 catalog；失败时 fallback 到 stub。"""
+    """从 module_a_output.json 读取带子段的 catalog。文件不存在或解析失败时抛出异常。"""
     module_a_path = context.artifacts_dir / "module_a_output.json"
-    if module_a_path.exists():
-        try:
-            data = json.loads(module_a_path.read_text(encoding="utf-8"))
-            context.logger.info("模块B role3 从 %s 读取带子段的音频特征。", module_a_path)
-            return build_big_segment_catalog_with_segments(data)
-        except Exception as exc:  # noqa: BLE001
-            context.logger.warning(
-                "模块B role3 读取 %s 失败：%s，fallback 到占位数据。",
-                module_a_path,
-                exc,
-            )
-    else:
-        context.logger.warning(
-            "模块B role3 未找到 %s，fallback 到占位数据。",
-            module_a_path,
-        )
-    return build_big_segment_catalog_stub()
+    if not module_a_path.exists():
+        raise FileNotFoundError(f"模块B role3 执行失败：缺少模块 A 输出 {module_a_path}")
+    data = json.loads(module_a_path.read_text(encoding="utf-8"))
+    context.logger.info("模块B role3 从 %s 读取带子段的音频特征。", module_a_path)
+    return build_big_segment_catalog_with_segments(data)
 
 
 def _strip_remotion_section(text: str) -> str:

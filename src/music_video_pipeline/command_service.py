@@ -33,6 +33,7 @@ class CommandRequest:
     module: str | None = None
     force_module: str | None = None
     force: bool = False
+    lyrics_only: bool = False
     role_name: str | None = None
     shot_id: str | None = None
     segment_id: str | None = None
@@ -75,6 +76,11 @@ class MvplCommandService:
         if command == "run":
             task_id = self._require_text(request.task_id, field_name="task_id")
             audio_path = self._resolve_audio_path(request.audio_path)
+            if request.lyrics_only:
+                # 轻量重跑：调用 runner 的 lyrics_only 专用方法
+                if not hasattr(self.runner, "_rerun_task_from_module_a_lyrics_only_for_monitor"):
+                    raise RuntimeError("当前运行器未支持轻量重跑能力。")
+                return self.runner._rerun_task_from_module_a_lyrics_only_for_monitor(task_id=task_id)
             return self.runner.run(
                 task_id=task_id,
                 audio_path=audio_path,

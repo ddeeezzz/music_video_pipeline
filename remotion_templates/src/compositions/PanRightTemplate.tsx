@@ -11,8 +11,8 @@ import {BackgroundLayer} from "../shared/BackgroundLayer";
 import {SymbolLayer} from "../shared/SymbolLayer";
 import type {PanRightTemplateRequest} from "../types";
 
-const W = 512;
-const H = 320;
+const W = 1920;
+const H = 1200;
 const NATURAL_FRAMES = 12;
 
 const easingFns: Record<string, (t: number) => number> = {

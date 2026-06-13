@@ -72,7 +72,7 @@ export function StreamViewerModal({ role, open, onClose }: StreamViewerModalProp
       ? (previewSegments.find((s) => s.segment_id === segmentId)?.content || "")
       : "";
   const displayContent = isRole3
-    ? (role?.result_text?.content || "")
+    ? ""
     : isSegmentedRole
       ? (segmentContent || role?.result_text?.content || "")
       : (role?.stream_preview?.content || role?.result_text?.content || "");

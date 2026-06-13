@@ -9,6 +9,10 @@
     "init_image": {"node_id": "10", "input_name": "image"},
     "denoise": {"node_id": "40", "input_name": "denoise"},
     "seed": {"node_id": "40", "input_name": "seed"},
+    "scene_lora_name": {"node_id": "186", "input_name": "lora_name"},
+    "scene_lora_strength_model": {"node_id": "186", "input_name": "strength_model"},
+    "char_lora_name": {"node_id": "189", "input_name": "lora_name"},
+    "char_lora_strength_model": {"node_id": "189", "input_name": "strength_model"},
     "filename_prefix": {"node_id": "209", "input_name": "filename_prefix"}
   }
 }

@@ -21,6 +21,43 @@ EDGE_PUNCTUATION_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+")
 PUNCTUATION_ONLY_PATTERN = re.compile(r"^[\s，。、；：！？!?,.;:]+$")
 # 常量：跨段 token 前段残片归后段阈值（秒，V2 专用策略）。
 SMALL_BOUNDARY_TOKEN_FRAGMENT_SECONDS = 0.021
+# 常量：同源句子小残片合并阈值（秒）。segment cut 偏移切到句尾时，
+# 将极小片段合并回主段而非创建独立 lyric_unit。
+TINY_FRAGMENT_MERGE_SECONDS = 0.15
+
+
+def _build_sentence_fragment_merge_plan(
+    lyric_units: list[dict[str, Any]],
+    tiny_threshold: float,
+) -> set[str]:
+    """
+    功能说明：构建同源句子小残片合并计划。
+    参数说明：
+    - lyric_units: 挂载后的歌词单元列表。
+    - tiny_threshold: 残片时长阈值（秒），低于此值且与同源主段相邻则合并。
+    返回值：
+    - set[str]: 需被合并掉的 lyric_unit 对应的 (start_time, segment_id) 标识。
+    边界条件：仅合并同时满足 "共享 source_sentence_index" 和 "相邻 segment" 的残片。
+    """
+    merge_targets: set[str] = set()
+    for index, item in enumerate(lyric_units):
+        dur = float(item.get("end_time", 0)) - float(item.get("start_time", 0))
+        if dur > tiny_threshold:
+            continue
+        sidx = item.get("source_sentence_index")
+        if sidx is None or not isinstance(sidx, int):
+            continue
+        # 在同源句子中查找主段（最长的那个）
+        for other in lyric_units:
+            if other is item:
+                continue
+            if other.get("source_sentence_index") != sidx:
+                continue
+            other_dur = float(other.get("end_time", 0)) - float(other.get("start_time", 0))
+            if other_dur > dur + tiny_threshold:
+                merge_targets.add(f"{item.get('start_time')}_{item.get('segment_id')}")
+                break
+    return merge_targets
 
 
 def attach_lyrics_to_segments(
@@ -101,6 +138,16 @@ def attach_lyrics_to_segments(
             clip_end = round_time(min(end_time, seg_end))
             if clip_end - clip_start <= 1e-6:
                 continue
+            # 把 clip_start/clip_end 吸附到最近的 token 边界，避免切在 token 中间
+            if token_units:
+                for _tok in token_units:
+                    _tok_s = float(_tok.get("start_time", 0.0))
+                    _tok_e = float(_tok.get("end_time", _tok_s))
+                    if _tok_s - 1e-6 < clip_start < _tok_e - 1e-6:
+                        # clip_start 落在 token 内部 → 吸附到最近的 token 边界
+                        clip_start = _tok_s if (clip_start - _tok_s) < (_tok_e - clip_start) else _tok_e
+                    if _tok_s + 1e-6 < clip_end < _tok_e + 1e-6:
+                        clip_end = _tok_s if (clip_end - _tok_s) < (_tok_e - clip_end) else _tok_e
             should_drop_small_right_fragment = (
                 prefer_next_segment_for_small_boundary_token
                 and safe_small_fragment_seconds > 0.0
@@ -161,6 +208,34 @@ def attach_lyrics_to_segments(
         if unit_transform in {"original", "split", "merged"}:
             attached_item["unit_transform"] = unit_transform
         output_items.append(attached_item)
+
+    # 后处理：同源句子小残片合并回主段
+    merge_marks: set[str] = _build_sentence_fragment_merge_plan(
+        lyric_units=output_items,
+        tiny_threshold=TINY_FRAGMENT_MERGE_SECONDS,
+    )
+    if merge_marks:
+        merged_items: list[dict[str, Any]] = []
+        for item in output_items:
+            key = f"{item.get('start_time')}_{item.get('segment_id')}"
+            if key in merge_marks:
+                sidx = item.get("source_sentence_index")
+                for m_index in range(len(merged_items) - 1, -1, -1):
+                    prev = merged_items[m_index]
+                    if prev.get("source_sentence_index") == sidx:
+                        prev["end_time"] = max(float(prev.get("end_time", 0)), float(item.get("end_time", 0)))
+                        prev_tokens = prev.get("token_units", [])
+                        item_tokens = item.get("token_units", [])
+                        if isinstance(prev_tokens, list) and isinstance(item_tokens, list) and item_tokens:
+                            prev["token_units"] = prev_tokens + item_tokens
+                            prev["text"] = _build_text_from_token_units(prev["token_units"]) or prev["text"]
+                        break
+                else:
+                    merged_items.append(item)
+            else:
+                merged_items.append(item)
+        output_items = merged_items
+
     return output_items
 
 

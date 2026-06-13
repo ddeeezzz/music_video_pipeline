@@ -26,3 +26,6 @@ src/music_video_pipeline/monitoring/static/app/
 
 # Vite dev 临时日志
 src/music_video_pipeline/web_frontend/.vite-dev.*.log
+
+node_modules/
+dist/

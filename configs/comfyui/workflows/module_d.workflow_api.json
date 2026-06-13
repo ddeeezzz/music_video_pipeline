@@ -115,11 +115,43 @@
     },
     "class_type": "ToonCrafterDecode"
   },
+  "60": {
+    "inputs": {
+      "model_name": "RealESRGAN_x4plus_anime_6B.pth"
+    },
+    "class_type": "UpscaleModelLoader"
+  },
+  "61": {
+    "inputs": {
+      "upscale_model": [
+        "60",
+        0
+      ],
+      "image": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel"
+  },
+  "85": {
+    "inputs": {
+      "image": [
+        "61",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1920,
+      "height": 1200,
+      "crop": "center"
+    },
+    "class_type": "ImageScale"
+  },
   "99": {
     "inputs": {
       "filename_prefix": "mvpl/module_d/tooncrafter",
       "images": [
-        "40",
+        "85",
         0
       ]
     },

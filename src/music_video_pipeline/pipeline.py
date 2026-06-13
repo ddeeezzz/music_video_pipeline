@@ -8,6 +8,8 @@
 
 # 标准库：用于日志记录
 import logging
+# 标准库：用于文件复制（音频投递到任务目录）
+import shutil
 # 标准库：用于上下文管理器
 from contextlib import contextmanager
 # 标准库：用于 dataclass 局部替换
@@ -29,10 +31,12 @@ from music_video_pipeline.constants import MODULE_ORDER, TASK_WEB_ENTRY_PAGE_FIL
 from music_video_pipeline.io_utils import ensure_dir
 # 项目内模块：任务监督服务
 from music_video_pipeline.monitoring import TaskMonitorService
+# 项目内模块：模块 B role 重跑产物备份清理工具
+from music_video_pipeline.modules.module_b.artifact_paths import backup_and_clear_module_b_role_outputs_from
 # 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
 # 项目内模块：任务音频路径回映射
-from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path
+from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path, resolve_workspace_path
 ModuleRunner = Callable[[RuntimeContext], Path]
 
 
@@ -247,6 +251,7 @@ class PipelineRunner:
             task_id=task_id,
             logger=self.logger,
             rerun_handler=self._rerun_task_from_module_a_for_monitor,
+            lyrics_only_rerun_handler=self._rerun_task_from_module_a_lyrics_only_for_monitor,
             module_b_role_rerun_handler=self._rerun_module_b_role_for_monitor,
             module_b_role_segment_rerun_handler=self._rerun_module_b_role_segment_for_monitor,
             app_config=self.config,
@@ -266,6 +271,27 @@ class PipelineRunner:
             )
             return None
 
+    def _ensure_task_audio_in_task_dir(self, task_dir: Path, audio_path: Path) -> Path:
+        """
+        功能说明：确保音频文件存在于任务目录内，供监督服务通过 /task/<id>/ 路由访问。
+        参数说明：
+        - task_dir: 任务目录路径。
+        - audio_path: 原始音频绝对路径。
+        返回值：
+        - Path: 任务目录内的音频路径（复制后或已存在的）。
+        异常说明：无；复制失败时静默降级，仍返回原始路径。
+        边界条件：仅复制一次，已存在时跳过；复制失败不影响主流程。
+        """
+        try:
+            task_audio_path = (task_dir / audio_path.name).resolve()
+            if not task_audio_path.exists() and audio_path.exists() and audio_path.is_file():
+                shutil.copy2(str(audio_path), str(task_audio_path))
+            if task_audio_path.exists():
+                return task_audio_path
+        except Exception:  # noqa: BLE001
+            pass
+        return audio_path
+
     def _rerun_task_from_module_a_for_monitor(self, task_id: str) -> dict:
         """
         功能说明：为监督页“生成”按钮提供强制从模块 A 开始重跑的回调。
@@ -283,18 +309,89 @@ class PipelineRunner:
         config_path_text = str(task_record.get("config_path", "")).strip()
         if not config_path_text:
             raise RuntimeError(f"任务缺少 audio_path 或 config_path，无法执行强制重跑：task_id={task_id}")
+        resolved_config_path = resolve_workspace_path(workspace_root=self.workspace_root, path_text=config_path_text)
         resolved_audio_path = self._resolve_task_audio_path_from_record(
             task_id=task_id,
             task_record=task_record,
-            config_path_override=Path(config_path_text),
+            config_path_override=resolved_config_path,
         )
         self.logger.info("监督页触发任务强制重跑，task_id=%s，from_module=A", task_id)
         return self.run(
             task_id=task_id,
             audio_path=resolved_audio_path,
-            config_path=Path(config_path_text),
+            config_path=resolved_config_path,
             force_module="A",
         )
+
+    def _rerun_task_from_module_a_lyrics_only_for_monitor(self, task_id: str) -> dict:
+        """
+        功能说明：为监督页"仅更新歌词→算法层（跳过信号处理）"提供轻量重跑回调。
+        参数说明：
+        - task_id: 任务唯一标识。
+        返回值：
+        - dict: 重跑执行摘要。
+        异常说明：
+        - RuntimeError: 任务不存在或缺少必要输入时抛出异常。
+        边界条件：始终沿用任务当前记录的 audio_path 与 config_path；
+                  不触发 Demucs/Allin1/Librosa/FunASR 等信号处理流程。
+        """
+        task_record = self.state_store.get_task(task_id=task_id)
+        if not task_record:
+            raise RuntimeError(f"任务不存在，无法执行轻量重跑：task_id={task_id}")
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            raise RuntimeError(f"任务缺少 audio_path 或 config_path，无法执行轻量重跑：task_id={task_id}")
+        resolved_config_path = resolve_workspace_path(workspace_root=self.workspace_root, path_text=config_path_text)
+        resolved_audio_path = self._resolve_task_audio_path_from_record(
+            task_id=task_id,
+            task_record=task_record,
+            config_path_override=resolved_config_path,
+        )
+        self.logger.info("监督页触发任务轻量重跑，task_id=%s，跳过信号处理层", task_id)
+
+        context = self._prepare_context(task_id=task_id, audio_path=resolved_audio_path)
+        self._ensure_task_audio_in_task_dir(task_dir=context.task_dir, audio_path=resolved_audio_path)
+        with self._bind_task_log_file(
+            task_dir=context.task_dir,
+            command_name="run_lyrics_only",
+            config_path=resolved_config_path,
+        ):
+            self.state_store.init_task(
+                task_id=task_id,
+                audio_path=str(resolved_audio_path),
+                config_path=str(resolved_config_path),
+            )
+            self.state_store.reset_from_module(task_id=task_id, module_name="A")
+            self.state_store.update_task_status(task_id=task_id, status="running")
+
+            from music_video_pipeline.modules.module_a_v2.orchestrator import run_module_a_v2_lyrics_only
+
+            artifact_path = run_module_a_v2_lyrics_only(context)
+            self.state_store.set_module_status(
+                task_id=task_id,
+                module_name="A",
+                status="done",
+                artifact_path=str(artifact_path),
+                error_message="",
+            )
+            self.logger.info(
+                "[监督服务] 轻量重跑模块A执行完成，task_id=%s，artifact=%s",
+                task_id,
+                artifact_path,
+            )
+
+            # 轻量重跑仅更新歌词→算法层分段，不触发 B/C/D 全链路重跑
+            self.state_store.update_task_status(task_id=task_id, status="done")
+            self.logger.info(
+                "[监督服务] 轻量重跑执行完成，task_id=%s，仅更新模块A分段，跳过BCD",
+                task_id,
+            )
+            return {
+                "task_id": task_id,
+                "status": "done",
+                "output_video_path": "",
+                "module_status": {"A": "done"},
+            }
 
     def _rerun_module_b_role_for_monitor(self, task_id: str, role_name: str) -> dict:
         """
@@ -314,11 +411,12 @@ class PipelineRunner:
         config_path_text = str(task_record.get("config_path", "")).strip()
         if not config_path_text:
             raise RuntimeError(f"任务缺少 config_path，无法执行模块B role 重跑：task_id={task_id}")
+        resolved_config_path = resolve_workspace_path(workspace_root=self.workspace_root, path_text=config_path_text)
         self.logger.info("监督页触发模块B role 重跑，task_id=%s，role_name=%s", task_id, role_name)
         return self.retry_module_b_role(
             task_id=task_id,
             role_name=role_name,
-            config_path=Path(config_path_text),
+            config_path=resolved_config_path,
         )
 
     def _rerun_module_b_role_segment_for_monitor(self, task_id: str, role_name: str, shot_id: str) -> dict:
@@ -340,6 +438,7 @@ class PipelineRunner:
         config_path_text = str(task_record.get("config_path", "")).strip()
         if not config_path_text:
             raise RuntimeError(f"任务缺少 config_path，无法执行模块B shot 重跑：task_id={task_id}")
+        resolved_config_path = resolve_workspace_path(workspace_root=self.workspace_root, path_text=config_path_text)
         self.logger.info(
             "监督页触发模块B shot 重跑，task_id=%s，role_name=%s，shot_id=%s",
             task_id,
@@ -350,7 +449,7 @@ class PipelineRunner:
             task_id=task_id,
             role_name=role_name,
             shot_id=shot_id,
-            config_path=Path(config_path_text),
+            config_path=resolved_config_path,
         )
 
     def _write_task_web_entry_page(self, task_dir: Path, task_id: str, monitor_url: str) -> Path:
@@ -425,6 +524,7 @@ class PipelineRunner:
         """
         normalized_audio_path = self._resolve_audio_path(audio_path=audio_path)
         context = self._prepare_context(task_id=task_id, audio_path=normalized_audio_path)
+        self._ensure_task_audio_in_task_dir(task_dir=context.task_dir, audio_path=normalized_audio_path)
         with self._bind_task_log_file(task_dir=context.task_dir, command_name="run", config_path=config_path):
             self.state_store.init_task(task_id=task_id, audio_path=str(normalized_audio_path), config_path=str(config_path))
 
@@ -694,7 +794,7 @@ class PipelineRunner:
         返回值：
         - dict: 任务执行摘要，并附带本次重试 role 信息。
         异常说明：任务不存在、上游未完成或模块执行失败时抛 RuntimeError。
-        边界条件：当前仅接通 role1；role1 重试只刷新 role1 产物，不改写 module_b_output.json。
+        边界条件：从指定 role 起点清理旧 role 产物与聚合输出，避免重跑期间误读旧成果。
         """
         normalized_role_name = str(role_name).strip().lower()
         if not normalized_role_name:
@@ -716,6 +816,17 @@ class PipelineRunner:
                 raise RuntimeError(
                     f"模块B角色级重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
                 )
+
+            removed_paths = backup_and_clear_module_b_role_outputs_from(context.artifacts_dir, normalized_role_name)
+            self.state_store.reset_from_module(task_id=task_id, module_name="B")
+            self.state_store.set_module_status(task_id=task_id, module_name="B", status="running")
+            self.state_store.update_task_status(task_id=task_id, status="running")
+            self.logger.info(
+                "模块B角色级重试已备份并清理旧产物，task_id=%s，role_name=%s，removed_count=%s",
+                task_id,
+                normalized_role_name,
+                len(removed_paths),
+            )
 
             if normalized_role_name == "role1":
                 from music_video_pipeline.modules.module_b import run_module_b_role1
@@ -752,7 +863,7 @@ class PipelineRunner:
                 raise RuntimeError(f"未知模块B角色：{normalized_role_name}")
 
             self.logger.info(
-                "模块B角色级重试完成，未触发模块B聚合输出刷新，task_id=%s，role_name=%s，artifact=%s",
+                "模块B角色级重试完成，旧聚合输出已失效，task_id=%s，role_name=%s，artifact=%s",
                 task_id,
                 normalized_role_name,
                 role_output_path,
@@ -764,8 +875,8 @@ class PipelineRunner:
             summary["retry_role_name"] = normalized_role_name
             summary["role_artifact_path"] = str(role_output_path)
             summary["module_b_unit_summary"] = self.state_store.get_module_unit_status_summary(task_id=task_id, module_name="B")
-            summary["downstream_rebuild_required"] = False
-            summary["rebuild_from_module"] = ""
+            summary["downstream_rebuild_required"] = normalized_role_name != "role4"
+            summary["rebuild_from_module"] = "B" if normalized_role_name != "role4" else ""
             return summary
 
     def retry_module_b_role_shot(self, task_id: str, role_name: str, shot_id: str, config_path: Path) -> dict:

@@ -21,11 +21,6 @@ from music_video_pipeline.generators import FrameGenerator
 # 项目内模块：模块C单元数据模型
 from music_video_pipeline.modules.module_c.unit_models import ModuleCUnit
 
-# 常量：道具类素材默认输出宽度。
-PROP_DEFAULT_WIDTH = 512
-# 常量：道具类素材默认输出高度。
-PROP_DEFAULT_HEIGHT = 512
-
 
 def execute_units_with_retry(
     context: RuntimeContext,
@@ -278,18 +273,15 @@ MULTI_SUBJECT_TEMPLATE_IDS: frozenset[str] = frozenset({"GridTemplate"})
 
 def _resolve_unit_dimensions(context: RuntimeContext, unit: ModuleCUnit) -> tuple[int, int]:
     """
-    功能说明：根据素材类型与模板类型解析模块 C 单元应使用的图像尺寸。
+    功能说明：根据模板类型解析模块 C 单元应使用的图像尺寸。
     参数说明：
     - context: 运行上下文对象。
     - unit: 模块 C 单元对象。
     返回值：
     - tuple[int, int]: 依次为宽度与高度。
     异常说明：无。
-    边界条件：prop 固定使用 512x512；GridTemplate 使用 768x1024（竖版）；其余沿用全局 render 默认值。
+    边界条件：GridTemplate 使用 768x1024（竖版）；其余沿用全局 render 默认值。
     """
-    asset_kind = str(unit.shot.get("asset_kind", "character")).strip().lower()
-    if asset_kind == "prop":
-        return PROP_DEFAULT_WIDTH, PROP_DEFAULT_HEIGHT
     remotion_id = str(unit.shot.get("remotion_id", "")).strip()
     if remotion_id in MULTI_SUBJECT_TEMPLATE_IDS:
         return 768, 1024

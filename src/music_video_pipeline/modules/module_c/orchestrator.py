@@ -10,6 +10,8 @@
 from pathlib import Path
 # 标准库：用于正则解析流式文件
 import re
+# 标准库：用于类型提示
+from typing import Any
 
 # 项目内模块：运行上下文定义
 from music_video_pipeline.context import RuntimeContext
@@ -23,10 +25,12 @@ from music_video_pipeline.modules.module_c.executor import execute_one_unit_with
 from music_video_pipeline.modules.module_c.output_builder import build_module_c_output
 # 项目内模块：模块C单元模型工具
 from music_video_pipeline.modules.module_c.unit_models import build_module_c_units, build_unit_map, build_unit_sync_payload
-# 项目内模块：契约校验
-from music_video_pipeline.types import validate_module_b_output
+# 项目内模块：模块 B shot 衍生工具
+from music_video_pipeline.modules.module_b.orchestrator import _build_shot_id, _parse_subject_descriptions
 # 项目内模块：模块 B 产物路径工具
 from music_video_pipeline.modules.module_b.artifact_paths import get_module_b_streaming_dir
+# 项目内模块：契约校验
+from music_video_pipeline.types import validate_module_b_output
 
 
 def _overlay_role4_streaming_prompt(shot: dict[str, object], artifacts_dir: Path) -> dict[str, object]:
@@ -83,6 +87,100 @@ def _merge_frame_items_with_shot_payloads(
     return merged_items
 
 
+def _load_seg_timing(artifacts_dir: Path) -> dict[str, dict[str, float]]:
+    """从 module_a_output.json 读取 segment 时间映射。"""
+    module_a_path = artifacts_dir / "module_a_output.json"
+    if not module_a_path.exists():
+        return {}
+    try:
+        module_a_output = read_json(module_a_path)
+        seg_timing: dict[str, dict[str, float]] = {}
+        for seg_item in module_a_output.get("segments", []) if isinstance(module_a_output, dict) else []:
+            seg_id = str(seg_item.get("segment_id", "")).strip()
+            if seg_id:
+                seg_timing[seg_id] = {
+                    "start_time": float(seg_item.get("start_time", 0) or 0),
+                    "end_time": float(seg_item.get("end_time", 0) or 0),
+                }
+        return seg_timing
+    except Exception:
+        return {}
+
+
+def _derive_shots_from_role3_streaming(artifacts_dir: Path) -> list[dict[str, object]]:
+    """从 role3 streaming 文件衍生 shot 列表（module_b_output.json 的降级替代）。"""
+    role3_streaming_dir = get_module_b_streaming_dir(artifacts_dir, "role3")
+    if not role3_streaming_dir.exists():
+        raise RuntimeError(
+            "模块C输入数据缺失：既没有 module_b_output.json，"
+            "也没有 role3 streaming 产物。请先执行模块 B。"
+        )
+    stream_files = sorted(role3_streaming_dir.glob("role3_segment_output.streaming.*.md"))
+    if not stream_files:
+        raise RuntimeError("模块C输入数据缺失：role3 streaming 目录为空。")
+
+    seg_timing = _load_seg_timing(artifacts_dir)
+    shots: list[dict[str, object]] = []
+
+    for stream_path in stream_files:
+        text = stream_path.read_text(encoding="utf-8").replace("\r\n", "\n")
+        current_big = stream_path.stem.replace("role3_segment_output.streaming.", "").strip()
+        for block in re.split(r"\n(?=### )", text):
+            block = block.strip()
+            if not block:
+                continue
+            lines = block.split("\n")
+            heading = lines[0].strip()
+            if heading.startswith("## "):
+                current_big = heading[3:].strip().split(" / ")[0].strip()
+                continue
+            if not heading.startswith("### "):
+                continue
+            seg_id = heading[4:].strip()
+            if not seg_id:
+                continue
+            scene_desc = ""
+            remotion_id = ""
+            for line in lines[1:]:
+                stripped = line.strip()
+                if stripped.startswith("- scene_desc_zh:"):
+                    scene_desc = stripped[len("- scene_desc_zh:"):].strip()
+                elif stripped.startswith("- remotion_id:"):
+                    remotion_id = stripped[len("- remotion_id:"):].strip()
+
+            subjects = _parse_subject_descriptions(scene_desc, remotion_id)
+            timing = seg_timing.get(seg_id, {})
+            for subj_idx, _ in enumerate(subjects, start=1):
+                shot_id = _build_shot_id(seg_id, subj_idx)
+                shots.append({
+                    "shot_id": shot_id,
+                    "segment_id": seg_id,
+                    "start_time": timing.get("start_time", 0.0),
+                    "end_time": timing.get("end_time", 0.0),
+                    "scene_desc": scene_desc,
+                    "remotion_id": remotion_id,
+                    "big_segment_id": current_big,
+                })
+
+    if not shots:
+        raise RuntimeError("模块C输入数据缺失：role3 streaming 产物为空（无有效 shot）。")
+    return shots
+
+
+def _load_module_b_shots(artifacts_dir: Path, logger: Any) -> list[dict[str, object]]:
+    """读取模块 B 输出，优先 module_b_output.json，降级到 role3 streaming 衍生。"""
+    module_b_path = artifacts_dir / "module_b_output.json"
+    if module_b_path.exists():
+        try:
+            module_b_output = read_json(module_b_path)
+            validate_module_b_output(module_b_output)
+            return module_b_output
+        except Exception as exc:
+            logger.warning("module_b_output.json 读取/校验失败（%s），降级到 role3 streaming。", exc)
+    # Fallback: derive from role3 streaming files
+    return _derive_shots_from_role3_streaming(artifacts_dir)
+
+
 def run_module_c(context: RuntimeContext) -> Path:
     """
     功能说明：执行模块 C，并以最小视觉单元粒度支持断点重试。
@@ -90,23 +188,16 @@ def run_module_c(context: RuntimeContext) -> Path:
     - context: 运行上下文对象。
     返回值：
     - Path: 模块 C 输出清单 JSON 路径。
-    异常说明：输入脚本不存在、单元重试耗尽或输出不完整时抛出异常。
+    异常说明：输入产物缺失、单元重试耗尽或输出不完整时抛出异常。
     边界条件：仅重跑 pending/failed/running 单元，done 单元直接复用。
     """
     context.logger.info("模块C开始执行，task_id=%s", context.task_id)
 
-    module_b_path = context.artifacts_dir / "module_b_output.json"
-    module_b_output = read_json(module_b_path)
-    try:
-        validate_module_b_output(module_b_output)
-    except Exception as error:  # noqa: BLE001
-        raise RuntimeError(
-            "模块C输入契约校验失败：检测到旧版或不兼容的 module_b_output。"
-            "请从模块B重跑，确保产物包含双关键帧字段与单视频轨字段（video_prompt_zh/video_prompt_en）。"
-            f"原始错误：{error}"
-        ) from error
-
-    units = build_module_c_units(shots=module_b_output)
+    module_b_shots = _load_module_b_shots(
+        artifacts_dir=context.artifacts_dir,
+        logger=context.logger,
+    )
+    units = build_module_c_units(shots=module_b_shots)
     # 用 role4 流式文件覆盖每个 unit 的 prompt 字段（支持 role4 重跑后最新内容）
     from dataclasses import replace
     units = [
@@ -188,18 +279,11 @@ def run_module_c_shot(context: RuntimeContext, shot_id: str) -> Path:
 
     context.logger.info("模块C shot 定向执行开始，task_id=%s，shot_id=%s", context.task_id, normalized_shot_id)
 
-    module_b_path = context.artifacts_dir / "module_b_output.json"
-    module_b_output = read_json(module_b_path)
-    try:
-        validate_module_b_output(module_b_output)
-    except Exception as error:  # noqa: BLE001
-        raise RuntimeError(
-            "模块C输入契约校验失败：检测到旧版或不兼容的 module_b_output。"
-            "请从模块B重跑，确保产物包含双关键帧字段与单视频轨字段（video_prompt_zh/video_prompt_en）。"
-            f"原始错误：{error}"
-        ) from error
-
-    units = build_module_c_units(shots=module_b_output)
+    module_b_shots = _load_module_b_shots(
+        artifacts_dir=context.artifacts_dir,
+        logger=context.logger,
+    )
+    units = build_module_c_units(shots=module_b_shots)
     # 用 role4 流式文件覆盖每个 unit 的 prompt 字段（支持 role4 重跑后最新内容）
     from dataclasses import replace
     units = [
@@ -272,18 +356,11 @@ def run_module_c_frame(context: RuntimeContext, shot_id: str, frame_type: str) -
         normalized_frame_type,
     )
 
-    module_b_path = context.artifacts_dir / "module_b_output.json"
-    module_b_output = read_json(module_b_path)
-    try:
-        validate_module_b_output(module_b_output)
-    except Exception as error:  # noqa: BLE001
-        raise RuntimeError(
-            "模块C输入契约校验失败：检测到旧版或不兼容的 module_b_output。"
-            "请从模块B重跑，确保产物包含双关键帧字段与单视频轨字段（video_prompt_zh/video_prompt_en）。"
-            f"原始错误：{error}"
-        ) from error
-
-    units = build_module_c_units(shots=module_b_output)
+    module_b_shots = _load_module_b_shots(
+        artifacts_dir=context.artifacts_dir,
+        logger=context.logger,
+    )
+    units = build_module_c_units(shots=module_b_shots)
     # 用 role4 流式文件覆盖每个 unit 的 prompt 字段（支持 role4 重跑后最新内容）
     from dataclasses import replace
     units = [

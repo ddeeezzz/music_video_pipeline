@@ -67,6 +67,7 @@ def run_algorithm_stage(
     long_lyric_resplit_max_bars: float = 3.0,
     long_other_split_min_bars: float = 1.0,
     major_split_step_bars: float = 2.5,
+    skip_lyrics_cleaner: bool = False,
 ) -> AlgorithmBundle:
     """
     功能说明：执行模块A V2算法层并写入算法阶段中间产物。
@@ -86,6 +87,7 @@ def run_algorithm_stage(
     - major_split_step_bars: 非歌词长窗 downbeat 滑动桶步长（小节）。
     - artifacts: V2产物路径对象。
     - logger: 日志记录器。
+    - skip_lyrics_cleaner: 为 True 时跳过 clean_lyric_units，直接使用感知层原始歌词单元（网络歌词来源）。
     返回值：
     - AlgorithmBundle: 算法层统一输出。
     异常说明：关键输出为空时抛错，由上层统一处理。
@@ -97,12 +99,16 @@ def run_algorithm_stage(
 
     sentence_units: list[dict] = []
     if perception.lyric_sentence_units:
-        sentence_units = clean_lyric_units(
-            lyric_units_raw=perception.lyric_sentence_units,
-            big_segments=big_segments_stage1,
-            instrumental_labels=instrumental_labels,
-            logger=logger,
-        )
+        if skip_lyrics_cleaner:
+            sentence_units = list(perception.lyric_sentence_units)
+            logger.info("模块A V2-跳过歌词清洗，原始句数=%s", len(sentence_units))
+        else:
+            sentence_units = clean_lyric_units(
+                lyric_units_raw=perception.lyric_sentence_units,
+                big_segments=big_segments_stage1,
+                instrumental_labels=instrumental_labels,
+                logger=logger,
+            )
     if sentence_units:
         logger.info("模块A V2算法层已接收分句结果，句数=%s", len(sentence_units))
     else:

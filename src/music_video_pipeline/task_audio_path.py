@@ -6,17 +6,23 @@
 维护说明：新增输入路径约定时，需同步扩展候选生成逻辑与测试覆盖。
 """
 
+import os
 # 标准库：用于路径处理
 from pathlib import Path
 # 标准库：用于轻量 JSON 读取
 import json
 # 标准库：用于正则判断 Windows 盘符绝对路径
 import re
+# 标准库：用于日志输出
+import logging
 # 标准库：用于类型提示
 from typing import Iterable
 
 # 项目内模块：读取任务配置默认音频路径
 from music_video_pipeline.config import load_config
+
+# 模块级日志
+logger = logging.getLogger(__name__)
 
 # 常量：识别 `C:\\foo\\bar` 这类 Windows 盘符绝对路径。
 WINDOWS_DRIVE_ABSOLUTE_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
@@ -343,6 +349,86 @@ def remap_windows_absolute_path(*, workspace_root: Path, path_text: str) -> Path
             # 取标记及之后的部分作为工作区相对路径
             relative_path = normalized[marker_index + 1:]
             return (workspace_root / relative_path).resolve()
-    # 无已知标记：取文件名兜底
-    raw = Path(normalized)
-    return (workspace_root / raw.name).resolve()
+    # 无已知标记：纯盘符路径（如 G:/ComfyUI）不存在于工作区内，返回 None
+    # 让调用方按自身逻辑继续解析（如回退到原绝对路径或扫描磁盘候选）
+    logger.warning(
+        "Windows 盘符路径 remap 失败：路径 %r 不含已知项目标记（configs/resources/runs），"
+        "无法映射到工作区 %s",
+        normalized,
+        workspace_root,
+    )
+    return None
+
+
+def resolve_workspace_path(*, workspace_root: Path, path_text: str) -> Path:
+    """
+    功能说明：将来自状态库的路径（可能为 Windows 盘符绝对路径或 Linux 风格绝对路径）
+              回映射到当前工作区下的等价绝对路径。
+    参数说明：
+    - workspace_root: 当前工作区根目录。
+    - path_text: 原始路径文本（可能来自 DB 中的 config_path 或 audio_path）。
+    返回值：
+    - Path: 解析后的工作区绝对路径。
+    边界条件：先尝试 Windows 盘符绝对路径映射；失败后尝试 Linux 风格绝对路径
+               （以 / 或 \\ 开头）的已知标记映射；均不匹配时退化为工作区相对路径。
+    """
+    normalized = str(path_text).strip()
+    if not normalized:
+        return workspace_root.resolve()
+    # 1) Windows 盘符绝对路径 remap
+    remapped = remap_windows_absolute_path(workspace_root=workspace_root, path_text=normalized)
+    if remapped is not None:
+        return remapped
+    # 2) Linux 风格绝对路径（在 Windows 上 is_absolute 为 False）
+    if normalized.startswith(("/", "\\")):
+        unified = normalized.replace("\\", "/")
+        for marker in ("configs", "resources", "runs"):
+            marker_pattern = f"/{marker}/"
+            if marker_pattern in unified:
+                marker_index = unified.index(marker_pattern)
+                relative_path = unified[marker_index + 1:]
+                return (workspace_root / relative_path).resolve()
+        # 无已知标记：去掉前导分隔符作为工作区相对路径
+        stripped = normalized.lstrip("/\\")
+        if stripped:
+            return (workspace_root / stripped).resolve()
+    # 3) 其他路径：作为相对路径解析
+    return (workspace_root / normalized).resolve()
+
+
+def resolve_comfyui_root_dir(*, workspace_root: Path, root_dir_raw: str) -> Path:
+    """
+    功能说明：跨平台解析 ComfyUI 根目录。
+    参数说明：
+    - workspace_root: 项目工作区根目录。
+    - root_dir_raw: 配置中的 root_dir 原始值（相对或绝对路径）。
+    返回值：
+    - Path: 解析后的 ComfyUI 根目录绝对路径。
+    边界条件：
+    - Linux: root_dir_raw 通常为相对路径 "ComfyUI"，相对于 workspace_root 解析。
+    - Windows: 如果相对路径不存在，自动回退到 G:/ComfyUI。
+    """
+    # 第 1 步：尝试 Windows 盘符路径到 Linux 工作区的回映射
+    remapped = remap_windows_absolute_path(workspace_root=workspace_root, path_text=root_dir_raw)
+    if remapped is not None:
+        # 验证 remap 结果：必须是有效的 ComfyUI 目录（含 output 子目录）
+        # 防止 "G:/ComfyUI" 被错误映射到 workspace_root/ComfyUI
+        if remapped.exists() and (remapped / "output").exists():
+            return remapped
+        # 无效则继续后续步骤
+    # 第 2 步：按相对路径解析，要求 output 子目录存在（确认是真正的 ComfyUI）
+    resolved = (workspace_root / root_dir_raw).resolve()
+    if resolved.exists() and (resolved / "output").exists():
+        return resolved
+    # 第 3 步：Windows 回退 — 如果相对路径不存在而我们在 Windows 上，尝试常见位置
+    if os.name == "nt":
+        win_candidates = [
+            Path("C:/ComfyUI"),
+            Path("D:/ComfyUI"),
+            Path("E:/ComfyUI"),
+            Path("F:/ComfyUI"),
+            Path("G:/ComfyUI"),
+        ]
+        for candidate in win_candidates:
+            if candidate.exists():                return candidate.resolve()
+    return resolved

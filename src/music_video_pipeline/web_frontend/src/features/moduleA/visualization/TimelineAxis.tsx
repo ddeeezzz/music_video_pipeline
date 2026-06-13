@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { useVisualizationStore } from "@/stores/visualizationStore";
 
+const LANE_LABEL_WIDTH = 132;
+
 export function TimelineAxis() {
   const pxPerSec = useVisualizationStore((s) => s.pxPerSec);
   const duration = useVisualizationStore((s) => s.duration);
@@ -11,7 +13,7 @@ export function TimelineAxis() {
     const minorStep = majorStep / 2;
 
     for (let t = 0; t <= duration + 1e-6; t += minorStep) {
-      const x = t * pxPerSec;
+      const x = LANE_LABEL_WIDTH + t * pxPerSec;
       const isMajor = Math.abs(t / majorStep - Math.round(t / majorStep)) < 1e-6;
       result.push({
         x,
@@ -22,7 +24,7 @@ export function TimelineAxis() {
     return result;
   }, [duration, pxPerSec]);
 
-  const totalWidth = duration * pxPerSec;
+  const totalWidth = Math.max(0, LANE_LABEL_WIDTH + duration * pxPerSec);
 
   return (
     <div className="vis-axis" style={{ width: totalWidth }}>

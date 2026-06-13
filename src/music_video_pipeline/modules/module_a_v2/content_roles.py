@@ -192,6 +192,8 @@ def apply_content_role_pipeline(
         dynamic_gap_threshold_seconds=dynamic_gap_threshold_seconds,
         tiny_merge_bars=safe_tiny_merge_bars,
         long_lyric_resplit_max_bars=long_lyric_resplit_max_bars,
+        vocal_rms_times=vocal_rms_times,
+        vocal_rms_values=vocal_rms_values,
     )
     bar_length_seconds = _safe_float(
         long_lyric_resplit_stats.get("bar_length_seconds", 0.0),
@@ -265,6 +267,28 @@ def apply_content_role_pipeline(
         vocal_f0_points=list(vocal_f0_points or []),
         accompaniment_f0_points=list(accompaniment_f0_points or []),
     )
+
+    # visual_lead：对 lyric 窗口左移左边界（仅左边界，右边界保持不动）。
+    # 同时将前一个窗口的右边界左移相同的量，保持连续性、不产生微小碎片段。
+    safe_visual_lead = _safe_float(visual_lead_seconds, 0.06)
+    if safe_visual_lead > 1e-6:
+        for index, item in enumerate(windows_merged):
+            if str(item.get("role", "")).lower().strip() != "lyric":
+                continue
+            # 句内子窗口（由 resplit_long_lyric_windows 切出）不左移，只对每句首段生效
+            if item.get("split_basis"):
+                continue
+            original_start = _safe_float(item.get("start_time", 0.0), 0.0)
+            shifted = max(0.0, round(original_start - safe_visual_lead, 3))
+            item["start_time"] = round(shifted, 3)
+            item["duration"] = round(max(0.0, _safe_float(item.get("end_time", shifted), shifted) - float(item["start_time"])), 3)
+            # 同步左移前一个窗口的右边界以保持连续性
+            if index > 0:
+                prev_end = _safe_float(windows_merged[index - 1].get("end_time", 0.0), 0.0)
+                if prev_end > shifted + 1e-6:
+                    windows_merged[index - 1]["end_time"] = round(shifted, 3)
+                    windows_merged[index - 1]["duration"] = round(max(0.0, shifted - _safe_float(windows_merged[index - 1].get("start_time", 0.0), 0.0)), 3)
+
     (
         big_segments_a1,
         small_timestamps,
