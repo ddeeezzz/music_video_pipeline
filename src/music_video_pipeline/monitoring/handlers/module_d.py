@@ -27,6 +27,8 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_D_RERUN_REMOTION_MODULE_API_PATH,
     TASK_MODULE_D_TOONCRAFTER_MODE_API_PATH,
     TASK_MODULE_D_REBUILD_FINAL_API_PATH,
+    TASK_MODULE_D_RESUME_API_PATH,
+    TASK_MODULE_D_BATCH_RERENDER_API_PATH,
     TOONCRAFTER_MODE_FILE_NAME,
 )
 
@@ -558,6 +560,25 @@ class ModuleDHandlers:
             except Exception:
                 pass
 
+        # 从 module_a_output.json 加载各 segment 的歌词文本
+        seg_lyrics: dict[str, list[str]] = {}
+        if module_a_path.exists():
+            try:
+                ma_data = json.loads(module_a_path.read_text(encoding="utf-8"))
+                for lu in ma_data.get("lyric_units", []):
+                    if not isinstance(lu, dict):
+                        continue
+                    sid = str(lu.get("segment_id", "")).strip()
+                    text = str(lu.get("text", "")).strip()
+                    if sid and text:
+                        seg_lyrics.setdefault(sid, []).append(text)
+            except Exception:
+                pass
+        for seg in segments:
+            seg_id = str(seg.get("segment_id", "")).strip()
+            lyrics_list = seg_lyrics.get(seg_id, [])
+            seg["lyrics"] = lyrics_list
+
         # 活跃重跑：取最新提交且 active=True 的条目（忽略已完成的旧记录）
         active_rerun: dict[str, Any] | None = None
         latest_ms: int = 0
@@ -577,6 +598,7 @@ class ModuleDHandlers:
                     "big_segment_id": str(meta.get("big_segment_id", "")).strip(),
                     "segment_id": str(meta.get("segment_id", "")).strip(),
                     "frame_type": str(meta.get("frame_type", "")).strip(),
+                    "phase": str(meta.get("phase", "")).strip(),
                     "submitted_at": str(meta.get("submitted_at", "")).strip(),
                     "submitted_at_ms": submitted_ms,
                     "started_at_ms": int(meta.get("started_at_ms", 0) or 0),
@@ -752,22 +774,40 @@ class ModuleDHandlers:
     def _extract_prev_segment_tail_frame(
         self, task_id: str, segment_id: str, task_dir: Path,
     ) -> Path | None:
-        """从上一个 segment 的视频文件中提取尾帧（每次重新截取）。"""
+        """从上一个 segment 的 mp4 手动截取尾帧（每次重新截取，绝不复用已有文件）。
+
+        调用方根据返回值自行处理回退策略：
+        - 返回 Path → 截取成功，直接使用
+        - 返回 None → 截取失败，由调用方根据模板类型决定回退方案
+        """
         logger = getattr(self, "logger", None)
         segments_dir = task_dir / "artifacts" / "segments"
+        frames_dir = task_dir / "artifacts" / "frames"
         seg_match = _re.search(r"(\d+)", segment_id)
         if not seg_match:
             return None
         prev_num = int(seg_match.group(1)) - 1
         if prev_num < 1:
             return None
+
         prev_mp4 = segments_dir / f"segment_{prev_num:03d}.mp4"
         if not prev_mp4.exists():
             return None
-        out_frame = task_dir / "artifacts" / "frames" / f"seg_{prev_num:04d}_end_from_video.png"
+
+        out_frame = frames_dir / f"seg_{prev_num:04d}_end_from_video.png"
         out_frame.parent.mkdir(parents=True, exist_ok=True)
+        if out_frame.exists():
+            try:
+                out_frame.unlink()
+            except Exception:
+                pass
+        if logger:
+            logger.info("截取上一个 segment 尾帧：mp4=%s", prev_mp4)
         import shutil as _shutil
-        ffmpeg_bin = str(getattr(getattr(getattr(self, "app_config", None), "ffmpeg", None), "ffmpeg_bin", "")).strip() or _shutil.which("ffmpeg") or "ffmpeg"
+        ffmpeg_bin = (
+            str(getattr(getattr(getattr(self, "app_config", None), "ffmpeg", None), "ffmpeg_bin", "")).strip()
+            or _shutil.which("ffmpeg") or "ffmpeg"
+        )
         try:
             subprocess.run(
                 [ffmpeg_bin, "-y", "-sseof", "-0.1", "-i", str(prev_mp4),
@@ -776,9 +816,43 @@ class ModuleDHandlers:
             )
         except Exception as exc:
             if logger:
-                logger.warning("提取上一个 segment 尾帧失败：%s", exc)
-            return None
-        return out_frame if out_frame.exists() else None
+                logger.warning("截取上一个 segment 尾帧失败：%s", exc)
+        if out_frame.exists():
+            return out_frame
+        return None
+
+    def _get_prev_segment_remotion_id(self, task_id: str, segment_id: str) -> str:
+        """获取上一个 segment 的 remotion_id，用于回退策略判断。"""
+        try:
+            payload = self._build_module_d_payload(task_id=task_id)
+            seg_match = _re.search(r"(\d+)", segment_id)
+            if not seg_match:
+                return ""
+            prev_num = int(seg_match.group(1)) - 1
+            if prev_num < 1:
+                return ""
+            for seg in payload.get("segments", []):
+                seg_idx = str(seg.get("segment_index", "")).strip()
+                seg_sid = str(seg.get("segment_id", "")).strip()
+                if seg_idx == str(prev_num) or seg_sid == f"seg_{prev_num:04d}":
+                    return str(seg.get("remotion_id", "")).strip()
+        except Exception:
+            pass
+        return ""
+
+    def _get_prev_segment_last_shot_id(self, task_id: str, segment_id: str) -> str:
+        """获取上一个 segment 最后一个 shot 的 shot_id（用于 keyframe 回退）。"""
+        try:
+            payload = self._build_module_d_payload(task_id=task_id)
+            segs = payload.get("segments", [])
+            for i, seg in enumerate(segs):
+                if str(seg.get("segment_id", "")).strip() == segment_id and i > 0:
+                    prev_shots = segs[i - 1].get("shots", [])
+                    if prev_shots:
+                        return str(prev_shots[-1].get("shot_id", "")).strip()
+        except Exception:
+            pass
+        return ""
 
     # ------------------------------------------------------------------
     # Remotion 模板 props 构建
@@ -1005,6 +1079,59 @@ class ModuleDHandlers:
         raise ValueError(f"不支持的 remotion_id：{remotion_id}")
 
     # ------------------------------------------------------------------
+    # 状态写入辅助方法
+    # ------------------------------------------------------------------
+
+    def _write_module_d_segment_done(self, task_id: str, segment_id: str, output_path: str) -> None:
+        """标记 segment 下所有 shot 为 done，然后 reconcile 模块级/任务级状态。"""
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 标记 segment 所有 shot 为 done，task_id=%s，segment_id=%s，output=%s",
+                task_id, segment_id, output_path,
+            )
+        payload = self._build_module_d_payload(task_id=task_id)
+        for seg in payload.get("segments", []):
+            if str(seg.get("segment_id", "")).strip() != segment_id:
+                continue
+            for shot in seg.get("shots", []):
+                shot_id = str(shot.get("shot_id", "")).strip()
+                if shot_id:
+                    self.state_store.set_module_unit_status(
+                        task_id=task_id, module_name="D",
+                        unit_id=shot_id, status="done",
+                        artifact_path=output_path, error_message="",
+                    )
+            break
+        self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+
+    def _prewrite_module_d_running(self, task_id: str) -> None:
+        """预写 module D running 并将 task 从 failed 回退到 running。"""
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 预写 module D 状态为 running，task_id=%s", task_id,
+            )
+        try:
+            task_record = self.state_store.get_task(task_id=task_id)
+            if task_record and str(task_record.get("status", "")).strip() == "failed":
+                self.state_store.update_task_status(task_id=task_id, status="running")
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块D 提交时回退任务状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
+        try:
+            self.state_store.set_module_status(
+                task_id=task_id, module_name="D", status="running",
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块D 提交时预写 running 状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
+
+    # ------------------------------------------------------------------
     # Segment 重跑 handler（统一入口）
     # ------------------------------------------------------------------
 
@@ -1050,6 +1177,8 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_segment_rerun_in_background,
             args=(task_id, segment_id, frame_type, rerun_key, transition_bg),
@@ -1064,6 +1193,7 @@ class ModuleDHandlers:
             "segment_id": segment_id,
             "frame_type": frame_type,
             "transition_bg": transition_bg,
+            "phase": "remotion",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -1132,23 +1262,123 @@ class ModuleDHandlers:
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s",
+                task_id, segment_id,
             )
 
         try:
+            # 0. 重置 SQL unit 状态为 running
+            try:
+                all_units = self.state_store.list_module_units(
+                    task_id=task_id, module_name="D",
+                )
+                reset_ids: list[str] = []
+                for unit in all_units:
+                    if str(unit.get("segment_id", "")).strip() == segment_id:
+                        unit_id = str(unit.get("unit_id", "")).strip()
+                        if unit_id:
+                            reset_ids.append(unit_id)
+                            self.state_store.set_module_unit_status(
+                                task_id=task_id, module_name="D",
+                                unit_id=unit_id, status="running",
+                                artifact_path="", error_message="",
+                            )
+                if logger:
+                    logger.info(
+                        "[模块D] 已重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                        task_id, segment_id, reset_ids,
+                    )
+
+                # 修复：如果 state store 中不存在该 segment 的 unit 记录（units=[]），
+                # 则从 payload 构建并创建这些 unit，再重新设置状态为 running。
+                # 否则前端的 mp4 存在性推断回退逻辑会将状态误判为 done。
+                if not reset_ids:
+                    if logger:
+                        logger.info(
+                            "[模块D] state store 中无该 segment 的 unit 记录，尝试创建，task_id=%s，segment_id=%s",
+                            task_id, segment_id,
+                        )
+                    rerun_payload = self._build_module_d_payload(task_id=task_id)
+                    for seg in rerun_payload.get("segments", []):
+                        if str(seg.get("segment_id", "")).strip() != segment_id:
+                            continue
+                        merged_units = list(all_units)
+                        existing_ids = {u["unit_id"] for u in all_units}
+                        for shot in seg.get("shots", []):
+                            shot_id = str(shot.get("shot_id", "")).strip()
+                            if shot_id and shot_id not in existing_ids:
+                                merged_units.append({
+                                    "unit_id": shot_id,
+                                    "unit_index": shot.get("unit_index", 0),
+                                    "segment_id": segment_id,
+                                    "start_time": 0.0,
+                                    "end_time": 0.0,
+                                    "duration": 0.0,
+                                })
+                        if len(merged_units) > len(all_units):
+                            self.state_store.sync_module_units(
+                                task_id=task_id, module_name="D",
+                                units=merged_units,
+                            )
+                            # 重新读取刚创建的 units 并设置状态为 running
+                            for unit in self.state_store.list_module_units(task_id=task_id, module_name="D"):
+                                if str(unit.get("segment_id", "")).strip() == segment_id:
+                                    uid = str(unit.get("unit_id", "")).strip()
+                                    if uid:
+                                        reset_ids.append(uid)
+                                        self.state_store.set_module_unit_status(
+                                            task_id=task_id, module_name="D",
+                                            unit_id=uid, status="running",
+                                            artifact_path="", error_message="",
+                                        )
+                            if logger:
+                                logger.info(
+                                    "[模块D] 已创建并重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                                    task_id, segment_id, reset_ids,
+                                )
+                        break
+            except Exception as exc:
+                if logger:
+                    logger.error(
+                        "[模块D] 重置 unit 状态失败，task_id=%s，segment_id=%s，error=%s",
+                        task_id, segment_id, exc,
+                    )
+                raise
+
+            if meta:
+                meta["phase"] = "remotion"
+
             # 1. 构建 Remotion props
+            t_props_start = time.perf_counter()
             props = self._build_remotion_request_props(
                 task_id=task_id,
                 segment_id=segment_id,
                 frame_type=frame_type,
                 transition_bg=transition_bg,
             )
+            props_elapsed = (time.perf_counter() - t_props_start) * 1000
+            remotion_id = str(props.get("template", "")).strip()
+            if logger:
+                logger.info(
+                    "[D_TIMING] task_id=%s segment=%s template=%s props_build_ms=%.0f",
+                    task_id, segment_id, remotion_id, props_elapsed,
+                )
             props, seg_duration, total_frames = self._apply_module_a_segment_duration_to_props(
                 task_id=task_id,
                 segment_id=segment_id,
                 props=props,
             )
+
+            # 添加歌词数据（需在 duration_in_frames 修正之后计算帧坐标）
+            lyrics_payload = self._build_rerun_lyrics_payload(
+                task_id=task_id,
+                segment_id=segment_id,
+                fps=int(props.get("fps", 24)),
+                duration_in_frames=total_frames,
+            )
+            if lyrics_payload:
+                props["lyrics"] = lyrics_payload
+
             remotion_id = str(props.get("template", "")).strip()
             composition_id = remotion_id
             if not composition_id:
@@ -1177,14 +1407,22 @@ class ModuleDHandlers:
             seg_num = int(seg_match.group(1))
             output_path = segments_dir / f"segment_{seg_num:03d}.mp4"
 
-            # 5. 调用 Remotion 渲染
+            # 5. 调用 Remotion 渲染（通过共享队列限制并发）
             from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
-            render_template_segment(
+            t_render_start = time.perf_counter()
+            self._remotion_queue.submit(
+                render_template_segment,
                 remotion_project_dir=remotion_project_dir,
                 composition_id=composition_id,
                 props_json_path=props_path,
                 output_path=output_path,
             )
+            render_elapsed = (time.perf_counter() - t_render_start) * 1000
+            if logger:
+                logger.info(
+                    "[D_TIMING] task_id=%s segment=%s template=%s render_duration_ms=%.0f output=%s",
+                    task_id, segment_id, composition_id, render_elapsed, output_path,
+                )
 
             if logger:
                 logger.info(
@@ -1196,6 +1434,11 @@ class ModuleDHandlers:
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
+            # 标记所有 shot 为 done + 自愈模块级/任务级状态
+            self._write_module_d_segment_done(
+                task_id=task_id, segment_id=segment_id,
+                output_path=str(output_path),
+            )
 
         except Exception as error:
             error_text = str(error)
@@ -1209,6 +1452,15 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "Remotion 渲染失败"
+            # 自愈模块级状态
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D segment 重跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             # 清理线程引用与元数据
@@ -1257,6 +1509,81 @@ class ModuleDHandlers:
         except Exception:
             pass
         return "mid", 0.5
+
+    def _load_segment_lyric_units(self, task_id: str, segment_id: str) -> list[dict[str, Any]]:
+        """
+        功能说明：从 module_a_output.json 加载指定 segment 的 lyric_units。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - segment_id: segment 标识（如 seg_0001）。
+        返回值：
+        - list[dict]: lyric_units 列表，无数据或读取失败时返回空列表。
+        """
+        task_dir = self._resolve_task_dir(task_id=task_id)
+        module_a_path = task_dir / "artifacts" / "module_a_output.json"
+        if not module_a_path.exists():
+            return []
+        try:
+            data = json.loads(module_a_path.read_text(encoding="utf-8"))
+            return [
+                item for item in data.get("lyric_units", [])
+                if isinstance(item, dict) and str(item.get("segment_id", "")).strip() == segment_id
+            ]
+        except Exception:
+            return []
+
+    def _build_rerun_lyrics_payload(
+        self, task_id: str, segment_id: str, fps: int, duration_in_frames: int,
+    ) -> list[dict[str, Any]]:
+        """
+        功能说明：从 module_a_output.json 的 lyric_units 构建 Remotion 歌词 payload（帧坐标）。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - segment_id: segment 标识（如 seg_0001）。
+        - fps: 输出帧率。
+        - duration_in_frames: 当前 segment 总帧数。
+        返回值：
+        - list[dict]: Remotion 歌词 payload，无歌词时返回空列表。
+        """
+        lyric_units = self._load_segment_lyric_units(task_id=task_id, segment_id=segment_id)
+        if not lyric_units:
+            return []
+
+        # 读取 segment 起始时间（用于将绝对时间转为帧坐标）
+        seg_start = 0.0
+        task_dir = self._resolve_task_dir(task_id=task_id)
+        module_a_path = task_dir / "artifacts" / "module_a_output.json"
+        try:
+            data = json.loads(module_a_path.read_text(encoding="utf-8"))
+            for seg in data.get("segments", []):
+                if str(seg.get("segment_id", "")).strip() == segment_id:
+                    seg_start = float(seg.get("start_time", 0) or 0)
+                    break
+        except Exception:
+            pass
+
+        lyrics_payload: list[dict[str, Any]] = []
+        for unit_item in lyric_units:
+            text = str(unit_item.get("text", "")).strip()
+            if not text:
+                continue
+            unit_start = float(unit_item.get("start_time", seg_start))
+            unit_end = float(unit_item.get("end_time", unit_start))
+            start_frame = max(0, round((unit_start - seg_start) * fps))
+            end_frame = min(duration_in_frames, max(start_frame + 1, round((unit_end - seg_start) * fps)))
+            if start_frame >= duration_in_frames or end_frame <= 0:
+                continue
+            item: dict[str, Any] = {
+                "text": text,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+            }
+            translated = str(unit_item.get("translated_text", "")).strip()
+            if translated:
+                item["translated_text"] = translated
+            lyrics_payload.append(item)
+
+        return lyrics_payload
 
     def _load_module_a_segment_duration(self, task_id: str, segment_id: str) -> float | None:
         """
@@ -1381,6 +1708,8 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_rerun_module_in_background,
             args=(task_id, all_segments, frame_type, rerun_key),
@@ -1393,6 +1722,7 @@ class ModuleDHandlers:
             "active": True,
             "status": "queued",
             "frame_type": frame_type,
+            "phase": "remotion",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -1422,12 +1752,13 @@ class ModuleDHandlers:
         if meta:
             meta["active"] = True
             meta["status"] = "running"
+            meta["phase"] = "remotion"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行批量重跑，task_id=%s，segments=%d个",
+                task_id, len(segments),
             )
 
         try:
@@ -1472,6 +1803,8 @@ class ModuleDHandlers:
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
+            # 等所有 segment 线程完成后自愈模块级/任务级状态
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
 
         except Exception as error:
             error_text = str(error)
@@ -1485,12 +1818,114 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "批量重跑失败"
+            # 自愈模块级状态
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D 批量重跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             current_thread = self._rerun_threads.get(rerun_key)
             if current_thread:
                 self._rerun_threads.pop(rerun_key, None)
             self._rerun_thread_meta.pop(rerun_key, None)
+
+    def _handle_module_d_resume_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：模块 D 断点续跑 —— 扫描 SQL，批量提交未完成的 segment 给 ComfyUI。
+        """
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"任务不存在：{task_id}"}, HTTPStatus.NOT_FOUND
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            return {"ok": False, "error": f"任务缺少 config_path，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        rerun_key = f"{task_id}|module_d_resume"
+        if self._rerun_threads.get(rerun_key) is not None:
+            return {"ok": False, "error": f"模块D 续跑已有后台动作执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        from pathlib import Path as _Path
+        workspace_root = _Path(task_record.get("workspace_root", "")) if task_record.get("workspace_root") else None
+        if workspace_root is None:
+            workspace_root = self._resolve_project_root()
+        self._prewrite_module_d_running(task_id)
+        rerun_thread = threading.Thread(
+            target=self._run_module_d_resume_in_background,
+            name=f"module-d-resume-{task_id}",
+            args=(task_id, config_path_text, workspace_root),
+            daemon=True,
+        )
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
+            "active": True, "status": "queued", "mode": "resume",
+            "phase": "remotion",
+            "submitted_at": current_time_text(), "submitted_at_ms": int(time.time() * 1000),
+        }
+        rerun_thread.start()
+        self.logger.info("[监督服务] 模块D 断点续跑已提交，task_id=%s", task_id)
+        return {"ok": True, "task_id": task_id, "message": "模块 D 断点续跑已提交。"}, HTTPStatus.OK
+
+    def _run_module_d_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path) -> None:
+        """直接调 run_module_d 批量提交未完成的 segment 给 ComfyUI。"""
+        import sys
+        rerun_key = f"{task_id}|module_d_resume"
+        started_at_ms = int(time.time() * 1000)
+        meta = self._rerun_thread_meta.get(rerun_key)
+        if isinstance(meta, dict):
+            meta["active"] = True; meta["status"] = "running"
+            meta["phase"] = "remotion"
+            meta["started_at"] = current_time_text(); meta["started_at_ms"] = started_at_ms
+        try:
+            self.logger.info("[监督服务] 后台开始执行模块D 断点续跑，task_id=%s", task_id)
+            from music_video_pipeline.config import load_config
+            from music_video_pipeline.context import RuntimeContext
+            resolved_config = load_config(config_path=_Path(config_path_text))
+            task_dir = self._resolve_task_dir(task_id=task_id)
+            artifacts_dir = task_dir / "artifacts"
+            task_record = self.state_store.get_task(task_id=task_id) or {}
+            audio_path = self._resolve_task_audio_path_from_record(
+                task_id=task_id, task_record=task_record, persist=True,
+            )
+            ctx = RuntimeContext(
+                task_id=task_id, audio_path=audio_path,
+                task_dir=task_dir, artifacts_dir=artifacts_dir,
+                config=resolved_config, logger=self.logger,
+                state_store=self.state_store,
+            )
+            from music_video_pipeline.modules.module_d.orchestrator import run_module_d
+            run_module_d(ctx)
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            finished_at_ms = int(time.time() * 1000)
+            if isinstance(meta, dict):
+                meta["active"] = False; meta["status"] = "succeeded"
+                meta["finished_at"] = current_time_text(); meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+            self.logger.info("[监督服务] 后台模块D 断点续跑执行结束，task_id=%s", task_id)
+        except Exception as error:
+            finished_at_ms = int(time.time() * 1000)
+            if isinstance(meta, dict):
+                meta["active"] = False; meta["status"] = "failed"
+                meta["finished_at"] = current_time_text(); meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+                meta["last_error"] = str(error).strip()
+                meta["failure_reason"] = "模块D断点续跑失败"
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                self.logger.warning(
+                    "[监督服务] 模块D断点续跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                    task_id, reconcile_error,
+                )
+            self.logger.error("[监督服务] 后台模块D 断点续跑失败，task_id=%s，错误=%s", task_id, error)
+        finally:
+            current_thread = self._rerun_threads.get(rerun_key)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(rerun_key, None)
 
     # ------------------------------------------------------------------
     # ToonCrafter + Remotion 重跑
@@ -1528,6 +1963,8 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_segment_rerun_tooncrafter_in_background,
             args=(task_id, segment_id, rerun_key, mode, transition_bg),
@@ -1541,6 +1978,7 @@ class ModuleDHandlers:
             "status": "queued",
             "segment_id": segment_id,
             "frame_type": "tooncrafter",
+            "phase": "tooncrafter",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -1558,7 +1996,8 @@ class ModuleDHandlers:
 
     def _handle_module_d_rerun_tooncrafter_module(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
         """
-        功能说明：处理模块 D 全量 ToonCrafter 重跑请求。
+        功能说明：处理模块 D ToonCrafter 批量重跑请求。支持可选参数 segment_ids（逗号分隔）
+        和 mode（slow/pingpong/holdtail），不传时保持原有全量重跑行为。
         参数说明：
         - parsed: 已解析的 URL 对象。
         返回值：
@@ -1568,6 +2007,11 @@ class ModuleDHandlers:
         task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
         if not task_id:
             return {"ok": False, "error": "缺少 task_id 参数。"}, HTTPStatus.BAD_REQUEST
+
+        segment_ids_raw = str(query.get("segment_ids", [""])[0]).strip()
+        mode = str(query.get("mode", [""])[0]).strip() or "slow"
+        if mode not in ("slow", "pingpong", "holdtail"):
+            mode = "slow"
 
         task_dir = self._resolve_task_dir(task_id=task_id)
         role3_details = self._load_role3_seg_details(task_dir=task_dir)
@@ -1581,6 +2025,13 @@ class ModuleDHandlers:
         if not all_segments:
             return {"ok": False, "error": "无 segment 数据。"}, HTTPStatus.BAD_REQUEST
 
+        if segment_ids_raw:
+            requested_ids = {sid.strip() for sid in segment_ids_raw.split(",") if sid.strip()}
+            filtered = [s for s in all_segments if s.get("seg_id", "") in requested_ids]
+            if not filtered:
+                return {"ok": False, "error": "指定的 segment_ids 在 role3 数据中不存在。"}, HTTPStatus.BAD_REQUEST
+            all_segments = filtered
+
         rerun_key = _build_module_d_rerun_key(task_id, "module_tooncrafter")
         active_thread = self._rerun_threads.get(rerun_key)
         if active_thread and active_thread.is_alive():
@@ -1592,9 +2043,11 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_rerun_tooncrafter_module_in_background,
-            args=(task_id, all_segments, rerun_key),
+            args=(task_id, all_segments, rerun_key, mode),
             name="module-d-tooncrafter-module",
             daemon=True,
         )
@@ -1604,6 +2057,8 @@ class ModuleDHandlers:
             "active": True,
             "status": "queued",
             "frame_type": "tooncrafter",
+            "phase": "tooncrafter",
+            "mode": mode,
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -1645,11 +2100,89 @@ class ModuleDHandlers:
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s",
+                task_id, segment_id,
             )
 
         try:
+            # 0. 重置 SQL unit 状态为 running
+            try:
+                all_units = self.state_store.list_module_units(
+                    task_id=task_id, module_name="D",
+                )
+                reset_ids: list[str] = []
+                for unit in all_units:
+                    if str(unit.get("segment_id", "")).strip() == segment_id:
+                        unit_id = str(unit.get("unit_id", "")).strip()
+                        if unit_id:
+                            reset_ids.append(unit_id)
+                            self.state_store.set_module_unit_status(
+                                task_id=task_id, module_name="D",
+                                unit_id=unit_id, status="running",
+                                artifact_path="", error_message="",
+                            )
+                if logger:
+                    logger.info(
+                        "[模块D] 已重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                        task_id, segment_id, reset_ids,
+                    )
+
+                # 修复：如果 state store 中不存在该 segment 的 unit 记录，则创建后重置为 running
+                if not reset_ids:
+                    if logger:
+                        logger.info(
+                            "[模块D] state store 中无该 segment 的 unit 记录，尝试创建，task_id=%s，segment_id=%s",
+                            task_id, segment_id,
+                        )
+                    rerun_payload = self._build_module_d_payload(task_id=task_id)
+                    for seg in rerun_payload.get("segments", []):
+                        if str(seg.get("segment_id", "")).strip() != segment_id:
+                            continue
+                        merged_units = list(all_units)
+                        existing_ids = {u["unit_id"] for u in all_units}
+                        for shot in seg.get("shots", []):
+                            shot_id = str(shot.get("shot_id", "")).strip()
+                            if shot_id and shot_id not in existing_ids:
+                                merged_units.append({
+                                    "unit_id": shot_id,
+                                    "unit_index": shot.get("unit_index", 0),
+                                    "segment_id": segment_id,
+                                    "start_time": 0.0,
+                                    "end_time": 0.0,
+                                    "duration": 0.0,
+                                })
+                        if len(merged_units) > len(all_units):
+                            self.state_store.sync_module_units(
+                                task_id=task_id, module_name="D",
+                                units=merged_units,
+                            )
+                            for unit in self.state_store.list_module_units(task_id=task_id, module_name="D"):
+                                if str(unit.get("segment_id", "")).strip() == segment_id:
+                                    uid = str(unit.get("unit_id", "")).strip()
+                                    if uid:
+                                        reset_ids.append(uid)
+                                        self.state_store.set_module_unit_status(
+                                            task_id=task_id, module_name="D",
+                                            unit_id=uid, status="running",
+                                            artifact_path="", error_message="",
+                                        )
+                            if logger:
+                                logger.info(
+                                    "[模块D] 已创建并重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                                    task_id, segment_id, reset_ids,
+                                )
+                        break
+            except Exception as exc:
+                if logger:
+                    logger.error(
+                        "[模块D] 重置 unit 状态失败，task_id=%s，segment_id=%s，error=%s",
+                        task_id, segment_id, exc,
+                    )
+                raise
+
+            if meta:
+                meta["phase"] = "tooncrafter"
+
             task_dir = self._resolve_task_dir(task_id=task_id)
             artifacts_dir = task_dir / "artifacts"
             frames_dir = artifacts_dir / "frames"
@@ -1733,14 +2266,22 @@ class ModuleDHandlers:
                             logger.warning("ToonCrafter 跳过 shot=%s：首帧不存在", shot_id)
                         continue
                     prompt = module_b_shot_map.get(shot_id, "animation transition")
+                    end_frame_path = str(end_path) if end_path.exists() else str(start_path)
                     shot_tooncrafter_dir = tooncrafter_dir / shot_id
                     shot_tooncrafter_dir.mkdir(parents=True, exist_ok=True)
+                    if logger:
+                        logger.info(
+                            "ToonCrafter 开始生成 shot=%s start_path=%s end_path=%s output_dir=%s "
+                            "exact_frames=%s total_frames=%s pad_to_fit=%s",
+                            shot_id, start_path, end_frame_path, shot_tooncrafter_dir,
+                            comfy_frames, total_frames, is_multi,
+                        )
                     temp_unit = ModuleDUnit(
                         unit_id=shot_id,
                         unit_index=slot_idx,
                         shot={
                             "frame_path_start": str(start_path),
-                            "frame_path_end": str(end_path) if end_path.exists() else str(start_path),
+                            "frame_path_end": end_frame_path,
                             "video_prompt_en": prompt,
                         },
                         start_time=0,
@@ -1766,6 +2307,11 @@ class ModuleDHandlers:
                     if total_frames > 0:
                         shot_mode = _resolve_shot_mode_for_segment(task_dir, segment_id, shot_id, mode)
                         frames = _expand_frames_by_mode(frames, shot_mode, total_frames)
+                    if logger:
+                        logger.info(
+                            "ToonCrafter shot=%s 完成: tooncrafter_raw=%s expanded=%s mode=%s total_frames=%s",
+                            shot_id, comfy_frames, len(frames), shot_mode, total_frames,
+                        )
                     shot_frame_map[shot_id] = frames
 
             else:
@@ -1781,14 +2327,22 @@ class ModuleDHandlers:
                             logger.warning("ToonCrafter 跳过 shot=%s：首帧不存在", shot_id)
                         continue
                     prompt = module_b_shot_map.get(shot_id, "animation transition")
+                    end_frame_path = str(end_path) if end_path.exists() else str(start_path)
                     shot_tooncrafter_dir = tooncrafter_dir / shot_id
                     shot_tooncrafter_dir.mkdir(parents=True, exist_ok=True)
+                    if logger:
+                        logger.info(
+                            "ToonCrafter 开始生成 shot=%s start_path=%s end_path=%s output_dir=%s "
+                            "exact_frames=%s total_frames=%s pad_to_fit=%s",
+                            shot_id, start_path, end_frame_path, shot_tooncrafter_dir,
+                            comfy_frames, total_frames, is_multi,
+                        )
                     temp_unit = ModuleDUnit(
                         unit_id=shot_id,
                         unit_index=0,
                         shot={
                             "frame_path_start": str(start_path),
-                            "frame_path_end": str(end_path) if end_path.exists() else str(start_path),
+                            "frame_path_end": end_frame_path,
                             "video_prompt_en": prompt,
                         },
                         start_time=0,
@@ -1813,10 +2367,24 @@ class ModuleDHandlers:
                     )
                     if total_frames > 0:
                         frames = _expand_frames_by_mode(frames, mode, total_frames)
+                    if logger:
+                        logger.info(
+                            "ToonCrafter shot=%s 完成: tooncrafter_raw=%s expanded=%s mode=%s total_frames=%s",
+                            shot_id, comfy_frames, len(frames), mode, total_frames,
+                        )
                     shot_frame_map[shot_id] = frames
 
             if not shot_frame_map:
                 raise ValueError(f"segment {segment_id} 下没有可用的 shot 帧")
+
+            # 进入 Remotion 渲染阶段
+            if meta:
+                meta["phase"] = "remotion"
+            if logger:
+                logger.info(
+                    "[模块D] ToonCrafter 帧生成完成，进入 Remotion 渲染，task_id=%s，segment_id=%s",
+                    task_id, segment_id,
+                )
 
             # 5. 构建 Remotion props
             def _make_symbol_from_path(png_path: Path, w: float = 1.0, h: float = 1.0) -> dict[str, Any]:
@@ -1866,20 +2434,22 @@ class ModuleDHandlers:
                 if bf_sym_src:
                     before_src = _make_symbol_from_path(bf_sym_src, 1.0, 1.0)
                 else:
-                    before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
-                if not after_src:
-                    raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
-                base_props["scene_before"] = {
-                    "background": bf_bg, "symbol": before_src,
-                }
-                after_src = _make_symbol_from_path(end_path, 1.0, 1.0) if end_path.exists() else (
-                    _make_symbol_from_path(tc_frames[-1], 1.0, 1.0) if tc_frames else None
-                )
-                if bf_sym_src:
-                    before_src = _make_symbol_from_path(bf_sym_src, 1.0, 1.0)
-                else:
-                    before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                    # mp4 截取失败：按上一个 segment 模板类型决定回退策略
+                    prev_rid = self._get_prev_segment_remotion_id(task_id=task_id, segment_id=segment_id)
+                    if prev_rid in ("GridTemplate", "ScrollTemplate"):
+                        # 多主体模板 → 白屏（透明像素，仅显示白色背景）
+                        before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                    else:
+                        # 单主体模板 → 回退 keyframe 尾帧
+                        prev_sid = self._get_prev_segment_last_shot_id(task_id=task_id, segment_id=segment_id)
+                        if prev_sid:
+                            kf_path = frames_dir / f"{prev_sid}_end.png"
+                            if kf_path.exists():
+                                before_src = _make_symbol_from_path(kf_path, 1.0, 1.0)
+                            else:
+                                before_src = after_src or {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                        else:
+                            before_src = after_src or {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
                 travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
@@ -1922,6 +2492,16 @@ class ModuleDHandlers:
             else:
                 raise ValueError(f"不支持的 remotion_id：{remotion_id}")
 
+            # 添加歌词数据
+            lyrics_payload = self._build_rerun_lyrics_payload(
+                task_id=task_id,
+                segment_id=segment_id,
+                fps=fps,
+                duration_in_frames=total_frames,
+            )
+            if lyrics_payload:
+                base_props["lyrics"] = lyrics_payload
+
             # 6. 写 props JSON
             props_dir = artifacts_dir / "remotion_reruns"
             props_dir.mkdir(parents=True, exist_ok=True)
@@ -1942,7 +2522,8 @@ class ModuleDHandlers:
             remotion_project_dir = (project_root / "remotion_templates").resolve()
             from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
 
-            render_template_segment(
+            self._remotion_queue.submit(
+                render_template_segment,
                 remotion_project_dir=remotion_project_dir,
                 composition_id=remotion_id,
                 props_json_path=props_path,
@@ -1958,16 +2539,28 @@ class ModuleDHandlers:
                 )
 
             # 8. 更新 state store
-            for shot in target_shots:
-                shot_id = str(shot.get("shot_id", "")).strip()
-                if shot_id:
-                    self.state_store.set_module_unit_status(
-                        task_id=task_id,
-                        module_name="D",
-                        unit_id=shot_id,
-                        status="done",
-                        artifact_path=str(output_path),
-                        error_message="")
+            if is_multi:
+                # 多主体 segment：DB 中 unit_id = segment_id（聚合单元），非独立 shot_id
+                self.state_store.set_module_unit_status(
+                    task_id=task_id,
+                    module_name="D",
+                    unit_id=segment_id,
+                    status="done",
+                    artifact_path=str(output_path),
+                    error_message="")
+            else:
+                for shot in target_shots:
+                    shot_id = str(shot.get("shot_id", "")).strip()
+                    if shot_id:
+                        self.state_store.set_module_unit_status(
+                            task_id=task_id,
+                            module_name="D",
+                            unit_id=shot_id,
+                            status="done",
+                            artifact_path=str(output_path),
+                            error_message="")
+            # 自愈模块级/任务级状态
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
@@ -1984,6 +2577,15 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "ToonCrafter 渲染失败"
+            # 自愈模块级状态
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D ToonCrafter 重跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             current_thread = self._rerun_threads.get(rerun_key)
@@ -1996,6 +2598,7 @@ class ModuleDHandlers:
         task_id: str,
         segments: list[dict[str, str]],
         rerun_key: str,
+        mode: str = "slow",
     ) -> None:
         """
         功能说明：后台线程逐 segment 提交 ToonCrafter 重跑。
@@ -2003,60 +2606,87 @@ class ModuleDHandlers:
         - task_id: 任务唯一标识。
         - segments: segment 列表。
         - rerun_key: 线程唯一键。
+        - mode: 帧填充模式（slow/pingpong/holdtail）。
         返回值：无。
         """
         meta = self._rerun_thread_meta.get(rerun_key)
         if meta:
             meta["active"] = True
             meta["status"] = "running"
+            meta["phase"] = "tooncrafter"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
         if logger:
+            seg_count = len(segments) if segments else 0
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行批量 ToonCrafter 重跑，task_id=%s，segments=%d个",
+                task_id, seg_count,
             )
 
+        MAX_CONCURRENT = 5
+        semaphore = threading.Semaphore(MAX_CONCURRENT)
+
+        def _submit_next(seg_id: str) -> bool:
+            """启动一个 segment 的 ToonCrafter 线程。返回 True 表示真的启动了，False 表示跳过。"""
+            seg_rerun_key = _build_module_d_rerun_key(task_id, seg_id) + "_tooncrafter"
+            active_seg = self._rerun_threads.get(seg_rerun_key)
+            if active_seg and active_seg.is_alive():
+                if logger:
+                    logger.info("模块D ToonCrafter 跳过正在重跑的 segment=%s", seg_id)
+                return False
+            self._rerun_threads.pop(seg_rerun_key, None)
+            self._rerun_thread_meta.pop(seg_rerun_key, None)
+
+            def _wrapped(seg_id: str, seg_rerun_key: str) -> None:
+                try:
+                    self._run_module_d_segment_rerun_tooncrafter_in_background(
+                        task_id, seg_id, seg_rerun_key,
+                        mode=mode,
+                    )
+                finally:
+                    semaphore.release()
+
+            t = threading.Thread(
+                target=_wrapped,
+                args=(seg_id, seg_rerun_key),
+                name=f"module-d-tooncrafter-{seg_id}",
+                daemon=True,
+            )
+            self._rerun_threads[seg_rerun_key] = t
+            self._rerun_thread_meta[seg_rerun_key] = {
+                "active": True,
+                "status": "queued",
+                "segment_id": seg_id,
+                "frame_type": "tooncrafter",
+                "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "submitted_at_ms": int(time.time() * 1000),
+                "started_at_ms": 0,
+                "last_error": "",
+                "failure_reason": "",
+            }
+            t.start()
+            return True
+
         try:
-            for seg in segments:
-                segment_id = seg.get("seg_id", "")
-                if not segment_id:
-                    continue
+            pending = [s for s in segments if s.get("seg_id", "")]
+            initial_batch = pending[:MAX_CONCURRENT]
+            remaining = pending[MAX_CONCURRENT:]
 
-                seg_rerun_key = _build_module_d_rerun_key(task_id, segment_id) + "_tooncrafter"
+            for seg in initial_batch:
+                semaphore.acquire()
+                if not _submit_next(seg["seg_id"]):
+                    semaphore.release()
 
-                active_seg = self._rerun_threads.get(seg_rerun_key)
-                if active_seg and active_seg.is_alive():
-                    if logger:
-                        logger.info("模块D ToonCrafter 批量跳过正在重跑的 segment=%s", segment_id)
-                    continue
-
-                self._rerun_threads.pop(seg_rerun_key, None)
-                self._rerun_thread_meta.pop(seg_rerun_key, None)
-
-                t = threading.Thread(
-                    target=self._run_module_d_segment_rerun_tooncrafter_in_background,
-                    args=(task_id, segment_id, seg_rerun_key),
-                    name=f"module-d-tooncrafter-{segment_id}",
-                    daemon=True,
-                )
-                self._rerun_threads[seg_rerun_key] = t
-                self._rerun_thread_meta[seg_rerun_key] = {
-                    "active": True,
-                    "status": "queued",
-                    "segment_id": segment_id,
-                    "frame_type": "tooncrafter",
-                    "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "submitted_at_ms": int(time.time() * 1000),
-                    "started_at_ms": 0,
-                    "last_error": "",
-                    "failure_reason": "",
-                }
-                t.start()
+            # 逐个提交剩余：等一个空位，提交一个
+            for seg in remaining:
+                semaphore.acquire()
+                if not _submit_next(seg["seg_id"]):
+                    semaphore.release()
 
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
 
         except Exception as error:
             error_text = str(error)
@@ -2070,6 +2700,14 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "ToonCrafter 批量重跑失败"
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D ToonCrafter 批量重跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             current_thread = self._rerun_threads.get(rerun_key)
@@ -2109,6 +2747,8 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_segment_rerun_remotion_in_background,
             args=(task_id, segment_id, rerun_key, mode, transition_bg),
@@ -2122,6 +2762,7 @@ class ModuleDHandlers:
             "status": "queued",
             "segment_id": segment_id,
             "frame_type": "remotion",
+            "phase": "remotion",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -2166,6 +2807,8 @@ class ModuleDHandlers:
         self._rerun_threads.pop(rerun_key, None)
         self._rerun_thread_meta.pop(rerun_key, None)
 
+        self._prewrite_module_d_running(task_id)
+
         rerun_thread = threading.Thread(
             target=self._run_module_d_rerun_remotion_module_in_background,
             args=(task_id, all_segments, rerun_key),
@@ -2178,6 +2821,7 @@ class ModuleDHandlers:
             "active": True,
             "status": "queued",
             "frame_type": "remotion",
+            "phase": "remotion",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -2209,11 +2853,89 @@ class ModuleDHandlers:
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s",
+                task_id, segment_id,
             )
 
         try:
+            # 0. 重置 SQL unit 状态为 running
+            try:
+                all_units = self.state_store.list_module_units(
+                    task_id=task_id, module_name="D",
+                )
+                reset_ids: list[str] = []
+                for unit in all_units:
+                    if str(unit.get("segment_id", "")).strip() == segment_id:
+                        unit_id = str(unit.get("unit_id", "")).strip()
+                        if unit_id:
+                            reset_ids.append(unit_id)
+                            self.state_store.set_module_unit_status(
+                                task_id=task_id, module_name="D",
+                                unit_id=unit_id, status="running",
+                                artifact_path="", error_message="",
+                            )
+                if logger:
+                    logger.info(
+                        "[模块D] 已重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                        task_id, segment_id, reset_ids,
+                    )
+
+                # 修复：如果 state store 中不存在该 segment 的 unit 记录，则创建后重置为 running
+                if not reset_ids:
+                    if logger:
+                        logger.info(
+                            "[模块D] state store 中无该 segment 的 unit 记录，尝试创建，task_id=%s，segment_id=%s",
+                            task_id, segment_id,
+                        )
+                    rerun_payload = self._build_module_d_payload(task_id=task_id)
+                    for seg in rerun_payload.get("segments", []):
+                        if str(seg.get("segment_id", "")).strip() != segment_id:
+                            continue
+                        merged_units = list(all_units)
+                        existing_ids = {u["unit_id"] for u in all_units}
+                        for shot in seg.get("shots", []):
+                            shot_id = str(shot.get("shot_id", "")).strip()
+                            if shot_id and shot_id not in existing_ids:
+                                merged_units.append({
+                                    "unit_id": shot_id,
+                                    "unit_index": shot.get("unit_index", 0),
+                                    "segment_id": segment_id,
+                                    "start_time": 0.0,
+                                    "end_time": 0.0,
+                                    "duration": 0.0,
+                                })
+                        if len(merged_units) > len(all_units):
+                            self.state_store.sync_module_units(
+                                task_id=task_id, module_name="D",
+                                units=merged_units,
+                            )
+                            for unit in self.state_store.list_module_units(task_id=task_id, module_name="D"):
+                                if str(unit.get("segment_id", "")).strip() == segment_id:
+                                    uid = str(unit.get("unit_id", "")).strip()
+                                    if uid:
+                                        reset_ids.append(uid)
+                                        self.state_store.set_module_unit_status(
+                                            task_id=task_id, module_name="D",
+                                            unit_id=uid, status="running",
+                                            artifact_path="", error_message="",
+                                        )
+                            if logger:
+                                logger.info(
+                                    "[模块D] 已创建并重置 segment unit 状态为 running，task_id=%s，segment_id=%s，units=%s",
+                                    task_id, segment_id, reset_ids,
+                                )
+                        break
+            except Exception as exc:
+                if logger:
+                    logger.error(
+                        "[模块D] 重置 unit 状态失败，task_id=%s，segment_id=%s，error=%s",
+                        task_id, segment_id, exc,
+                    )
+                raise
+
+            if meta:
+                meta["phase"] = "remotion"
+
             task_dir = self._resolve_task_dir(task_id=task_id)
             artifacts_dir = task_dir / "artifacts"
             frames_dir = artifacts_dir / "frames"
@@ -2335,20 +3057,22 @@ class ModuleDHandlers:
                 if bf_sym_src:
                     before_src = _make_symbol_from_path(bf_sym_src, 1.0, 1.0)
                 else:
-                    before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
-                if not after_src:
-                    raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
-                travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
-                base_props["scene_before"] = {
-                    "background": bf_bg, "symbol": before_src,
-                }
-                after_src = _make_symbol_from_path(end_path, 1.0, 1.0) if end_path.exists() else (
-                    _make_symbol_from_path(tc_frames[-1], 1.0, 1.0) if tc_frames else None
-                )
-                if bf_sym_src:
-                    before_src = _make_symbol_from_path(bf_sym_src, 1.0, 1.0)
-                else:
-                    before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                    # mp4 截取失败：按上一个 segment 模板类型决定回退策略
+                    prev_rid = self._get_prev_segment_remotion_id(task_id=task_id, segment_id=segment_id)
+                    if prev_rid in ("GridTemplate", "ScrollTemplate"):
+                        # 多主体模板 → 白屏（透明像素，仅显示白色背景）
+                        before_src = {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                    else:
+                        # 单主体模板 → 回退 keyframe 尾帧
+                        prev_sid = self._get_prev_segment_last_shot_id(task_id=task_id, segment_id=segment_id)
+                        if prev_sid:
+                            kf_path = frames_dir / f"{prev_sid}_end.png"
+                            if kf_path.exists():
+                                before_src = _make_symbol_from_path(kf_path, 1.0, 1.0)
+                            else:
+                                before_src = after_src or {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
+                        else:
+                            before_src = after_src or {"src": _TRANSPARENT_PIXEL, "width_ratio": 0.01, "height_ratio": 0.01}
                 if not after_src:
                     raise ValueError(f"shot {curr_shot_id} 缺少尾帧")
                 travel_px = 1920 if remotion_id == "PanRightTemplate" else 1080
@@ -2389,6 +3113,16 @@ class ModuleDHandlers:
             else:
                 raise ValueError(f"不支持的 remotion_id：{remotion_id}")
 
+            # 添加歌词数据（ToonCrafter/Remotion 重跑路径）
+            lyrics_payload = self._build_rerun_lyrics_payload(
+                task_id=task_id,
+                segment_id=segment_id,
+                fps=fps,
+                duration_in_frames=total_frames,
+            )
+            if lyrics_payload:
+                base_props["lyrics"] = lyrics_payload
+
             props_dir = artifacts_dir / "remotion_reruns"
             props_dir.mkdir(parents=True, exist_ok=True)
             props_path = props_dir / f"{segment_id}_remotion_props.json"
@@ -2407,7 +3141,8 @@ class ModuleDHandlers:
             remotion_project_dir = (project_root / "remotion_templates").resolve()
             from music_video_pipeline.modules.module_d.remotion_renderer import render_template_segment
 
-            render_template_segment(
+            self._remotion_queue.submit(
+                render_template_segment,
                 remotion_project_dir=remotion_project_dir,
                 composition_id=remotion_id,
                 props_json_path=props_path,
@@ -2432,6 +3167,7 @@ class ModuleDHandlers:
                         status="done",
                         artifact_path=str(output_path),
                         error_message="")
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
@@ -2448,6 +3184,14 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "Remotion 重渲失败"
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D Remotion 重渲失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             current_thread = self._rerun_threads.get(rerun_key)
@@ -2465,12 +3209,13 @@ class ModuleDHandlers:
         if meta:
             meta["active"] = True
             meta["status"] = "running"
+            meta["phase"] = "remotion"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行批量 Remotion 重渲，task_id=%s，segments=%d个",
+                task_id, len(segments),
             )
 
         try:
@@ -2513,6 +3258,7 @@ class ModuleDHandlers:
             if meta:
                 meta["status"] = "done"
                 meta["active"] = False
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
 
         except Exception as error:
             error_text = str(error)
@@ -2526,6 +3272,14 @@ class ModuleDHandlers:
                 meta["active"] = False
                 meta["last_error"] = error_text
                 meta["failure_reason"] = "Remotion 批量重渲失败"
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D Remotion 批量重渲失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
 
         finally:
             current_thread = self._rerun_threads.get(rerun_key)
@@ -2574,6 +3328,7 @@ class ModuleDHandlers:
             "active": True,
             "status": "queued",
             "frame_type": "rebuild_final",
+            "phase": "rebuild",
             "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
             "submitted_at_ms": submitted_at_ms,
             "started_at_ms": 0,
@@ -2650,12 +3405,13 @@ class ModuleDHandlers:
         if meta:
             meta["active"] = True
             meta["status"] = "running"
+            meta["phase"] = "rebuild"
             meta["started_at_ms"] = int(time.time() * 1000)
         logger = getattr(self, "logger", None)
         if logger:
             logger.info(
-                "[模块D] 后台线程开始执行重跑，task_id=%s，segment_id=%s，frame_type=%s",
-                task_id, segment_id, frame_type,
+                "[模块D] 后台线程开始执行成片输出，task_id=%s，segment_ids=%s",
+                task_id, segment_ids_raw,
             )
 
         try:
@@ -2911,3 +3667,322 @@ class ModuleDHandlers:
             current_thread = self._rerun_threads.get(rerun_key)
             if current_thread:
                 self._rerun_threads.pop(rerun_key, None)
+
+    def _handle_module_d_resume_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：处理模块 D 断点续跑请求（扫描所有 segment，对缺少视频产物的 segment 逐个补跑）。
+        参数说明：
+        - parsed: 已解析的请求URL对象。
+        返回值：
+        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
+        异常说明：无；错误统一转为 JSON。
+        边界条件：已有产物的 segment 会跳过。
+        """
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"任务不存在：{task_id}"}, HTTPStatus.NOT_FOUND
+
+        rerun_key = f"{task_id}|module_d_resume"
+        active_thread = self._rerun_threads.get(rerun_key)
+        if active_thread is not None and active_thread.is_alive():
+            return {
+                "ok": False,
+                "error": f"模块D 断点续跑失败：任务已有后台动作执行中，task_id={task_id}",
+            }, HTTPStatus.CONFLICT
+
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            return {"ok": False, "error": f"任务缺少 config_path，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+
+        from pathlib import Path as _Path
+        workspace_root = _Path(task_record.get("workspace_root", "")) if task_record.get("workspace_root") else None
+        if workspace_root is None:
+            workspace_root = self._resolve_project_root()
+
+        rerun_thread = threading.Thread(
+            target=self._run_module_d_resume_in_background,
+            name=f"module-d-resume-{task_id}",
+            args=(task_id, config_path_text, workspace_root),
+            daemon=True,
+        )
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
+            "active": True,
+            "status": "queued",
+            "mode": "resume",
+            "phase": "remotion",
+            "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "submitted_at_ms": int(time.time() * 1000),
+        }
+        rerun_thread.start()
+        self.logger.info("[监督服务] 模块D 断点续跑已提交，task_id=%s", task_id)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "message": "模块 D 断点续跑已提交，后台开始扫描缺失 segment 并逐个补跑。",
+        }, HTTPStatus.OK
+
+    def _run_module_d_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path) -> None:
+        """
+        功能说明：在后台线程中执行模块 D 断点续跑，通过 CLI 子进程执行 resume --force-module D 命令。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - config_path_text: 配置文件路径。
+        - workspace_root: 工作区根目录。
+        返回值：无。
+        异常说明：异常统一记录日志，不向前端线程传播。
+        边界条件：线程退出时必须清理并发占位。
+        """
+        import sys
+        rerun_key = f"{task_id}|module_d_resume"
+        started_at_ms = int(time.time() * 1000)
+        meta = self._rerun_thread_meta.get(rerun_key)
+        if isinstance(meta, dict):
+            meta["active"] = True
+            meta["status"] = "running"
+            meta["phase"] = "remotion"
+            meta["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            meta["started_at_ms"] = started_at_ms
+        try:
+            self.logger.info("[监督服务] 后台开始执行模块D 断点续跑，task_id=%s", task_id)
+            command = [
+                sys.executable,
+                "-m",
+                "music_video_pipeline.cli",
+                "resume",
+                "--task-id", task_id,
+                "--config", config_path_text,
+                "--force-module", "D",
+            ]
+            completed = subprocess.run(
+                command,
+                cwd=str(workspace_root),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=7200,
+            )
+            if completed.returncode != 0:
+                error_excerpt = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+                raise RuntimeError(f"断点续跑子进程退出码={completed.returncode}，{error_excerpt[:500]}")
+            finished_at_ms = int(time.time() * 1000)
+            meta = self._rerun_thread_meta.get(rerun_key)
+            if isinstance(meta, dict):
+                meta["active"] = False
+                meta["status"] = "succeeded"
+                meta["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+            self.logger.info("[监督服务] 后台模块D 断点续跑执行结束，task_id=%s", task_id)
+        except Exception as error:
+            finished_at_ms = int(time.time() * 1000)
+            meta = self._rerun_thread_meta.get(rerun_key)
+            if isinstance(meta, dict):
+                meta["active"] = False
+                meta["status"] = "failed"
+                meta["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+                meta["last_error"] = str(error).strip()
+                meta["failure_reason"] = "模块D断点续跑失败"
+            self.logger.error(
+                "[监督服务] 后台模块D 断点续跑失败，task_id=%s，错误=%s",
+                task_id,
+                error,
+            )
+        finally:
+            current_thread = self._rerun_threads.get(rerun_key)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(rerun_key, None)
+
+    # ------------------------------------------------------------------
+    # 批量重渲：逐 segment 指定 mode 和 transition_bg
+    # ------------------------------------------------------------------
+
+    def _handle_module_d_batch_rerender(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：处理模块 D 批量重渲请求 —— 支持逐 segment 指定帧填充模式和过渡背景。
+        参数说明：
+        - parsed: 已解析的 URL 对象。
+        查询参数：
+        - task_id: 任务标识
+        - segments: JSON 字符串，数组 [{segment_id, mode?, transition_bg?, action?}]
+          - mode: "slow" / "pingpong" / "holdtail"
+          - transition_bg: ""(上一个segment尾帧) / "white" / "black"
+          - action: "tooncrafter" / "remotion"（默认 tooncrafter）
+        返回值：
+        - tuple[dict[str, Any], HTTPStatus]: (payload, status_code)。
+        """
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        if not task_id:
+            return {"ok": False, "error": "缺少 task_id 参数。"}, HTTPStatus.BAD_REQUEST
+
+        segments_raw = str(query.get("segments", [""])[0]).strip()
+        if not segments_raw:
+            return {"ok": False, "error": "缺少 segments 参数（JSON 数组）。"}, HTTPStatus.BAD_REQUEST
+
+        try:
+            segment_configs = json.loads(segments_raw)
+        except (json.JSONDecodeError, Exception) as exc:
+            return {"ok": False, "error": f"segments 参数解析失败：{exc}"}, HTTPStatus.BAD_REQUEST
+
+        if not isinstance(segment_configs, list) or not segment_configs:
+            return {"ok": False, "error": "segments 必须为非空 JSON 数组。"}, HTTPStatus.BAD_REQUEST
+
+        rerun_key = _build_module_d_rerun_key(task_id, "batch_rerender")
+        active_thread = self._rerun_threads.get(rerun_key)
+        if active_thread and active_thread.is_alive():
+            return {
+                "ok": False,
+                "error": "模块 D 正在批量重渲中，请等待完成。",
+            }, HTTPStatus.CONFLICT
+
+        self._rerun_threads.pop(rerun_key, None)
+        self._rerun_thread_meta.pop(rerun_key, None)
+
+        self._prewrite_module_d_running(task_id)
+
+        rerun_thread = threading.Thread(
+            target=self._run_module_d_batch_rerender_in_background,
+            args=(task_id, segment_configs, rerun_key),
+            name="module-d-batch-rerender",
+            daemon=True,
+        )
+        submitted_at_ms = int(time.time() * 1000)
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
+            "active": True,
+            "status": "queued",
+            "frame_type": "batch_rerender",
+            "phase": "remotion",
+            "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(submitted_at_ms / 1000)),
+            "submitted_at_ms": submitted_at_ms,
+            "started_at_ms": 0,
+            "last_error": "",
+            "failure_reason": "",
+        }
+        rerun_thread.start()
+
+        return {
+            "ok": True,
+            "message": f"模块 D 批量重渲已提交，共 {len(segment_configs)} 个 segment。",
+            "segment_count": len(segment_configs),
+        }, HTTPStatus.OK
+
+    def _run_module_d_batch_rerender_in_background(
+        self,
+        task_id: str,
+        segment_configs: list[dict[str, Any]],
+        rerun_key: str,
+    ) -> None:
+        """
+        功能说明：后台线程执行批量重渲 —— 为每个 segment 按配置发起重跑。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - segment_configs: segment 配置数组。
+        - rerun_key: 线程唯一键。
+        返回值：无。
+        """
+        meta = self._rerun_thread_meta.get(rerun_key)
+        if meta:
+            meta["active"] = True
+            meta["status"] = "running"
+            meta["phase"] = "remotion"
+            meta["started_at_ms"] = int(time.time() * 1000)
+        logger = getattr(self, "logger", None)
+        if logger:
+            logger.info(
+                "[模块D] 后台线程开始执行批量重渲，task_id=%s，segments=%d个",
+                task_id, len(segment_configs),
+            )
+
+        try:
+            for seg_cfg in segment_configs:
+                if not isinstance(seg_cfg, dict):
+                    continue
+                segment_id = str(seg_cfg.get("segment_id", "")).strip()
+                if not segment_id:
+                    continue
+                mode = str(seg_cfg.get("mode", "slow")).strip()
+                if mode not in ("slow", "pingpong", "holdtail"):
+                    mode = "slow"
+                transition_bg_raw = str(seg_cfg.get("transition_bg", "")).strip()
+                transition_bg: str | None = transition_bg_raw if transition_bg_raw in ("white", "black") else None
+                action = str(seg_cfg.get("action", "remotion")).strip()
+                if action not in ("tooncrafter", "remotion"):
+                    action = "remotion"
+
+                seg_rerun_key = _build_module_d_rerun_key(task_id, segment_id) + f"_{action}"
+
+                active_seg = self._rerun_threads.get(seg_rerun_key)
+                if active_seg and active_seg.is_alive():
+                    if logger:
+                        logger.info("模块D 批量重渲跳过正在执行的 segment=%s", segment_id)
+                    continue
+
+                self._rerun_threads.pop(seg_rerun_key, None)
+                self._rerun_thread_meta.pop(seg_rerun_key, None)
+
+                if action == "remotion":
+                    t = threading.Thread(
+                        target=self._run_module_d_segment_rerun_remotion_in_background,
+                        args=(task_id, segment_id, seg_rerun_key, mode, transition_bg),
+                        name=f"module-d-batch-remotion-{segment_id}",
+                        daemon=True,
+                    )
+                else:
+                    t = threading.Thread(
+                        target=self._run_module_d_segment_rerun_tooncrafter_in_background,
+                        args=(task_id, segment_id, seg_rerun_key, mode, transition_bg),
+                        name=f"module-d-batch-tooncrafter-{segment_id}",
+                        daemon=True,
+                    )
+
+                self._rerun_threads[seg_rerun_key] = t
+                self._rerun_thread_meta[seg_rerun_key] = {
+                    "active": True,
+                    "status": "queued",
+                    "segment_id": segment_id,
+                    "frame_type": action,
+                    "submitted_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "submitted_at_ms": int(time.time() * 1000),
+                    "started_at_ms": 0,
+                    "last_error": "",
+                    "failure_reason": "",
+                }
+                t.start()
+
+            if meta:
+                meta["status"] = "done"
+                meta["active"] = False
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+
+        except Exception as error:
+            error_text = str(error)
+            if logger:
+                logger.error(
+                    "模块D 批量重渲失败，task_id=%s，error=%s",
+                    task_id, error_text,
+                )
+            if meta:
+                meta["status"] = "failed"
+                meta["active"] = False
+                meta["last_error"] = error_text
+                meta["failure_reason"] = "批量重渲失败"
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                if logger:
+                    logger.warning(
+                        "模块D 批量重渲失败后自愈状态时出错，task_id=%s，错误=%s",
+                        task_id, reconcile_error,
+                    )
+
+        finally:
+            current_thread = self._rerun_threads.get(rerun_key)
+            if current_thread:
+                self._rerun_threads.pop(rerun_key, None)
+            self._rerun_thread_meta.pop(rerun_key, None)

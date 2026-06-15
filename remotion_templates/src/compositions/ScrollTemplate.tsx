@@ -1,113 +1,115 @@
 /**
- * 文件用途：实现最小可用的 ScrollTemplate 正式模板组件。
- * 核心流程：读取背景请求 -> 按格子数计算静态槽位 -> 根据循环开关决定匀速循环或全段滚动。
+ * 文件用途：实现全屏横向滚动的 ScrollTemplate 组件。
+ * 核心流程：每个 symbol 依次铺满全屏显示，水平滑入/滑出切换。
  * 输入输出：输入为 ScrollTemplateRequest，输出为可直接渲染的视频画面 JSX。
- * 依赖说明：依赖 remotion 当前帧上下文，以及共享背景层与多图条带层。
- * 维护说明：当前只验证“连续循环条带”主闭环，不在此阶段叠加更多镜头语言。
+ * 维护说明：一次只展示一个 symbol，通过 translateX 实现左右切换过渡。
  */
 
 // 第三方库：用于读取当前帧。
-import {AbsoluteFill, useCurrentFrame} from "remotion";
+import {AbsoluteFill, Img, staticFile, useCurrentFrame} from "remotion";
 // 第三方库：用于声明组件返回类型。
 import type {ReactElement} from "react";
 // 项目内模块：用于渲染背景层。
 import {BackgroundLayer} from "../shared/BackgroundLayer";
-// 项目内模块：用于渲染多图条带层。
-import {SymbolStripLayer} from "../shared/SymbolStripLayer";
+// 项目内模块：用于渲染歌词叠加层。
+import {LyricsOverlay} from "../shared/LyricsOverlay";
 // 项目内模块：用于提供模板请求类型。
 import type {ScrollTemplateRequest} from "../types";
 
-/**
- * 功能说明：计算当前帧对应的条带横向滚动位移。
- * 参数说明：
- * - frame: 当前帧序号。
- * - durationInFrames: 总帧数。
- * - travelDistance: 需要横向滚动的总位移。
- * - loop: 是否启用循环滚动。
- * - loopDurationInFrames: 单轮循环时长。
- * 返回值：
- * - number：相对初始条带位置的横向位移像素值。
- * 异常说明：无。
- * 边界条件：方向当前固定为从右向左。
- */
-const getTranslateX = (
-  frame: number,
-  durationInFrames: number,
-  travelDistance: number,
-  loop: boolean,
-  loopDurationInFrames: number
-): number => {
-  if (loop) {
-    const safeLoopDuration = Math.max(1, loopDurationInFrames);
-    const cycleProgress = (frame % safeLoopDuration) / safeLoopDuration;
-    return -travelDistance * cycleProgress;
-  }
-
-  const maxFrame = Math.max(1, durationInFrames - 1);
-  const progress = Math.min(1, Math.max(0, frame / maxFrame));
-  return -travelDistance * progress;
-};
-
-// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
-const TEMPLATE_WIDTH = 1920;
-// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
-const TEMPLATE_HEIGHT = 1200;
+// 常量：模板画布固定宽高，1344×840。
+const TEMPLATE_WIDTH = 1344;
+const TEMPLATE_HEIGHT = 840;
 // 常量：模板自然动画帧数（保持不变速）。
 const NATURAL_FRAMES = 144;
-// 常量：循环模式默认单轮跨越拍数，后续可继续改为音频特征直接驱动。
+// 常量：循环模式默认单轮跨越拍数。
 const DEFAULT_LOOP_BEATS = 4;
+// 常量：每个 symbol 时间段中用于过渡切换的比例。
+const TRANSITION_RATIO = 0.35;
 
 /**
- * 功能说明：渲染连续循环条带模板。
- * 参数说明：
- * - props: ScrollTemplate 正式请求。
- * 返回值：
- * - ReactElement：模板画面。
- * 异常说明：无。
- * 边界条件：模板只负责几何布局与时间运动，不主动决定背景审美。
+ * 功能说明：把模板请求中的资源路径转换为 Remotion 可消费的静态资源地址。
+ */
+const resolveAssetSrc = (src: string): string => {
+  const normalized = String(src).trim();
+  if (!normalized) return normalized;
+  if (normalized.startsWith("/")) return staticFile(normalized);
+  return normalized;
+};
+
+/**
+ * 功能说明：从指定 slot 的 frames 中按局部进度选取当前帧的 src。
+ */
+const getSlotSrc = (slotIndex: number, localProgress: number, slots: ScrollTemplateRequest["slots"]): string => {
+  const slotFrames = slots[slotIndex]?.frames ?? [];
+  if (slotFrames.length === 0) return "";
+  if (slotFrames.length <= 1) return slotFrames[0].src;
+  const safeProgress = Math.min(1, Math.max(0, localProgress));
+  const frameIndex = Math.min(Math.floor(safeProgress * slotFrames.length), slotFrames.length - 1);
+  return slotFrames[frameIndex].src;
+};
+
+/**
+ * 功能说明：渲染全屏横向滚动的 ScrollTemplate。
+ * 每个 symbol 依次占据全屏，通过水平滑动切换。
  */
 export const ScrollTemplate = (props: ScrollTemplateRequest): ReactElement => {
   const frame = useCurrentFrame();
-  // 保持自然速度：动画帧 clamped 到 NATURAL_FRAMES，之后维持末帧
   const animFrame = Math.min(frame, NATURAL_FRAMES - 1);
+  const numSlots = Math.max(1, props.slots.length);
 
-  // 每个 slot 独立从 frames 数组按进度取当前帧
-  const currentSrcAt = (index: number): string => {
-    const slotFrames = props.slots[index]?.frames ?? [];
-    if (slotFrames.length <= 1) return slotFrames[0]?.src ?? "";
-    const progress = animFrame / Math.max(1, props.duration_in_frames);
-    return slotFrames[Math.min(Math.floor(progress * slotFrames.length), slotFrames.length - 1)].src;
-  };
-
-  const visibleCellCount = Math.max(1, props.layout.visible_cell_count);
-  const cellWidth = TEMPLATE_WIDTH / visibleCellCount;
-  const slotWidth = cellWidth;
-  const step = slotWidth;
-  const firstStripWidth = step * props.slots.length;
-  const loopedSrcList = [
-    ...props.slots.map((_, i) => currentSrcAt(i)),
-    ...props.slots.map((_, i) => currentSrcAt(i)),
-  ];
-  const totalWidth = step * loopedSrcList.length;
-  const baseLeft = (TEMPLATE_WIDTH - firstStripWidth) / 2;
-  const topList = props.slots.map(
-    (slot) => (TEMPLATE_HEIGHT - TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52)) / 2
-  );
-  const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.26));
-  const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52));
-  const leftList = loopedSrcList.map((_, index) => baseLeft + index * step);
+  // 计算循环相关参数
   const loopBeats = props.motion.loop_beats ?? DEFAULT_LOOP_BEATS;
   const loopDurationInFrames = Math.max(
     1,
     Math.round((loopBeats * 60 * props.fps) / Math.max(0.001, props.bpm))
   );
-  const translateX = getTranslateX(
-    animFrame,
-    NATURAL_FRAMES,
-    firstStripWidth,
-    props.motion.loop,
-    loopDurationInFrames
-  );
+
+  // 根据是否循环决定有效时长和有效帧
+  const effectiveDuration = props.motion.loop ? loopDurationInFrames : props.duration_in_frames;
+  const effectiveFrame = props.motion.loop ? animFrame % loopDurationInFrames : animFrame;
+
+  // 每个 symbol 的时间段长度
+  const framesPerSlot = effectiveDuration / numSlots;
+  const transitionFrames = Math.max(1, Math.floor(framesPerSlot * TRANSITION_RATIO));
+
+  // 当前 slot 索引
+  const rawSlotIndex = effectiveFrame / framesPerSlot;
+  const slotIndex = Math.min(Math.floor(rawSlotIndex), numSlots - 1);
+  // 下一个 slot 索引（循环模式下首尾相连）
+  const nextSlotIndex = props.motion.loop ? (slotIndex + 1) % numSlots : Math.min(slotIndex + 1, numSlots - 1);
+
+  // 是否处于过渡阶段（最后一个 slot 不过渡，除非循环模式）
+  const isLastSlot = !props.motion.loop && slotIndex >= numSlots - 1;
+
+  // 当前 slot 内的局部帧
+  const localFrame = effectiveFrame - slotIndex * framesPerSlot;
+  const inTransition = !isLastSlot && localFrame >= (framesPerSlot - transitionFrames);
+
+  // 过渡进度和缓动
+  let transitionProgress = 0;
+  if (inTransition) {
+    const rawProgress = (localFrame - (framesPerSlot - transitionFrames)) / transitionFrames;
+    // easeInOutCubic
+    transitionProgress = rawProgress < 0.5
+      ? 4 * rawProgress * rawProgress * rawProgress
+      : 1 - Math.pow(-2 * rawProgress + 2, 3) / 2;
+  }
+
+  // 当前 symbol 逐渐左移出画，下一个 symbol 从右侧滑入
+  const translateXCurrent = inTransition ? -TEMPLATE_WIDTH * transitionProgress : 0;
+  const translateXNext = inTransition ? TEMPLATE_WIDTH * (1 - transitionProgress) : TEMPLATE_WIDTH;
+  const opacityNext = inTransition ? transitionProgress : 0;
+
+  // 获取当前和下一个 symbol 的图片 src
+  const localProgress = localFrame / Math.max(1, framesPerSlot);
+  const currentSrc = getSlotSrc(slotIndex, localProgress, props.slots);
+  const nextSrc = inTransition ? getSlotSrc(nextSlotIndex, 0, props.slots) : "";
+
+  // 全屏显示比例：固定使用 0.70/0.90，不受预处理裁剪 ratio 影响
+  const DISPLAY_WIDTH_RATIO = 0.70;
+  const DISPLAY_HEIGHT_RATIO = 0.90;
+  const safeWRatio = DISPLAY_WIDTH_RATIO;
+  const safeHRatio = DISPLAY_HEIGHT_RATIO;
 
   return (
     <AbsoluteFill
@@ -119,23 +121,43 @@ export const ScrollTemplate = (props: ScrollTemplateRequest): ReactElement => {
       }}
     >
       <BackgroundLayer background={props.background} />
+      <LyricsOverlay lyrics={props.lyrics} />
       <AbsoluteFill
         style={{
-          width: totalWidth,
-          left: 0,
-          transform: `translateX(${translateX}px)`
+          justifyContent: "center",
+          alignItems: "center",
+          overflow: "hidden"
         }}
       >
-        <SymbolStripLayer
-          symbolSrcList={loopedSrcList}
-          leftList={leftList}
-          top={0}
-          width={slotWidth}
-          height={TEMPLATE_HEIGHT}
-          topList={[...topList, ...topList]}
-          widthList={[...widthList, ...widthList]}
-          heightList={[...heightList, ...heightList]}
+        {/* 当前 symbol */}
+        <Img
+          src={resolveAssetSrc(currentSrc)}
+          style={{
+            width: `${safeWRatio * 100}%`,
+            height: `${safeHRatio * 100}%`,
+            maxWidth: "100%",
+            maxHeight: "100%",
+            objectFit: "contain",
+            position: "absolute",
+            transform: `translateX(${translateXCurrent}px)`
+          }}
         />
+        {/* 下一个 symbol（过渡期间显示） */}
+        {inTransition && (
+          <Img
+            src={resolveAssetSrc(nextSrc)}
+            style={{
+              width: `${safeWRatio * 100}%`,
+              height: `${safeHRatio * 100}%`,
+              maxWidth: "100%",
+              maxHeight: "100%",
+              objectFit: "contain",
+              position: "absolute",
+              transform: `translateX(${translateXNext}px)`,
+              opacity: opacityNext
+            }}
+          />
+        )}
       </AbsoluteFill>
     </AbsoluteFill>
   );

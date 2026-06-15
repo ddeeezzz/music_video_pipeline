@@ -5,6 +5,8 @@ import {
   ExportOutlined,
   GlobalOutlined,
   LeftOutlined,
+  MinusCircleOutlined,
+  PlayCircleOutlined,
   ReloadOutlined,
   RightOutlined,
   SearchOutlined,
@@ -32,6 +34,7 @@ import {
   getTaskModuleALyricDetail,
   getTaskModuleAData,
   rerunTask,
+  resetModuleAStatus,
   selectTaskModuleALyrics,
   taskQueryKeys,
 } from "@/api/taskApi";
@@ -89,6 +92,13 @@ function buildSongLabel(artist: string, title: string): string {
     return `${normalizedArtist} - ${normalizedTitle}`;
   }
   return normalizedArtist || normalizedTitle;
+}
+
+function formatDuration(seconds: number | undefined | null): string {
+  if (!seconds || seconds <= 0) return "";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function parseLyricDisplayLines(text: string): LyricDisplayLine[] {
@@ -498,7 +508,7 @@ export function TaskModuleAPage() {
   };
 
   const rerunMutation = useMutation({
-    mutationFn: () => rerunTask(taskId),
+    mutationFn: (force?: boolean) => rerunTask(taskId, force ?? false),
     onSuccess: async (payload) => {
       await invalidateTaskScopes();
       message.success(payload.message || "模块 A 重跑请求已提交");
@@ -509,6 +519,67 @@ export function TaskModuleAPage() {
       message.warning(errorText);
     },
   });
+
+  const resetStatusMutation = useMutation({
+    mutationFn: (status?: string) => resetModuleAStatus(taskId, status ?? "pending"),
+    onSuccess: async () => {
+      await invalidateTaskScopes();
+      message.success("模块 A 状态已重置");
+    },
+    onError: (mutationError) => {
+      const errorText = mutationError instanceof Error ? mutationError.message : String(mutationError);
+      appLogger.warn("模块A页面", "重置模块 A 状态失败", { taskId, error: errorText });
+      message.warning(errorText);
+    },
+  });
+
+  const handleRerunClick = () => {
+    const moduleAStatus = data?.module_a_status;
+    if (moduleAStatus === "running") {
+      Modal.confirm({
+        title: "确认强制重跑",
+        content: `当前模块 A 状态为 running，是否强行重跑？`,
+        okText: "强行重跑",
+        cancelText: "取消",
+        onOk: () => rerunMutation.mutate(true),
+      });
+    } else {
+      rerunMutation.mutate(false);
+    }
+  };
+
+  const instrumentalRerunMutation = useMutation({
+    mutationFn: () => selectTaskModuleALyrics(taskId, "instrumental", true, undefined, undefined, undefined, undefined, undefined, true),
+    onSuccess: async (payload) => {
+      await invalidateTaskScopes();
+      message.success(payload.message || "纯音乐模式已启用，开始重跑模块A");
+    },
+    onError: (mutationError) => {
+      const errorText = mutationError instanceof Error ? mutationError.message : String(mutationError);
+      appLogger.warn("模块A页面", "纯音乐模式重跑失败", { taskId, error: errorText });
+      message.warning(errorText);
+    },
+  });
+
+  const handleInstrumentalRerun = () => {
+    Modal.confirm({
+      title: "确认纯音乐重跑",
+      content: "将创建空歌词并重跑模块A（纯音乐/无歌词模式）。已选的歌词候选将被覆盖，确定继续？",
+      okText: "确定",
+      cancelText: "取消",
+      onOk: () => instrumentalRerunMutation.mutate(),
+    });
+  };
+
+  const handleResetModuleAStatus = () => {
+    Modal.confirm({
+      title: "确认重置模块 A 状态",
+      content: "将模块 A 状态重置为 pending，确定继续？",
+      okText: "确定重置",
+      cancelText: "取消",
+      onOk: () => resetStatusMutation.mutate("pending"),
+    });
+  };
 
   const selectLyricsMutation = useMutation({
     mutationFn: ({ candidateId, enable, rerunMode, lyricsText, artist, title, wordTimedLyrics }: { candidateId: string; enable: boolean; rerunMode?: string; lyricsText?: string; artist?: string; title?: string; wordTimedLyrics?: string }) =>
@@ -738,10 +809,12 @@ export function TaskModuleAPage() {
           return flattenedCandidates[0]?.candidate_id || current || "";
         });
         setSearching(false);
-        void invalidateTaskScopes();
+        // 先确保 providerGroups 已更新，再异步刷新 REST 缓存
         if (!flattenedCandidates.length && eventData.suggest_manual_query) {
           setManualSearchModalOpen(true);
         }
+        // 延迟刷新 REST API 数据，避免覆盖正在显示的搜索结果
+        setTimeout(() => { invalidateTaskScopes(); }, 100);
         return;
       }
       if (eventName === "error") {
@@ -798,6 +871,11 @@ export function TaskModuleAPage() {
   };
 
   const openLyricsPreview = (candidate: TaskModuleALyricCandidate) => {
+    if (!candidate || !candidate.candidate_id) {
+      appLogger.warn("模块A页面", "openLyricsPreview candidate_id 为空", { candidate });
+      message.warning("该候选数据异常，请重新搜索。");
+      return;
+    }
     hasUserPickedCandidateRef.current = true;
     setSelectedCandidateId(candidate.candidate_id);
     setLyricsPreviewCandidate(candidate);
@@ -979,7 +1057,15 @@ export function TaskModuleAPage() {
     }
     // 重建词级时间戳 LRC（优先使用已编辑的 word_timed，否则从 tokens 重建）
     let savedWordTimed = String(lyricsPreviewWordTimedText || "").trim();
+    console.log("[保存歌词] 数据流 step1: savedWordTimed 原始值", {
+      from: savedWordTimed ? "lyricsPreviewWordTimedText" : "空/假值",
+      length: savedWordTimed.length,
+      isEmpty: !savedWordTimed,
+      isTokensPresent: savedWordTimed === "tokens_present",
+      preview: savedWordTimed.slice(0, 200),
+    });
     if (!savedWordTimed || savedWordTimed === "tokens_present") {
+      // token 重建分支
       const tokenLines: string[] = [];
       for (const row of savedRows) {
         if (row.tokens && row.tokens.length > 0) {
@@ -989,24 +1075,114 @@ export function TaskModuleAPage() {
         }
       }
       savedWordTimed = tokenLines.join("\n");
+      console.log("[保存歌词] 数据流 step2: 走了 tokens 重建", {
+        tokenLinesCount: tokenLines.length,
+        savedWordTimedPreview: savedWordTimed.slice(0, 300),
+      });
+    } else {
+      console.log("[保存歌词] 数据流 step2: 不走 tokens 重建，走裁剪", {
+        savedRowsCount: savedRows.length,
+        savedTimeLabels: savedRows.map(r => r.timeLabel),
+        beforeCropLineCount: savedWordTimed.split("\n").length,
+        beforeCropPreview: savedWordTimed.slice(0, 300),
+      });
+      // 裁剪 word_timed_lyrics 中多余的行（只保留 savedRows 中存在的行）
+      const savedTimeLabels = new Set(savedRows.map((r) => r.timeLabel).filter(Boolean));
+      console.log("[保存歌词] 数据流 step3: savedTimeLabels 集合", {
+        size: savedTimeLabels.size,
+        labels: [...savedTimeLabels].slice(0, 10),
+      });
+      if (savedTimeLabels.size > 0) {
+        const LRC_TIME = /^\[(\d{2}:\d{2}(?:\.\d{1,3})?)\]/;
+        const lines = savedWordTimed.split("\n");
+        let kept = 0, removed = 0;
+        const filtered = lines.filter((line, idx) => {
+          const m = line.match(LRC_TIME);
+          if (m) {
+            const has = savedTimeLabels.has(m[1]);
+            if (!has) removed++;
+            else kept++;
+            return has;
+          }
+          kept++;
+          return true;
+        });
+        savedWordTimed = filtered.join("\n");
+        console.log("[保存歌词] 数据流 step4: 裁剪结果", {
+          before: { lines: lines.length },
+          after: { lines: filtered.length, kept, removed },
+          preview: savedWordTimed.slice(0, 300),
+        });
+      } else {
+        console.log("[保存歌词] 数据流 step3b: savedTimeLabels 为空，跳过裁剪", {
+          savedWordTimedPreview: savedWordTimed.slice(0, 200),
+        });
+      }
+    }
+    if (savedRows.length === 0) {
+      savedWordTimed = "";
     }
     const sc: TaskModuleALyricCandidate & Record<string, unknown> = {
       ...lyricsPreviewCandidate, candidate_id: savedId, provider: "saved", provider_id: savedId,
+      synced_lyrics: savedWordTimed || (savedRows.length > 0 ? (lyricsPreviewCandidate?.synced_lyrics || "") : ""),
+      word_timed_lyrics: savedWordTimed || (savedRows.length > 0 ? (lyricsPreviewCandidate?.word_timed_lyrics || "") : ""),
       __saved_at: Date.now(), __saved_word_timed: savedWordTimed,
-      preview_lines: savedRows.slice(0, 4).map((r) => r.original || r.romanized || ""),
-      preview_text: savedRows.map((r) => r.original).join("\n").slice(0, 200),
-      has_word_timed_lyrics: Boolean(savedWordTimed || lyricsPreviewCandidate.has_word_timed_lyrics),
+      preview_lines: savedRows.length > 0 ? savedRows.slice(0, 4).map((r) => r.original || r.romanized || "") : ["纯音乐/无歌词"],
+      preview_text: savedRows.length > 0 ? savedRows.map((r) => r.original).join("\n").slice(0, 200) : "纯音乐/无歌词",
+      has_word_timed_lyrics: Boolean(savedWordTimed),
       has_translated_lyrics: Boolean(savedRows.some((r) => r.translated)),
       has_romanized_lyrics: Boolean(savedRows.some((r) => r.romanized)),
       __saved_rows: savedRows,
     };
-    console.log("[保存歌词] savedRows 逐行:", savedRows.map((r, idx) => `i=${idx} tl=${r.timeLabel} orig=${r.original.slice(0,20)} roma=${(r.romanized||"").slice(0,20)} trans=${(r.translated||"").slice(0,20)}`));
+    console.log("[保存歌词] savedRows 逐行:", savedRows.map((r, idx) => `i=${idx} tl=${r.timeLabel} orig=${r.original.slice(0,20)} roma=${(r.romanized||"").slice(0,20)} trans=${(r.translated||"").slice(0,20)} tokens=${r.tokens?.length||0}`));
+    console.log("[保存歌词] word_timed_lyrics 内容预览:", (savedWordTimed || "").slice(0, 300));
     setSavedCandidates((prev) => { const n = [...prev, sc]; try { localStorage.setItem("saved_lyrics_" + taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "保存歌词到 localStorage 失败", { error: String(err), taskId }); } return n; });
-    message.success("歌词已保存到「已保存」列。");
+    // 保存到后端磁盘（独立端口，json POST）
+    const _saveLyricsPromise = (async () => {
+      try {
+        const _savePort = data?.save_lyrics_port;
+        if (!_savePort || _savePort <= 0) {
+          throw new Error(`保存歌词 POST 服务未启动（端口=${_savePort}）。`);
+        }
+        const _hostname = window.location.hostname || "127.0.0.1";
+        console.log("[保存歌词] 尝试保存到后端:", {
+          savePort: _savePort,
+          url: `http://${_hostname}:${_savePort}/api/module-a/save-lyrics`,
+        });
+        const _body = JSON.stringify({ task_id: taskId, candidate: sc });
+        const _resp = await fetch(`http://${_hostname}:${_savePort}/api/module-a/save-lyrics`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: _body,
+        });
+        if (!_resp.ok) {
+          const _respBody = await _resp.text().catch(() => "");
+          throw new Error(`HTTP ${_resp.status}: ${_respBody.slice(0, 100)}`);
+        }
+        console.log("[保存歌词] 后端保存成功");
+      } catch (_err) {
+        appLogger.warn("模块A页面", "保存歌词到后端失败", {
+          error: String(_err), taskId,
+          savePort: data?.save_lyrics_port, hostname: window.location.hostname,
+        });
+        throw _err;
+      }
+    })();
+    _saveLyricsPromise
+      .then(() => { message.success("歌词已保存到本地和后端。"); })
+      .catch(() => { message.warning("歌词已保存到本地，但保存到后端失败，重跑时不会携带词级时间戳。"); });
   };
 
   const deleteSavedCandidate = (candidateId: string) => {
     setSavedCandidates((prev) => { const n = prev.filter((c) => c.candidate_id !== candidateId); try { localStorage.setItem("saved_lyrics_" + taskId, JSON.stringify(n)); } catch (err) { appLogger.error("模块A页面", "删除已保存歌词时写入 localStorage 失败", { error: String(err), taskId }); } return n; });
+    // 删除后端磁盘文件
+    fetch(`http://${window.location.hostname}:${data?.save_lyrics_port || 45706}/api/module-a/save-lyrics`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId, candidate_id: candidateId }),
+    }).catch((_err) => {
+      appLogger.warn("模块A页面", "删除后端歌词文件失败", { error: String(_err), taskId });
+    });
   };
 
   useEffect(() => {
@@ -1050,8 +1226,14 @@ export function TaskModuleAPage() {
             <Button icon={<ReloadOutlined />} loading={isFetching && !isLoading} onClick={() => void refetch()}>
               刷新状态
             </Button>
-            <Button type="primary" icon={<ReloadOutlined />} loading={rerunMutation.isPending} onClick={() => rerunMutation.mutate()}>
+            <Button type="primary" icon={<ReloadOutlined />} loading={rerunMutation.isPending} onClick={handleRerunClick}>
               重跑模块A
+            </Button>
+            <Button icon={<MinusCircleOutlined />} loading={instrumentalRerunMutation.isPending} onClick={handleInstrumentalRerun}>
+              无歌词重跑模块A
+            </Button>
+            <Button icon={<PlayCircleOutlined />} loading={rerunMutation.isPending} onClick={handleRerunClick}>
+              重跑task(全链路)
             </Button>
             <Button icon={<GlobalOutlined />} loading={searching && searchMode !== "manual_query"} onClick={startAutomaticLyricsSearch}>
               根据曲目自动查找歌词
@@ -1069,7 +1251,19 @@ export function TaskModuleAPage() {
           <Descriptions column={2} bordered className="detail-descriptions">
             <Descriptions.Item label="任务 ID">{data.task_id}</Descriptions.Item>
             <Descriptions.Item label="任务状态">{data.task_status}</Descriptions.Item>
-            <Descriptions.Item label="模块 A 状态">{data.module_a_status}</Descriptions.Item>
+            <Descriptions.Item label="模块 A 状态">
+              {data.module_a_status === "running" ? (
+                <Space>
+                  <span style={{ color: "#faad14", fontWeight: "bold" }}>running</span>
+                  <Button size="small" loading={resetStatusMutation.isPending} onClick={handleResetModuleAStatus}>
+                    重置为pending
+                  </Button>
+                </Space>
+              ) : (
+                data.module_a_status
+              )}
+            </Descriptions.Item>
+            <Descriptions.Item label="音频时长">{data.duration_seconds ? formatDuration(data.duration_seconds) : "未知"}</Descriptions.Item>
             <Descriptions.Item label="联网lrc状态">{getNetworkStatusTag(data.network_lrc_state.display_status)}</Descriptions.Item>
             <Descriptions.Item label="最近一次查找">{data.network_lrc_state.last_search_at || "尚未查找"}</Descriptions.Item>
             <Descriptions.Item label="文件元信息" span={2}>
@@ -1270,6 +1464,7 @@ export function TaskModuleAPage() {
                                   >
                                     <Space wrap size={[8, 8]} className="module-a-candidate-card__headline">
                                       <Typography.Text strong>{buildCandidateLabel(candidate)}</Typography.Text>
+                                      {candidate.duration_seconds ? <Tag>{formatDuration(candidate.duration_seconds)}</Tag> : null}
                                       {candidate.has_word_timed_lyrics ? <Tag color="processing">词级</Tag> : null}
                                       {candidate.has_translated_lyrics ? <Tag color="green">翻译</Tag> : null}
                                       {candidate.has_romanized_lyrics ? <Tag color="purple">罗马音</Tag> : null}
@@ -1536,6 +1731,7 @@ export function TaskModuleAPage() {
                         <div className="module-a-candidate-card" onClick={() => void inspectMergeCandidate(cand)} role="button" tabIndex={0}>
                           <Space wrap size={[8,8]} className="module-a-candidate-card__headline">
                             <Typography.Text strong>{buildCandidateLabel(cand)}</Typography.Text>
+                            {cand.duration_seconds ? <Tag>{formatDuration(cand.duration_seconds)}</Tag> : null}
                             {cand.has_word_timed_lyrics ? <Tag color="processing">词级</Tag> : null}
                             {cand.has_translated_lyrics ? <Tag color="green">翻译</Tag> : null}
                             {cand.has_romanized_lyrics ? <Tag color="purple">罗马音</Tag> : null}
@@ -1544,7 +1740,7 @@ export function TaskModuleAPage() {
                           </Space>
                         </div>
                       </Radio>))}
-                    </Space></div>
+                </Space></div>
                   </Card>;
                 })}
               </div></div>

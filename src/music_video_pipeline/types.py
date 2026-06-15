@@ -1,4 +1,4 @@
-﻿"""
+"""
 文件用途：定义模块间 JSON 契约类型与基础校验函数。
 核心流程：使用 TypedDict 描述 A/B 输出结构，提供最低字段与时间轴一致性检查。
 输入输出：输入 Python 字典，输出校验结果（通过/抛错）。
@@ -104,6 +104,7 @@ class LyricUnitItem(TypedDict):
     token_units: NotRequired[list[dict]]
     source_sentence_index: NotRequired[int]
     unit_transform: NotRequired[str]
+    translated_text: NotRequired[str]
 
 
 class EnergyFeatureItem(TypedDict):

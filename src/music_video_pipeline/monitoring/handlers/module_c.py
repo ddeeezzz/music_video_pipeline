@@ -26,6 +26,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_C_RERUN_FRAME_API_PATH,
     TASK_MODULE_C_REBUILD_UNITS_API_PATH,
     TASK_MODULE_C_RERUN_SHOT_API_PATH,
+    TASK_MODULE_C_RESUME_API_PATH,
 )
 
 
@@ -208,6 +209,49 @@ class ModuleCHandlers:
             module_name="C",
             statuses=["pending", "running", "done", "failed"],
         )
+
+        # 验证 DB 中已存在的 unit_ids 是否与 module_b_output.json 匹配
+        # 如果完全不匹配（如旧版代码遗留的 shot_001 格式），则从 module_b_output 重建
+        if all_units:
+            try:
+                task_dir = self._resolve_task_dir(task_id=normalized_task_id)
+                module_b_path = task_dir / "artifacts" / "module_b_output.json"
+                if module_b_path.exists():
+                    mb_data = json.loads(module_b_path.read_text(encoding="utf-8"))
+                    if isinstance(mb_data, list) and mb_data:
+                        db_unit_ids = {str(u.get("unit_id", "")).strip() for u in all_units if u.get("unit_id")}
+                        mb_shot_ids = {str(s.get("shot_id", "")).strip() for s in mb_data if s.get("shot_id")}
+                        if db_unit_ids and mb_shot_ids and not db_unit_ids.intersection(mb_shot_ids):
+                            self.logger.warning(
+                                "[监督服务] 模块C 检测到 DB unit_ids 与 module_b_output.json 完全不匹配，"
+                                "准备重建。db_unit_ids数量=%d，mb_shot_ids数量=%d",
+                                len(db_unit_ids), len(mb_shot_ids),
+                            )
+                            from music_video_pipeline.modules.module_c.unit_models import (  # noqa: PLC0415
+                                build_module_c_units,
+                                build_unit_sync_payload,
+                            )
+                            new_units = build_module_c_units(shots=mb_data)
+                            self.state_store.sync_module_units(
+                                task_id=task_id,
+                                module_name="C",
+                                units=build_unit_sync_payload(units=new_units),
+                            )
+                            all_units = self.state_store.list_module_units_by_status(
+                                task_id=task_id,
+                                module_name="C",
+                                statuses=["pending", "running", "done", "failed"],
+                            )
+                            unit_summary = self.state_store.get_module_unit_status_summary(
+                                task_id=normalized_task_id, module_name="C",
+                            )
+                            self.logger.info(
+                                "[监督服务] 模块C 单元已从 module_b_output.json 重建，new_count=%d",
+                                len(all_units),
+                            )
+            except Exception as exc:
+                self.logger.warning("[监督服务] 模块C 校验 unit_ids 时出错：%s", exc)
+
         # 从 B 中间产物（role3 streaming 文件）重建 C 单元
         if not all_units:
             try:
@@ -418,19 +462,19 @@ class ModuleCHandlers:
                 if sid and sid in units_by_id:
                     break
 
-        # segment 级别 summary
-        seg_total = len(seen_seg_order)
-        seg_status_counts: dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
-        for seg_id in seen_seg_order:
-            s = seen_seg_map[seg_id]["status"]
-            seg_status_counts[s] = seg_status_counts.get(s, 0) + 1
-
         segments_ordered = [seen_seg_map[sid] for sid in seen_seg_order]
+
+        # 按 shot 级别统计
+        shot_total = len(shots)
+        shot_status_counts: dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
+        for s in shots:
+            st = str(s.get("status", "pending")).strip()
+            shot_status_counts[st] = shot_status_counts.get(st, 0) + 1
 
         unit_summary = {
             "module_name": "C",
-            "total_units": seg_total,
-            "status_counts": seg_status_counts,
+            "total_units": shot_total,
+            "status_counts": shot_status_counts,
         }
         # unit 级别 ID 列表（前端 schema 兼容，从 state_store 获取）
         try:
@@ -471,6 +515,25 @@ class ModuleCHandlers:
                     if not str(shot_item.get("error_message", "")).strip():
                         shot_item["error_message"] = ""
                     break
+
+        # 从 module_a_output.json 加载各 segment 的歌词文本，回填到每个 shot
+        module_a_path = task_dir / "artifacts" / "module_a_output.json"
+        seg_lyrics: dict[str, list[str]] = {}
+        if module_a_path.exists():
+            try:
+                ma_data = json.loads(module_a_path.read_text(encoding="utf-8"))
+                for lu in ma_data.get("lyric_units", []):
+                    if not isinstance(lu, dict):
+                        continue
+                    sid = str(lu.get("segment_id", "")).strip()
+                    text = str(lu.get("text", "")).strip()
+                    if sid and text:
+                        seg_lyrics.setdefault(sid, []).append(text)
+            except Exception:
+                pass
+        for shot_item in shots:
+            sid = str(shot_item.get("segment_id", "")).strip()
+            shot_item["lyrics"] = seg_lyrics.get(sid, [])
 
         return {
             "ok": True,
@@ -516,6 +579,17 @@ class ModuleCHandlers:
                 "ok": False,
                 "error": f"模块C shot 重跑失败：该 shot 已有后台动作执行中，task_id={task_id}，shot_id={shot_id}",
             }, HTTPStatus.CONFLICT
+
+        # 如果任务处于 failed，先回退到 running
+        try:
+            task_record = self.state_store.get_task(task_id=task_id)
+            if task_record and str(task_record.get("status", "")).strip() == "failed":
+                self.state_store.update_task_status(task_id=task_id, status="running")
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块C shot 重跑提交时回退任务状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
 
         rerun_thread = threading.Thread(
             target=self._run_module_c_shot_rerun_in_background,
@@ -617,6 +691,16 @@ class ModuleCHandlers:
             args=(task_id, shot_id, frame_type),
             daemon=True,
         )
+        # 如果任务处于 failed，先回退到 running
+        try:
+            task_record = self.state_store.get_task(task_id=task_id)
+            if task_record and str(task_record.get("status", "")).strip() == "failed":
+                self.state_store.update_task_status(task_id=task_id, status="running")
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块C单帧重跑提交时回退任务状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
         try:
             self.state_store.set_module_unit_status(
                 task_id=task_id,
@@ -701,6 +785,8 @@ class ModuleCHandlers:
             if self.module_c_shot_rerun_handler is None:
                 raise RuntimeError(f"模块C shot 重跑 handler 缺失，task_id={task_id}，shot_id={shot_id}")
             self.module_c_shot_rerun_handler(task_id, shot_id)
+            # 基于单元状态自愈模块级/任务级状态
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             finished_at_ms = int(time.time() * 1000)
             meta = self._rerun_thread_meta.get(rerun_key)
             if isinstance(meta, dict):
@@ -739,6 +825,7 @@ class ModuleCHandlers:
                     artifact_path="",
                     error_message=str(error).strip(),
                 )
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             except Exception as persist_error:  # noqa: BLE001
                 self.logger.warning(
                     "[监督服务] 回写模块C shot 重跑失败状态时出错，task_id=%s，shot_id=%s，错误=%s",
@@ -782,6 +869,8 @@ class ModuleCHandlers:
                     f"模块C单帧重跑 handler 缺失，task_id={task_id}，shot_id={shot_id}，frame_type={frame_type}"
                 )
             self.module_c_frame_rerun_handler(task_id, shot_id, frame_type)
+            # 基于单元状态自愈模块级/任务级状态
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             finished_at_ms = int(time.time() * 1000)
             meta = self._rerun_thread_meta.get(rerun_key)
             if isinstance(meta, dict):
@@ -822,6 +911,7 @@ class ModuleCHandlers:
                     artifact_path="",
                     error_message=str(error).strip(),
                 )
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
             except Exception as persist_error:  # noqa: BLE001
                 self.logger.warning(
                     "[监督服务] 回写模块C单帧重跑失败状态时出错，task_id=%s，shot_id=%s，frame_type=%s，错误=%s",
@@ -898,3 +988,157 @@ class ModuleCHandlers:
             "unit_count": len(units),
             "message": f"模块 C 单元已重建，共 {len(units)} 个单元",
         }, HTTPStatus.OK
+
+    def _handle_module_c_resume_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """
+        功能说明：处理模块 C 断点续跑请求（扫描所有 shot，对首帧/尾帧缺失的 shot 逐个补跑）。
+        参数说明：
+        - parsed: 已解析的请求URL对象。
+        返回值：
+        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
+        异常说明：无；错误统一转为 JSON。
+        边界条件：已有产物的 shot 会跳过。
+        """
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"任务不存在：{task_id}"}, HTTPStatus.NOT_FOUND
+
+        rerun_key = f"{task_id}|module_c_resume"
+        active_thread = self._rerun_threads.get(rerun_key)
+        if active_thread is not None and active_thread.is_alive():
+            return {
+                "ok": False,
+                "error": f"模块C 断点续跑失败：任务已有后台动作执行中，task_id={task_id}",
+            }, HTTPStatus.CONFLICT
+
+        config_path_text = str(task_record.get("config_path", "")).strip()
+        if not config_path_text:
+            return {"ok": False, "error": f"任务缺少 config_path，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+
+        from pathlib import Path as _Path
+        workspace_root = _Path(task_record.get("workspace_root", "")) if task_record.get("workspace_root") else None
+        if workspace_root is None:
+            workspace_root = self._resolve_project_root()
+
+        # 如果任务处于 failed，先回退到 running
+        try:
+            task_record = self.state_store.get_task(task_id=task_id)
+            if task_record and str(task_record.get("status", "")).strip() == "failed":
+                self.state_store.update_task_status(task_id=task_id, status="running")
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块C续跑提交时回退任务状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
+        # 预写模块 running 状态
+        try:
+            self.state_store.set_module_status(
+                task_id=task_id, module_name="C", status="running",
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "[监督服务] 模块C续跑提交时预写 running 状态失败，task_id=%s，错误=%s",
+                task_id, exc,
+            )
+
+        rerun_thread = threading.Thread(
+            target=self._run_module_c_resume_in_background,
+            name=f"module-c-resume-{task_id}",
+            args=(task_id, config_path_text, workspace_root),
+            daemon=True,
+        )
+        self._rerun_threads[rerun_key] = rerun_thread
+        self._rerun_thread_meta[rerun_key] = {
+            "active": True,
+            "status": "queued",
+            "mode": "resume",
+            "submitted_at": current_time_text(),
+            "submitted_at_ms": int(time.time() * 1000),
+        }
+        rerun_thread.start()
+        self.logger.info("[监督服务] 模块C 断点续跑已提交，task_id=%s", task_id)
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "message": "模块 C 断点续跑已提交，后台开始扫描缺失 shot 并逐个补跑。",
+        }, HTTPStatus.OK
+
+    def _run_module_c_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path) -> None:
+        """
+        功能说明：在后台线程中执行模块 C 断点续跑，通过 CLI 子进程执行 resume --force-module C 命令。
+        参数说明：
+        - task_id: 任务唯一标识。
+        - config_path_text: 配置文件路径。
+        - workspace_root: 工作区根目录。
+        返回值：无。
+        异常说明：异常统一记录日志，不向前端线程传播。
+        边界条件：线程退出时必须清理并发占位。
+        """
+        rerun_key = f"{task_id}|module_c_resume"
+        started_at_ms = int(time.time() * 1000)
+        meta = self._rerun_thread_meta.get(rerun_key)
+        if isinstance(meta, dict):
+            meta["active"] = True
+            meta["status"] = "running"
+            meta["started_at"] = current_time_text()
+            meta["started_at_ms"] = started_at_ms
+        try:
+            self.logger.info("[监督服务] 后台开始执行模块C 断点续跑，task_id=%s", task_id)
+            from music_video_pipeline.config import load_config
+            from music_video_pipeline.context import RuntimeContext
+            resolved_config = load_config(config_path=Path(config_path_text))
+            task_dir = self._resolve_task_dir(task_id=task_id)
+            artifacts_dir = task_dir / "artifacts"
+            task_record = self.state_store.get_task(task_id=task_id) or {}
+            audio_path = self._resolve_task_audio_path_from_record(
+                task_id=task_id, task_record=task_record, persist=True,
+            )
+            ctx = RuntimeContext(
+                task_id=task_id, audio_path=audio_path,
+                task_dir=task_dir, artifacts_dir=artifacts_dir,
+                config=resolved_config, logger=self.logger,
+                state_store=self.state_store,
+            )
+            from music_video_pipeline.modules.module_c.orchestrator import run_module_c
+            run_module_c(ctx)
+            # 基于单元状态自愈模块级/任务级状态
+            self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            finished_at_ms = int(time.time() * 1000)
+            meta = self._rerun_thread_meta.get(rerun_key)
+            if isinstance(meta, dict):
+                meta["active"] = False
+                meta["status"] = "succeeded"
+                meta["finished_at"] = current_time_text()
+                meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+            self.logger.info("[监督服务] 后台模块C 断点续跑执行结束，task_id=%s", task_id)
+        except Exception as error:
+            finished_at_ms = int(time.time() * 1000)
+            meta = self._rerun_thread_meta.get(rerun_key)
+            if isinstance(meta, dict):
+                meta["active"] = False
+                meta["status"] = "failed"
+                meta["finished_at"] = current_time_text()
+                meta["finished_at_ms"] = finished_at_ms
+                meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+                meta["last_error"] = str(error).strip()
+                meta["failure_reason"] = "模块C断点续跑失败"
+            # 自愈模块级状态（单元状态可能已部分更新）
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                self.logger.warning(
+                    "[监督服务] 模块C断点续跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                    task_id, reconcile_error,
+                )
+            self.logger.error(
+                "[监督服务] 后台模块C 断点续跑失败，task_id=%s，错误=%s",
+                task_id,
+                error,
+            )
+        finally:
+            current_thread = self._rerun_threads.get(rerun_key)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(rerun_key, None)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   Alert,
@@ -7,6 +7,7 @@ import {
   Card,
   Col,
   Descriptions,
+  Dropdown,
   Form,
   Input,
   Modal,
@@ -17,10 +18,11 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
-import { copyTask, getTaskDetail, renameTask, rerunTask, taskQueryKeys } from "@/api/taskApi";
+import { copyTask, getTaskDetail, renameTask, rerunTask, resetTaskStatus, resumeTask, saveTaskConfig, taskQueryKeys } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
 import { routes } from "@/app/routes";
 import { EmptyState } from "@/components/common/EmptyState";
+import { TaskConfigEditor } from "@/features/config/TaskConfigEditor";
 import { TaskStatusTag } from "@/features/tasks/components/TaskStatusTag";
 import { useTaskIdParam } from "@/hooks/useTaskIdParam";
 
@@ -41,6 +43,8 @@ export function TaskDetailPage() {
   const { message } = App.useApp();
   const [renameOpen, setRenameOpen] = useState(false);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [configEditOpen, setConfigEditOpen] = useState(false);
+  const [configOverrides, setConfigOverrides] = useState<Record<string, unknown>>({});
   const [renameForm] = Form.useForm<RenameFormValues>();
   const [copyForm] = Form.useForm<CopyFormValues>();
 
@@ -55,16 +59,20 @@ export function TaskDetailPage() {
   });
 
   const task = data?.task;
+  const taskConfig = task?.config || {};
 
-  const invalidateTaskScopes = async (targetTaskId?: string): Promise<void> => {
-    await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
-    await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
-    await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
-    await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
-    if (targetTaskId) {
-      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(targetTaskId) });
-    }
-  };
+  const invalidateTaskScopes = useCallback(
+    async (targetTaskId?: string): Promise<void> => {
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
+      if (targetTaskId) {
+        await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(targetTaskId) });
+      }
+    },
+    [queryClient, taskId],
+  );
 
   const renameMutation = useMutation({
     mutationFn: renameTask,
@@ -99,7 +107,7 @@ export function TaskDetailPage() {
   });
 
   const rerunMutation = useMutation({
-    mutationFn: () => rerunTask(taskId),
+    mutationFn: (force?: boolean) => rerunTask(taskId, force ?? false),
     onSuccess: async (payload) => {
       await invalidateTaskScopes(taskId);
       message.success(payload.message || `任务已开始重跑：${taskId}`);
@@ -111,7 +119,65 @@ export function TaskDetailPage() {
     },
   });
 
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeTask(taskId),
+    onSuccess: async (payload) => {
+      await invalidateTaskScopes(taskId);
+      message.success(payload.message || `任务续跑已提交：${taskId}`);
+      navigate(routes.taskMonitor(taskId));
+    },
+    onError: (error) => {
+      appLogger.error("任务详情", "任务续跑失败", { error: error instanceof Error ? error.message : String(error) });
+      message.error(error instanceof Error ? error.message : String(error));
+    },
+  });
+
+  const statusResetMutation = useMutation({
+    mutationFn: (status: string) => resetTaskStatus(taskId, status),
+    onSuccess: async () => {
+      await invalidateTaskScopes();
+      message.success("任务状态已重置（调试）");
+    },
+    onError: (error) => {
+      appLogger.error("任务详情", "重置状态失败", { error: error instanceof Error ? error.message : String(error) });
+      message.error(error instanceof Error ? error.message : String(error));
+    },
+  });
+
+  const saveConfigMutation = useMutation({
+    mutationFn: (overrides: Record<string, unknown>) => saveTaskConfig(taskId, overrides),
+    onSuccess: async () => {
+      await invalidateTaskScopes(taskId);
+      message.success("配置已保存");
+      setConfigEditOpen(false);
+      setConfigOverrides({});
+    },
+    onError: (error) => {
+      appLogger.error("任务详情", "保存配置失败", { error: error instanceof Error ? error.message : String(error) });
+      message.error(error instanceof Error ? error.message : String(error));
+    },
+  });
+
   const moduleEntries = useMemo(() => Object.entries(task?.module_status || {}), [task?.module_status]);
+
+  const handleOpenConfigEdit = () => {
+    setConfigOverrides({});
+    setConfigEditOpen(true);
+  };
+
+  const handleRerunClick = () => {
+    if (task?.status === "running") {
+      Modal.confirm({
+        title: "确认强制重跑",
+        content: `当前任务状态为 running，是否强行重跑？`,
+        okText: "强行重跑",
+        cancelText: "取消",
+        onOk: () => rerunMutation.mutate(true),
+      });
+    } else {
+      rerunMutation.mutate(false);
+    }
+  };
 
   if (!task && !isLoading) {
     return (
@@ -142,9 +208,28 @@ export function TaskDetailPage() {
             <Button onClick={() => setCopyOpen(true)} disabled={!task}>
               复制
             </Button>
-            <Button type="primary" loading={rerunMutation.isPending} onClick={() => rerunMutation.mutate()} disabled={!task}>
+            <Button type="primary" loading={rerunMutation.isPending} onClick={handleRerunClick} disabled={!task}>
               重跑任务
             </Button>
+            <Button loading={resumeMutation.isPending} onClick={() => resumeMutation.mutate()} disabled={!task}>
+              全链路续跑
+            </Button>
+            <Dropdown.Button
+              menu={{
+                items: [
+                  { key: "pending", label: "pending" },
+                  { key: "running", label: "running" },
+                  { key: "done", label: "done" },
+                  { key: "failed", label: "failed" },
+                  { key: "unknown", label: "unknown" },
+                ],
+                onClick: ({ key }) => statusResetMutation.mutate(key),
+              }}
+              loading={statusResetMutation.isPending}
+              disabled={!task}
+            >
+              重置状态（调试）
+            </Dropdown.Button>
           </Space>
         </div>
 
@@ -164,6 +249,18 @@ export function TaskDetailPage() {
           </Descriptions>
         ) : null}
       </Card>
+
+      {Object.keys(taskConfig).length > 0 ? (
+        <Card bordered={false}>
+          <div className="page-toolbar">
+            <Typography.Title level={4} className="page-title">
+              任务配置
+            </Typography.Title>
+            <Button onClick={handleOpenConfigEdit}>编辑配置</Button>
+          </div>
+          <TaskConfigEditor config={taskConfig} readOnly />
+        </Card>
+      ) : null}
 
       <Card bordered={false}>
         <div className="page-toolbar">
@@ -271,6 +368,34 @@ export function TaskDetailPage() {
             <Input />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        title="编辑配置"
+        open={configEditOpen}
+        onCancel={() => setConfigEditOpen(false)}
+        onOk={() => saveConfigMutation.mutate(configOverrides)}
+        confirmLoading={saveConfigMutation.isPending}
+        width={800}
+        destroyOnClose
+      >
+        <TaskConfigEditor
+          config={taskConfig}
+          overrides={configOverrides}
+          readOnly={false}
+          onChange={(section, key, value) => {
+            setConfigOverrides((prev) => {
+              const next = { ...prev };
+              const sectionKey = key.includes(".") ? key.split(".")[0] : section;
+              const fieldKey = key.includes(".") ? key.split(".").slice(1).join(".") : key;
+              if (!next[sectionKey]) {
+                next[sectionKey] = {};
+              }
+              (next[sectionKey] as Record<string, unknown>)[fieldKey] = value;
+              return next;
+            });
+          }}
+        />
       </Modal>
     </div>
   );

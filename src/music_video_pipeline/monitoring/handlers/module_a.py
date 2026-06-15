@@ -7,8 +7,9 @@
 
 import asyncio
 import json
+import time
 from http import HTTPStatus
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -114,7 +115,11 @@ class ModuleAHandlers:
         """
         preview_group = dict(provider_group) if isinstance(provider_group, dict) else {}
         candidates = provider_group.get("candidates", []) if isinstance(provider_group, dict) else []
-        normalized_candidates = [dict(item) for item in candidates[:10] if isinstance(item, dict)]
+        normalized_candidates = [
+            self._build_module_a_candidate_summary(item)
+            for item in candidates[:10]
+            if isinstance(item, dict)
+        ]
         preview_group["candidates"] = normalized_candidates
         preview_group["page_size"] = 10
         preview_group["total_count"] = int(provider_group.get("total_count", len(candidates)) or len(candidates))
@@ -140,7 +145,7 @@ class ModuleAHandlers:
         ]
         preview_result["provider_groups"] = preview_groups
         preview_result["candidates"] = [
-            dict(candidate)
+            self._build_module_a_candidate_summary(candidate)
             for provider_group in preview_groups
             for candidate in provider_group.get("candidates", [])
             if isinstance(candidate, dict)
@@ -171,10 +176,51 @@ class ModuleAHandlers:
             module_status_map = self.state_store.get_module_status_map(task_id=normalized_task_id)
         except Exception:  # noqa: BLE001
             module_status_map = {}
+
+        duration_seconds: float | None = None
+        raw_audio_path = str(task_record.get("audio_path", "")).strip()
+        self.logger.info("[模块A] 探测音频时长开始，task_id=%s, raw_audio_path=%s, task_dir=%s", normalized_task_id, raw_audio_path, task_dir)
+        if raw_audio_path:
+            audio_candidate = self._resolve_task_audio_path_from_record(
+                task_id=normalized_task_id, task_record=task_record, persist=False,
+            )
+            self.logger.info("[模块A] resolved audio_candidate=%s, exists=%s", audio_candidate, audio_candidate.exists() if audio_candidate else False)
+            if audio_candidate and audio_candidate.exists() and audio_candidate.is_file():
+                try:
+                    duration_seconds = probe_audio_duration(
+                        audio_path=audio_candidate,
+                        ffprobe_bin=str(getattr(getattr(self.app_config, "ffmpeg", None), "ffprobe_bin", "ffprobe")),
+                        logger=self.logger,
+                    )
+                    self.logger.info("[模块A] 音频时长探测成功，duration_seconds=%s", duration_seconds)
+                except Exception as e:  # noqa: BLE001
+                    self.logger.warning("[模块A] probe_audio_duration 失败，error=%s", e)
+            else:
+                # 最终 fallback：直接用 audio_path 文件名在 task_dir 下找
+                audio_name = PureWindowsPath(raw_audio_path).name or Path(raw_audio_path).name
+                fallback_path = task_dir / audio_name
+                self.logger.info("[模块A] resolve 未找到，尝试 task_dir 文件名 fallback=%s, exists=%s", fallback_path, fallback_path.exists())
+                if fallback_path.exists() and fallback_path.is_file():
+                    try:
+                        duration_seconds = probe_audio_duration(
+                            audio_path=fallback_path,
+                            ffprobe_bin=str(getattr(getattr(self.app_config, "ffmpeg", None), "ffprobe_bin", "ffprobe")),
+                            logger=self.logger,
+                        )
+                        self.logger.info("[模块A] fallback 音频时长探测成功，duration_seconds=%s", duration_seconds)
+                    except Exception as e:  # noqa: BLE001
+                        self.logger.warning("[模块A] fallback probe_audio_duration 失败，error=%s", e)
+                else:
+                    self.logger.warning("[模块A] 音频文件不存在，无法探测时长")
+        else:
+            self.logger.warning("[模块A] task_record 中 audio_path 为空")
+
         return {
             "ok": True,
             "task_id": normalized_task_id,
             "task_status": str(task_record.get("status", "unknown")),
+            "duration_seconds": duration_seconds,
+            "save_lyrics_port": int(getattr(self, "_save_lyrics_post_port", 0)),
             "module_a_status": str(module_status_map.get("A", "unknown")),
             "module_a_visualization": {
                 "available": visualization_path is not None and visualization_path.exists(),
@@ -343,6 +389,9 @@ class ModuleAHandlers:
         enable_lookup = enable_text in {"1", "true", "yes", "enabled"}
         rerun_mode = str(query.get("rerun_mode", [""])[0]).strip().lower()
         is_lyrics_only = rerun_mode == "lyrics_only"
+        instrumental = str(query.get("instrumental", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+        if instrumental:
+            candidate_id = f"instrumental_{int(time.time())}"
         is_saved = str(candidate_id).strip().startswith("saved_")
         if not candidate_id and not lyrics_text:
             return {"ok": False, "error": "候选歌词选择失败：candidate_id 或 lyrics_text 不能为空。"}, HTTPStatus.BAD_REQUEST
@@ -358,7 +407,15 @@ class ModuleAHandlers:
 
         saved_dir = artifacts_dir / SAVED_LYRICS_DIR_NAME
         saved_file = saved_dir / f"{candidate_id}.json" if candidate_id else None
-        if is_saved and lyrics_text:
+        # 优先从磁盘读取（companion POST 服务可能已写入完整候选）
+        if is_saved and saved_file and saved_file.exists():
+            try:
+                saved_data = read_json(saved_file)
+                if isinstance(saved_data, dict) and str(saved_data.get("word_timed_lyrics", "")).strip():
+                    selected_candidate = saved_data
+            except Exception:
+                pass
+        if selected_candidate is None and is_saved and lyrics_text:
             # 前端传了新的歌词文本（可能过滤/编辑过），以 lyrics_text 为准。
             # 按时间戳从旧 word_timed 匹配找回词级数据，只保留 lyrics_text 中包含的行。
             word_timed_matched = ""
@@ -454,9 +511,29 @@ class ModuleAHandlers:
                 candidate_id=candidate_id,
             )
 
+        if selected_candidate is None and instrumental:
+            selected_candidate = {
+                "candidate_id": candidate_id,
+                "artist": "",
+                "title": "",
+                "synced_lyrics": "",
+                "translated_lyrics": "",
+                "romanized_lyrics": "",
+                "word_timed_lyrics": "",
+                "provider": "instrumental",
+                "provider_id": candidate_id,
+                "status": "synced",
+                "instrumental": True,
+            }
+            if saved_file:
+                saved_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    write_json(saved_file, selected_candidate)
+                except Exception:
+                    pass
         if selected_candidate is None:
             return {"ok": False, "error": f"候选歌词选择失败：未找到 candidate_id={candidate_id}，请重新联网查找。"}, HTTPStatus.NOT_FOUND
-        if enable_lookup and not str(selected_candidate.get("synced_lyrics", "")).strip():
+        if enable_lookup and not str(selected_candidate.get("synced_lyrics", "")).strip() and not instrumental:
             return {"ok": False, "error": "候选歌词选择失败：当前候选不包含可用的同步lrc歌词。"}, HTTPStatus.BAD_REQUEST
 
         # 日志输出歌词统计
@@ -489,16 +566,21 @@ class ModuleAHandlers:
         if not enable_lookup:
             return {"ok": True, "message": "已联网查找lrc但未启用"}, HTTPStatus.OK
 
-        if is_lyrics_only:
+        if not is_lyrics_only:
+            if instrumental:
+                msg = "纯音乐模式：已创建空歌词，开始重跑模块A"
+                reason = f"module_a_instrumental:{candidate_id}"
+            else:
+                msg = "已经启用联网查找的lrc，开始重跑模块A（歌词->算法层，不会触发cross-bcd）"
+                reason = f"module_a_network_lrc:{candidate_id}"
             return self._submit_task_rerun_lyrics_only_request(
-                task_id=task_id,
-                success_message="已经启用联网查找的lrc，开始轻量重跑（仅歌词->算法层，跳过信号处理）",
-                log_reason=f"module_a_network_lrc_lyrics_only:{candidate_id}",
+                task_id=task_id, success_message=msg, log_reason=reason,
             )
-        return self._submit_task_rerun_request(
+        # 前端"仅更新歌词"按钮：与默认路径相同，都是模块A算法层重跑
+        return self._submit_task_rerun_lyrics_only_request(
             task_id=task_id,
-            success_message="已经启用联网查找的lrc，并开始重跑模块A",
-            log_reason=f"module_a_network_lrc:{candidate_id}",
+            success_message="已经启用联网查找的lrc，开始轻量重跑（仅歌词->算法层，跳过信号处理）",
+            log_reason=f"module_a_network_lrc_lyrics_only:{candidate_id}",
         )
     def _handle_module_a_candidate_lyrics_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
         """
@@ -578,6 +660,28 @@ class ModuleAHandlers:
             "selected_candidate": self._build_module_a_candidate_summary(raw_state.get("selected_candidate", {})),
         }
 
+    def _handle_module_a_reset_status_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """处理手动重置模块 A 状态为 pending 的请求。"""
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        target_status = str(query.get("status", ["pending"])[0]).strip()
+        valid_statuses = {"pending", "done", "failed"}
+        if target_status not in valid_statuses:
+            return {"ok": False, "error": f"无效的状态值：{target_status}，仅支持 {valid_statuses}"}, HTTPStatus.BAD_REQUEST
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"重置失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        try:
+            self.state_store.set_module_status(task_id=task_id, module_name="A", status=target_status)
+            self.logger.info(
+                "[模块A] 手动重置模块A状态，task_id=%s，status=%s",
+                task_id,
+                target_status,
+            )
+            return {"ok": True, "task_id": task_id, "module_a_status": target_status}, HTTPStatus.OK
+        except Exception as error:  # noqa: BLE001
+            return {"ok": False, "error": f"重置模块 A 状态失败：{error}"}, HTTPStatus.INTERNAL_SERVER_ERROR
+
     def _handle_module_a_visualization_payload_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
         """
         功能说明：处理模块 A 可视化数据负载请求。
@@ -608,21 +712,34 @@ class ModuleAHandlers:
                 "task_id": task_id,
             }, HTTPStatus.NOT_FOUND
         audio_path = Path(str(payload.get("audio_path", "")))
-        audio_available = audio_path.exists() and audio_path.is_file()
+        # 先尝试原始路径（可能来自 Windows 机器上的绝对路径）
+        resolved_audio = audio_path if (audio_path and audio_path.exists() and audio_path.is_file()) else None
+        audio_available = resolved_audio is not None
+        # 原始路径不可用时，回退到 task_dir 下同名副本（跨机器迁移场景）
+        if not audio_available:
+            # Linux 上无法直接提取 Windows 路径的文件名，改用 PureWindowsPath
+            audio_name = PureWindowsPath(str(audio_path)).name or audio_path.name
+            task_audio = task_dir / audio_name
+            if task_audio.exists() and task_audio.is_file():
+                resolved_audio = task_audio
+                audio_available = True
         audio_url = ""
         if audio_available:
             try:
-                audio_url = self._build_task_file_url(task_id=task_id, file_path=audio_path)
+                audio_url = self._build_task_file_url(task_id=task_id, file_path=resolved_audio)
             except (ValueError, Exception):  # noqa: BLE001
-                # 原始音频不在 task_dir 内，检查 task_dir 下是否有副本
-                task_audio = task_dir / audio_path.name
+                audio_url = ""
+            # URL 构建失败说明文件不在 task_dir 下，尝试用 audio_name 在 task_dir 下找同名副本
+            if not audio_url and resolved_audio:
+                audio_name = PureWindowsPath(str(resolved_audio)).name or resolved_audio.name
+                task_audio = task_dir / audio_name
                 if task_audio.exists() and task_audio.is_file():
                     try:
                         audio_url = self._build_task_file_url(task_id=task_id, file_path=task_audio)
                     except (ValueError, Exception):  # noqa: BLE001
                         audio_url = ""
-                else:
-                    audio_url = ""
+        if audio_available and not audio_url:
+            audio_available = False
         payload["ok"] = True
         payload["task_id"] = task_id
         payload["task_dir"] = str(task_dir)
@@ -862,6 +979,7 @@ class ModuleAHandlers:
                 "provider": "",
                 "provider_id": "",
                 "provider_song_id": "",
+                "duration_seconds": 0.0,
                 "has_word_timed_lyrics": False,
                 "has_translated_lyrics": False,
                 "has_romanized_lyrics": False,
@@ -881,6 +999,7 @@ class ModuleAHandlers:
             "provider": str(candidate.get("provider", "lrclib")).strip(),
             "provider_id": str(candidate.get("provider_id", "")).strip(),
             "provider_song_id": str(candidate.get("provider_song_id", "")).strip(),
+            "duration_seconds": float(candidate.get("duration_seconds", 0.0) or 0.0),
             "has_word_timed_lyrics": bool(str(candidate.get("word_timed_lyrics", "")).strip()),
             "has_translated_lyrics": bool(str(candidate.get("translated_lyrics", "")).strip()),
             "has_romanized_lyrics": bool(str(candidate.get("romanized_lyrics", "")).strip()),

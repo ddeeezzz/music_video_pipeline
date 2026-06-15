@@ -12,6 +12,8 @@ import asyncio
 import errno
 # 标准库：用于状态快照JSON序列化
 import json
+# 标准库：用于启动独立 HTTP 服务处理保存歌词 POST
+import http.server
 # 标准库：用于日志记录
 import logging
 # 标准库：用于MIME类型推断
@@ -71,9 +73,21 @@ try:
     import websockets
     # 第三方库：WebSocket连接关闭异常
     from websockets.exceptions import ConnectionClosed
+    # 第三方库：HTTP响应类型
+    from websockets.http11 import Response
+
+    # websockets 版本适配：Headers 在 14+ 在 http11，之前版本在 datastructures
+    _WS_MAJOR = int(getattr(websockets, "__version__", "0").split(".")[0])
+    if _WS_MAJOR >= 14:
+        from websockets.http11 import Headers
+    else:
+        from websockets.datastructures import Headers
 except Exception:  # noqa: BLE001
     websockets = None
     ConnectionClosed = Exception
+    Response = None  # type: ignore[assignment]
+    Headers = None  # type: ignore[assignment]
+    _WS_MAJOR = 0
 
 from music_video_pipeline.monitoring.routes import (
     TASK_COPY_API_PATH,
@@ -95,6 +109,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_B_RESUME_API_PATH,
     TASK_MODULE_C_API_PATH,
     TASK_MODULE_C_RERUN_FRAME_API_PATH,
+    TASK_MODULE_C_RESUME_API_PATH,
     TASK_MODULE_C_REBUILD_UNITS_API_PATH,
     TASK_MODULE_C_RERUN_SHOT_API_PATH,
     TASK_MODULE_D_API_PATH,
@@ -109,8 +124,13 @@ from music_video_pipeline.monitoring.routes import (
     TASK_MODULE_D_TOONCRAFTER_MODE_API_PATH,
     TASK_MODULE_D_REBUILD_FINAL_API_PATH,
     TASK_MODULE_D_REBUILD_AUDIO_CANDIDATES_API_PATH,
+    TASK_MODULE_D_RESUME_API_PATH,
+    TASK_MODULE_D_BATCH_RERENDER_API_PATH,
     TASK_RENAME_API_PATH,
     TASK_RERUN_API_PATH,
+    TASK_RESUME_API_PATH,
+    TASK_STATUS_RESET_API_PATH,
+    TASK_MODULE_A_RESET_STATUS_API_PATH,
     WEB_APP_BUILD_DIR_NAME,
     WEB_APP_INDEX_FILE_NAME,
     WEB_APP_STATIC_ROUTE_PREFIX,
@@ -124,6 +144,7 @@ from music_video_pipeline.monitoring.handlers.module_a import ModuleAHandlers
 from music_video_pipeline.monitoring.handlers.module_b import ModuleBHandlers
 from music_video_pipeline.monitoring.handlers.module_c import ModuleCHandlers
 from music_video_pipeline.monitoring.handlers.module_d import ModuleDHandlers
+from music_video_pipeline.modules.module_d.remotion_queue import RemotionQueue
 from music_video_pipeline.monitoring.handlers.tasks import TaskHandlers
 from music_video_pipeline.monitoring.handlers.review import ReviewHandlers
 TaskRerunHandler = Callable[[str], dict[str, Any]]
@@ -221,6 +242,8 @@ class TaskMonitorService(
             else Path(__file__).resolve().parent / "static" / WEB_APP_BUILD_DIR_NAME
         )
         self._bound_port = 0
+        self._save_lyrics_post_server: Any = None
+        self._save_lyrics_post_port: int = 0
 
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -230,6 +253,11 @@ class TaskMonitorService(
         self._task_terminal = False
         self._rerun_threads: dict[str, threading.Thread] = {}
         self._rerun_thread_meta: dict[str, dict[str, Any]] = {}
+        self._remotion_queue = RemotionQueue(
+            max_concurrent=getattr(app_config, "module_d", None).remotion_max_concurrent
+            if getattr(app_config, "module_d", None)
+            else 3,
+        )
 
         self._started_event = threading.Event()
         self._startup_error: Exception | None = None
@@ -274,28 +302,31 @@ class TaskMonitorService(
         - RuntimeError: 起始端口之后已无可用端口时抛出。
         边界条件：port<=0 时保持交给系统自动分配，不参与顺延。
         """
+        # websockets 版本适配：构建 handler 和 process_request 包装器
+        serve_handler, serve_process_request = self._build_serve_adapters()
         start_port = int(self.port)
         if start_port <= 0:
             self._server = await websockets.serve(
-                self._handle_websocket,
+                serve_handler,
                 self.host,
                 self.port,
-                process_request=self._process_request,
+                process_request=serve_process_request,
                 ping_interval=20,
                 ping_timeout=None,
             )
             sockets = list(self._server.sockets or [])
             if sockets:
                 self._bound_port = int(sockets[0].getsockname()[1])
+            await self._start_save_lyrics_post_server()
             return
 
         for candidate_port in range(start_port, 65536):
             try:
                 self._server = await websockets.serve(
-                    self._handle_websocket,
+                    serve_handler,
                     self.host,
                     candidate_port,
-                    process_request=self._process_request,
+                    process_request=serve_process_request,
                     ping_interval=20,
                     ping_timeout=None,
                 )
@@ -307,6 +338,7 @@ class TaskMonitorService(
                         start_port,
                         self._bound_port,
                     )
+                await self._start_save_lyrics_post_server()
                 return
             except OSError as error:
                 if not self._is_address_in_use_error(error):
@@ -314,6 +346,133 @@ class TaskMonitorService(
                 continue
 
         raise RuntimeError(f"任务 Web 服务启动失败：从端口 {start_port} 开始直到 65535 均不可用。")
+
+    def _build_serve_adapters(self) -> tuple[Callable[..., Any], Any]:
+        """
+        功能说明：根据 websockets 版本构建与当前库兼容的 handler 和 process_request 适配器。
+        返回值：
+        - tuple[Callable, Callable]: (handler, process_request)。
+        边界条件：websockets 11.x 和 14+ 有不同的回调签名。
+        """
+        if _WS_MAJOR >= 14:
+            async def _pr_adapter_14(connection: Any, request: Any) -> Response | None:
+                return await self._process_request(request.path, request.headers)
+            return self._handle_websocket, _pr_adapter_14
+        else:
+            async def _handler_adapter_11(ws: Any, path: str) -> None:
+                ws._handler_path = path
+                await self._handle_websocket(ws)
+
+            async def _pr_adapter_11(path: str, request_headers: Any) -> tuple[Any, ...] | None:
+                result = await self._process_request(path, request_headers)
+                if result is None:
+                    return None
+                # websockets 11.x 的 AbortHandshake 要求 status 为 http.HTTPStatus 枚举
+                return (HTTPStatus(int(result.status_code)), list(result.headers.items()), result.body or b"")
+            return _handler_adapter_11, _pr_adapter_11
+
+    async def _start_save_lyrics_post_server(self) -> None:
+        """
+        功能说明：在 WS 端口的下一端口启动独立 HTTP 服务，
+                  接收前端保存歌词的 POST 请求并将完整候选写入磁盘。
+                  使用内部类 + 闭包捕获，避免 type()+setattr 的问题。
+        """
+        _monitor = self
+
+        class _SaveLyricsHandler(http.server.BaseHTTPRequestHandler):
+            """内部类 + 闭包捕获 _monitor，直接访问 TaskMonitorService 实例。"""
+
+            def log_message(self, fmt: str, *args: Any) -> None:
+                print(f"[HTTP 45706] {fmt % args}", flush=True)
+
+            def _send_cors(self, status: int, body: bytes = b"") -> None:
+                self.send_response(status)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
+
+            def do_OPTIONS(self) -> None:
+                self._send_cors(204)
+
+            def do_POST(self) -> None:
+                print(f"[HTTP 45706] do_POST path={self.path}", flush=True)
+                try:
+                    content_length = int(self.headers.get("Content-Length", "0"))
+                    raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+                    payload = json.loads(raw_body)
+                except Exception as exc:
+                    print(f"[HTTP 45706] do_POST 解析失败: {exc}", flush=True)
+                    self._send_cors(400, b'{"ok": false}')
+                    return
+                task_id = str(payload.get("task_id", "")).strip()
+                candidate = payload.get("candidate")
+                candidate_id = str(candidate.get("candidate_id", "")).strip() if isinstance(candidate, dict) else ""
+                print(f"[HTTP 45706] do_POST task_id={task_id} candidate_id={candidate_id}", flush=True)
+                if not (task_id and candidate_id and isinstance(candidate, dict)):
+                    self._send_cors(400, b'{"ok": false}')
+                    return
+                try:
+                    task_dir = _monitor._resolve_task_dir(task_id=task_id)
+                    saved_dir = task_dir / "artifacts" / "module_a_saved_lyrics"
+                    saved_file = saved_dir / f"{candidate_id}.json"
+                    saved_dir.mkdir(parents=True, exist_ok=True)
+                    from music_video_pipeline.io_utils import write_json
+                    write_json(saved_file, candidate)
+                    print(f"[HTTP 45706] do_POST 写入成功 {saved_file}", flush=True)
+                    self._send_cors(200, b'{"ok": true}')
+                except Exception as exc:
+                    print(f"[HTTP 45706] do_POST 写入失败: {exc}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                    self._send_cors(500, b'{"ok": false}')
+
+        for post_port in range(self._bound_port + 1, 65536):
+            try:
+                httpd = http.server.ThreadingHTTPServer(
+                    (self.host, post_port), _SaveLyricsHandler, bind_and_activate=True,
+                )
+                httpd_thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="save-lyrics")
+                httpd_thread.start()
+                self._save_lyrics_post_port = post_port
+                self._save_lyrics_post_server = httpd
+                if post_port != self._bound_port + 1:
+                    self.logger.warning(
+                        "[监督服务] 保存歌词 POST 服务端口 %s 已被占用，已自动顺延到 %s",
+                        self._bound_port + 1, post_port,
+                    )
+                self.logger.info(
+                    "[监督服务] 保存歌词 POST 服务已启动（http.server），端口=%s",
+                    post_port,
+                )
+                return
+            except OSError as error:
+                if not self._is_address_in_use_error(error):
+                    self.logger.warning(
+                        "[监督服务] 保存歌词 POST 服务启动失败（端口=%s）错误=%s",
+                        post_port, error,
+                    )
+                    break
+                continue
+
+        self.logger.warning(
+            "[监督服务] 保存歌词 POST 服务启动失败：从端口 %s 直到 65535 均不可用",
+            self._bound_port + 1,
+        )
+        self._save_lyrics_post_port = 0
+
+    def _stop_save_lyrics_post_server(self) -> None:
+        if self._save_lyrics_post_server:
+            try:
+                self._save_lyrics_post_server.shutdown()
+            except Exception:
+                pass
+            self._save_lyrics_post_server = None
 
     @property
     def monitor_url(self) -> str:
@@ -394,6 +553,7 @@ class TaskMonitorService(
             return
         if self._loop and self._async_stop_event:
             self._loop.call_soon_threadsafe(self._async_stop_event.set)
+        self._stop_save_lyrics_post_server()
         self.wait_until_stopped(timeout_seconds=5.0)
 
     def wait_until_stopped(self, timeout_seconds: float | None = None) -> bool:
@@ -516,16 +676,20 @@ class TaskMonitorService(
             except Exception:  # noqa: BLE001
                 continue
 
-    async def _handle_websocket(self, websocket: Any, path: str) -> None:
+    async def _handle_websocket(self, websocket: Any) -> None:
         """
         功能说明：处理WebSocket连接并周期推送任务快照。
         参数说明：
         - websocket: 当前连接对象。
-        - path: 请求路径（含查询串）。
         返回值：无。
         异常说明：连接异常中断时自动退出循环。
         边界条件：默认使用URL中的 task_id；缺失时回退当前任务ID。
         """
+        # websockets 11.x handler 传第二个参数 path，存到 ws 属性供这里读取
+        if _WS_MAJOR < 14:
+            path = str(getattr(websocket, "_handler_path", ""))
+        else:
+            path = str(getattr(getattr(websocket, "request", None), "path", ""))
         parsed = urlparse(path)
         if parsed.path == TASK_MODULE_A_SEARCH_LYRICS_WS_PATH:
             await self._handle_module_a_search_lyrics_socket(websocket=websocket, parsed=parsed)
@@ -560,14 +724,14 @@ class TaskMonitorService(
 
 
 
-    async def _process_request(self, path: str, _request_headers: Any) -> Any:
+    async def _process_request(self, path: str, _request_headers: Any) -> Response | None:
         """
         功能说明：在同端口处理简易HTTP请求（监督页与健康检查）。
         参数说明：
         - path: 请求路径（含查询串）。
-        - _request_headers: 请求头对象（当前无需使用）。
+        - _request_headers: 请求头对象。
         返回值：
-        - Any: websockets 约定的HTTP响应三元组或 None。
+        - Response | None: HTTP 响应对象或 None（None 时交由WebSocket握手流程处理）。
         异常说明：无。
         边界条件：返回 None 时交由WebSocket握手流程继续处理。
         """
@@ -642,6 +806,20 @@ class TaskMonitorService(
             )
         if parsed.path == TASK_RERUN_API_PATH:
             payload, status = self._handle_rerun_task_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_RESUME_API_PATH:
+            payload, status = self._handle_resume_task_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_STATUS_RESET_API_PATH:
+            payload, status = self._handle_task_status_reset_request(parsed=parsed)
             return self._build_http_response(
                 status=status,
                 content_type="application/json; charset=utf-8",
@@ -769,6 +947,13 @@ class TaskMonitorService(
                 content_type="application/json; charset=utf-8",
                 body_text=json.dumps(payload, ensure_ascii=False),
             )
+        if parsed.path == TASK_MODULE_C_RESUME_API_PATH:
+            payload, status = self._handle_module_c_resume_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
         if parsed.path == TASK_MODULE_D_API_PATH:
             query = parse_qs(parsed.query)
             target_task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
@@ -869,6 +1054,20 @@ class TaskMonitorService(
                 content_type="application/json; charset=utf-8",
                 body_text=json.dumps(payload, ensure_ascii=False),
             )
+        if parsed.path == TASK_MODULE_D_RESUME_API_PATH:
+            payload, status = self._handle_module_d_resume_request(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
+        if parsed.path == TASK_MODULE_D_BATCH_RERENDER_API_PATH:
+            payload, status = self._handle_module_d_batch_rerender(parsed=parsed)
+            return self._build_http_response(
+                status=status,
+                content_type="application/json; charset=utf-8",
+                body_text=json.dumps(payload, ensure_ascii=False),
+            )
         if parsed.path == "/web-data":
             query = parse_qs(parsed.query)
             target_task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
@@ -935,7 +1134,7 @@ class TaskMonitorService(
             raise FileNotFoundError(index_path)
         return index_path.read_text(encoding="utf-8")
 
-    def _build_frontend_app_entry_response(self) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+    def _build_frontend_app_entry_response(self) -> Response:
         """
         功能说明：返回正式前端 SPA 的 HTML 入口。
         参数说明：无。
@@ -972,7 +1171,7 @@ class TaskMonitorService(
         self,
         path: str,
         request_headers: Any,
-    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+    ) -> Response:
         """
         功能说明：从正式前端构建目录中返回静态资源文件。
         参数说明：
@@ -1404,7 +1603,7 @@ class TaskMonitorService(
         self,
         path: str,
         request_headers: Any,
-    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+    ) -> Response:
         """
         功能说明：从 runs 任务目录中读取并返回静态文件。
         参数说明：
@@ -1458,7 +1657,7 @@ class TaskMonitorService(
         file_path: Path,
         content_type: str,
         request_headers: Any,
-    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+    ) -> Response:
         """
         功能说明：构造支持 Range 的文件响应。
         参数说明：
@@ -1548,9 +1747,9 @@ class TaskMonitorService(
         body_text: str,
         extra_headers: list[tuple[str, str]] | None = None,
         body_bytes: bytes | None = None,
-    ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+    ) -> Response:
         """
-        功能说明：构造 websockets process_request 需要的HTTP响应三元组。
+        功能说明：构造 websockets process_request 需要的 HTTP Response 对象。
         参数说明：
         - status: HTTP状态码。
         - content_type: Content-Type 头。
@@ -1558,17 +1757,19 @@ class TaskMonitorService(
         - extra_headers: 额外响应头。
         - body_bytes: 可选原始字节正文；传入时优先于 body_text。
         返回值：
-        - tuple[HTTPStatus, list[tuple[str, str]], bytes]: HTTP响应对象。
+        - Response: websockets 16.0 HTTP 响应对象。
         异常说明：无。
         边界条件：body统一按UTF-8编码。
         """
         if body_bytes is None:
             body_bytes = body_text.encode("utf-8")
-        headers = [
-            ("Content-Type", content_type),
-            ("Content-Length", str(len(body_bytes))),
-            ("Cache-Control", "no-store"),
-        ]
+        headers = Headers()
+        headers["Content-Type"] = content_type
+        headers["Content-Length"] = str(len(body_bytes))
+        headers["Cache-Control"] = "no-store"
         if extra_headers:
-            headers.extend(extra_headers)
-        return status, headers, body_bytes
+            for key, value in extra_headers:
+                headers[key] = value
+        import http.client
+        reason_phrase = http.client.responses.get(int(status), "")
+        return Response(int(status), reason_phrase, headers, body_bytes)

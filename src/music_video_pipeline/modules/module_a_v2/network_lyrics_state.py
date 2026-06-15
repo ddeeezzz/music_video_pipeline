@@ -124,6 +124,7 @@ def build_manual_network_lyrics_result(
         return None
     synced_lyrics = str(selected_candidate.get("synced_lyrics", "")).strip()
     word_timed_lyrics = str(selected_candidate.get("word_timed_lyrics", "")).strip()
+    translated_lyrics_raw = str(selected_candidate.get("translated_lyrics", "")).strip()
     effective_synced_lyrics = word_timed_lyrics or synced_lyrics
     if not effective_synced_lyrics:
         return None
@@ -134,6 +135,25 @@ def build_manual_network_lyrics_result(
     )
     if not lyric_sentence_units:
         return None
+
+    # 如果有翻译歌词，将其按时间戳对齐并入 lyric_sentence_units
+    if translated_lyrics_raw:
+        merged_lines = merge_multi_track_lyrics(
+            synced_lyrics=effective_synced_lyrics,
+            translated_lyrics=translated_lyrics_raw,
+        )
+        translated_lookup: dict[float, str] = {}
+        for merged_line in merged_lines:
+            translated_text = str(merged_line.get("translated_text", "")).strip()
+            if translated_text:
+                ts = float(merged_line.get("start_time", 0.0))
+                translated_lookup[round(ts, 3)] = translated_text
+        for unit in lyric_sentence_units:
+            unit_start = round(float(unit.get("start_time", 0.0)), 3)
+            matched_translation = translated_lookup.get(unit_start, "")
+            if matched_translation:
+                unit["translated_text"] = matched_translation
+
     artist = str(selected_candidate.get("artist", "")).strip()
     title = str(selected_candidate.get("title", "")).strip()
     selected_provider = str(selected_candidate.get("provider", "lrclib")).strip() or "lrclib"

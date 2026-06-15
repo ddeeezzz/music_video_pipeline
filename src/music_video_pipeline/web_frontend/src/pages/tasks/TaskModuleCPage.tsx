@@ -1,6 +1,7 @@
 import {
   ReloadOutlined,
   EyeOutlined,
+  ToolOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
@@ -22,6 +23,8 @@ import {
   getTaskModuleCData,
   rerunModuleCFrame,
   rerunModuleCShot,
+  resumeModuleB,
+  resumeModuleC,
   taskQueryKeys,
 } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
@@ -80,6 +83,13 @@ function ShotCard({
             <Typography.Text type="secondary">
               {formatTimeRange(shot.start_time, shot.end_time)}
             </Typography.Text>
+            {shot.lyrics && shot.lyrics.length > 0 ? (
+              <Tag color="purple" style={{ fontSize: 10, lineHeight: "16px", maxWidth: 280 }} title={shot.lyrics.join(" | ")}>
+                {shot.lyrics.slice(0, 2).join(" / ")}{shot.lyrics.length > 2 ? "…" : ""}
+              </Tag>
+            ) : (
+              <Typography.Text style={{ fontSize: 11, color: "#bbb" }}>无歌词</Typography.Text>
+            )}
           </Space>
         }
       >
@@ -297,6 +307,30 @@ export function TaskModuleCPage() {
     },
   });
 
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeModuleC(taskId),
+    onSuccess: async (payload) => {
+      await refetch();
+      message.success(payload.message || "断点续跑已开始");
+    },
+    onError: (error) => {
+      const errorText = error instanceof Error ? error.message : String(error);
+      message.warning(errorText);
+    },
+  });
+
+  const bcdResumeMutation = useMutation({
+    mutationFn: () => resumeModuleB(taskId),
+    onSuccess: async (payload) => {
+      await refetch();
+      message.success(payload.message || "BCD 续跑已开始");
+    },
+    onError: (error) => {
+      const errorText = error instanceof Error ? error.message : String(error);
+      message.warning(errorText);
+    },
+  });
+
   const handleRerunShot = (shotId: string) => {
     if (activeRerun?.active && activeRerun.shot_id === shotId) {
       const runningSeconds = activeRerun.started_at_ms
@@ -344,6 +378,8 @@ export function TaskModuleCPage() {
   const shots = data?.shots ?? [];
   const activeRerun = data?.active_rerun;
 
+  const sortedShots = [...shots].sort((a, b) => a.shot_id.localeCompare(b.shot_id));
+
   return (
     <div className="module-c-page">
       <Typography.Title level={3}>Module C — 镜头首尾帧</Typography.Title>
@@ -377,14 +413,41 @@ export function TaskModuleCPage() {
           <Tag color="red">failed: {unitSummary.status_counts?.failed ?? 0}</Tag>
           {activeRerun?.active ? <Tag color="processing">重跑中: {activeRerun.shot_id}</Tag> : null}
           {activeRerun?.status === "failed" ? <Tag color="error">最近重跑失败</Tag> : null}
+          <Button
+            icon={<ToolOutlined />}
+            size="small"
+            loading={resumeMutation.isPending}
+            onClick={() => {
+              Modal.confirm({
+                title: "断点续跑 Module C",
+                content: "将扫描所有 shot，对首帧/尾帧缺失的 shot 逐个补跑。已有产物的 shot 会跳过。",
+                onOk: () => resumeMutation.mutate(),
+              });
+            }}
+          >
+            C 续跑
+          </Button>
+          <Button
+            size="small"
+            loading={bcdResumeMutation.isPending}
+            onClick={() => {
+              Modal.confirm({
+                title: "BCD 续跑",
+                content: "将自动扫描 B→C→D 链路，检查各 role、shot 和 segment 的完成状态，仅补充缺失环节。",
+                onOk: () => bcdResumeMutation.mutate(),
+              });
+            }}
+          >
+            BCD 续跑
+          </Button>
         </Space>
       ) : null}
 
-      {shots.length === 0 ? (
+      {sortedShots.length === 0 ? (
         <Typography.Text type="secondary">暂无镜头数据，请先执行模块 B 和模块 C。</Typography.Text>
       ) : (
         <Row gutter={[16, 16]}>
-          {shots.map((shot) => (
+          {sortedShots.map((shot) => (
             <Col span={12} key={shot.shot_id}>
               <ShotCard
                 shot={shot}

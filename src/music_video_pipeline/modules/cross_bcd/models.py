@@ -39,28 +39,41 @@ class CrossChainUnit:
     duration: float
 
 
+def _segment_to_shot_id(segment_id: str) -> str:
+    """从 seg_0001 → shot_0001_1。"""
+    return f"shot_{str(segment_id).strip().replace('seg_', '')}_1"
+
+
 def build_cross_chain_units(module_a_output: dict[str, Any]) -> list[CrossChainUnit]:
     """
-    功能说明：基于模块 A 输出构建跨模块链路单元数组。
+    功能说明：基于模块 A segments 构建跨模块链路单元数组（每 seg_xxxx 一条链）。
     参数说明：
     - module_a_output: 模块 A 输出字典。
     返回值：
     - list[CrossChainUnit]: 按 unit_index 升序的链路单元数组。
     异常说明：
     - ValueError: segment_id 缺失或重复时抛出。
-    边界条件：shot_id 固定按 shot_{index+1:03d} 派生。
+    边界条件：shot_id 按 seg_id 派生（shot_{seg_number}_1），多 subject 场景由下游处理。
     """
-    b_units = build_module_b_units(module_a_output=module_a_output)
+    segments: list[dict[str, Any]] = module_a_output.get("segments", []) or []
+    if not segments:
+        raise ValueError("模块 A segments 为空，无法构建跨模块链路。")
     chain_units: list[CrossChainUnit] = []
-    for b_unit in b_units:
+    for idx, seg in enumerate(segments):
+        seg_id = str(seg.get("segment_id", "")).strip()
+        if not seg_id:
+            raise ValueError(f"segments[{idx}] 缺少 segment_id")
+        start_time = float(seg.get("start_time", 0) or 0)
+        end_time = float(seg.get("end_time", start_time) or start_time)
+        duration = max(0.5, end_time - start_time)
         chain_units.append(
             CrossChainUnit(
-                unit_index=int(b_unit.unit_index),
-                segment_id=str(b_unit.unit_id),
-                shot_id=f"shot_{int(b_unit.unit_index) + 1:03d}",
-                start_time=float(b_unit.start_time),
-                end_time=float(b_unit.end_time),
-                duration=float(b_unit.duration),
+                unit_index=idx,
+                segment_id=seg_id,
+                shot_id=_segment_to_shot_id(seg_id),
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration,
             )
         )
     return chain_units

@@ -8,12 +8,16 @@
 
 # 标准库：用于稳定随机种子。
 import hashlib
+# 标准库：用于日志输出。
+import logging
 # 标准库：用于文件复制与目录操作。
 import shutil
 # 标准库：用于路径处理。
 from pathlib import Path
 # 标准库：用于类型提示。
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # 第三方库：用于图像缩放与格式统一。
 from PIL import Image
@@ -229,7 +233,7 @@ def generate_tooncrafter_frames(
             server_url=str(comfyui_global_cfg.server_url),
             request_timeout_seconds=float(getattr(comfyui_global_cfg, "request_timeout_seconds", 30.0)),
             poll_interval_seconds=float(getattr(comfyui_global_cfg, "poll_interval_seconds", 1.0)),
-            execution_timeout_seconds=float(getattr(comfyui_global_cfg, "execution_timeout_seconds", 600.0)),
+            execution_timeout_seconds=float(getattr(comfyui_global_cfg, "execution_timeout_seconds", 7200.0)),
         )
     )
     client.ensure_service_ready()
@@ -254,9 +258,22 @@ def generate_tooncrafter_frames(
     sequence_dir.mkdir(parents=True, exist_ok=True)
 
     resized_dir = unit.segment_path.parent / f".{unit.unit_id}_tooncrafter_inputs"
+
+    logger.info(
+        "ToonCrafter generate: unit_id=%s start=%s end=%s output=%s resized_inputs=%s "
+        "gen_frames=%s exact_frames=%s pad_to_fit=%s",
+        unit.unit_id, start_image, end_image, sequence_dir, resized_dir,
+        comfy_cfg.generation_frames, unit.exact_frames, pad_to_fit,
+    )
     if resized_dir.exists():
         shutil.rmtree(resized_dir)
     resized_dir.mkdir(parents=True, exist_ok=True)
+
+    # 清理 ComfyUI 输出目录中该 unit 的旧文件，防止新旧文件分辨率不一致导致后续处理失败
+    comfy_output_dir = client._options.output_dir / "mvpl" / "module_d" / unit.unit_id
+    if comfy_output_dir.exists():
+        shutil.rmtree(comfy_output_dir)
+    comfy_output_dir.mkdir(parents=True, exist_ok=True)
 
     resized_start_path = resized_dir / "start_tooncrafter_input.png"
     resized_end_path = resized_dir / "end_tooncrafter_input.png"
@@ -327,6 +344,10 @@ def generate_tooncrafter_frames(
             offset_x = (target_w - subject_w) // 2
             offset_y = (target_h - subject_h) // 2
             for fp in resampled_files:
+                # 确保帧尺寸与生成尺寸一致（ToonCrafter 工作流输出可能使用不同分辨率）
+                with Image.open(fp) as _check_img:
+                    if _check_img.size != (target_w, target_h):
+                        _check_img.resize((target_w, target_h), Image.Resampling.LANCZOS).save(fp)
                 _add_transparent_padding(fp, offset_x, offset_y, subject_w, subject_h, target_w, target_h)
 
     return resampled_files
@@ -413,6 +434,11 @@ def _resample_frame_sequence(source_files: list[Path], target_count: int, sequen
         target_file = sequence_dir / f"frame_{target_index + 1:04d}{source_file.suffix.lower() or '.png'}"
         shutil.copy2(source_file, target_file)
         copied_files.append(target_file)
+    logger.info(
+        "ToonCrafter 重采样完成: source=%s source_count=%s target_count=%s output_dir=%s",
+        source_files[0].parent if source_files else "N/A",
+        source_count, normalized_target, sequence_dir,
+    )
     return copied_files
 
 

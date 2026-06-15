@@ -141,8 +141,8 @@
         0
       ],
       "upscale_method": "lanczos",
-      "width": 1920,
-      "height": 1200,
+      "width": 1344,
+      "height": 840,
       "crop": "center"
     },
     "class_type": "ImageScale"

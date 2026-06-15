@@ -288,8 +288,8 @@ class ModuleDConfig:
         contract_file: str = "configs/comfyui/module_d.contract.json"
         checkpoint_name: str = "tooncrafter_512_interp-pruned-fp16.safetensors"
         sketch_encoder_name: str = "sketch_encoder-fp16.safetensors"
-        generation_width: int = 512
-        generation_height: int = 320
+        generation_width: int = 1344
+        generation_height: int = 840
         generation_frames: int = 16
         generation_fps: int = 16
         steps: int = 30
@@ -305,6 +305,7 @@ class ModuleDConfig:
     segment_workers: int = 3
     unit_retry_times: int = 1
     comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
+    remotion_max_concurrent: int = 3
 
 
 @dataclass(frozen=True)
@@ -326,7 +327,7 @@ class ComfyUIServiceConfig:
     server_url: str = "http://127.0.0.1:8188"
     request_timeout_seconds: float = 30.0
     poll_interval_seconds: float = 1.0
-    execution_timeout_seconds: float = 60.0
+    execution_timeout_seconds: float = 7200.0
 
 
 @dataclass(frozen=True)
@@ -571,18 +572,12 @@ def _merge_defaults(raw_data: dict) -> dict:
             "video_preset": "veryfast",
             "video_crf": 24,
             "render_batch_size": 1,
-            "render_workers": 3,
-            "video_accel_mode": "auto",
-            "gpu_video_codec": "h264_nvenc",
-            "gpu_preset": "p1",
-            "gpu_rc_mode": "vbr",
-            "gpu_cq": 34,
-            "gpu_bitrate": None,
+            "render_workers": 1,
+            "video_accel_mode": "cpu_only",
             "concat_video_mode": "copy",
             "concat_copy_fallback_reencode": True,
         },
         "logging": {"level": "INFO"},
-        "render": {"video_width": 768, "video_height": 512},
         "module_b": {
             "storyboard_template_file": "configs/storyboard_templates/storyboard_template.v1.md",
             "fixed_negative_prompt_en": "(color, colored, photo, realistic:1.6), (cgs, 3d, rendering:1.2), lowres, (bad anatomy), (bad hands), text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, (depth of field, bokeh:1.3), (greyscale:0.8)",
@@ -594,17 +589,18 @@ def _merge_defaults(raw_data: dict) -> dict:
                 "api_key_file": ".secrets/siliconflow_api_key.txt",
                 "prompt_template_file": "",
                 "user_custom_prompt": "",
-                "timeout_seconds": 60.0,
+                "timeout_seconds": 120.0,
                 "retry_times": 1,
                 "temperature": 0.70,
                 "top_p": 0.90,
+                "enable_thinking": False,
                 "stream": True,
                 "max_tokens": 8192,
             },
         },
         "module_c": {
             "render_backend": "comfyui",
-            "render_workers": 3,
+            "render_workers": 1,
             "unit_retry_times": 1,
             "comfyui": {
                 "contract_start_file": "configs/comfyui/module_c_start.contract.json",
@@ -624,7 +620,7 @@ def _merge_defaults(raw_data: dict) -> dict:
         },
         "module_d": {
             "render_backend": "comfyui",
-            "segment_workers": 3,
+            "segment_workers": 1,
             "unit_retry_times": 1,
             "comfyui": {
                 "contract_file": "configs/comfyui/module_d.contract.json",
@@ -649,37 +645,37 @@ def _merge_defaults(raw_data: dict) -> dict:
             "server_url": "http://127.0.0.1:8188",
             "request_timeout_seconds": 30.0,
             "poll_interval_seconds": 1.0,
-            "execution_timeout_seconds": 600.0,
+            "execution_timeout_seconds": 7200.0,
         },
         "cross_module": {
-            "global_render_limit": 3,
-            "scheduler_tick_ms": 50,
+            "global_render_limit": 1,
+            "scheduler_tick_ms": 100,
             "adaptive_window": {
-                "enabled": True,
-                "probe_interval_ms": 1000,
+                "enabled": False,
+                "probe_interval_ms": 1500,
                 "low_watermark": 0.65,
-                "high_watermark": 0.96,
+                "high_watermark": 0.92,
                 "c_gpu_index": 0,
-                "d_gpu_index": 1,
+                "d_gpu_index": 0,
                 "c_limit_min": 1,
-                "c_limit_max": 6,
+                "c_limit_max": 1,
                 "d_limit_min": 1,
-                "d_limit_max": 2,
+                "d_limit_max": 1,
             },
         },
         "monitoring": {
             "host": "127.0.0.1",
             "port": 45705,
-            "max_wait_after_terminal_minutes": 20.0,
+            "max_wait_after_terminal_minutes": 30.0,
         },
         "bypy_upload": {
-            "enabled": True,
+            "enabled": False,
             "bypy_bin": "bypy",
             "remote_runs_dir": "/runs",
             "retry_times": 2,
             "timeout_seconds": 1800.0,
             "config_dir": "~/.bypy",
-            "require_auth_file": True,
+            "require_auth_file": False,
             "selection_profile": "whitelist_v1",
         },
         "module_a": {
@@ -688,6 +684,8 @@ def _merge_defaults(raw_data: dict) -> dict:
             "instrumental_labels": ["intro", "outro", "inst"],
             "fallback_enabled": True,
             "device": "auto",
+            "funasr_language": "auto",
+            "funasr_model": "FunAudioLLM/Fun-ASR-Nano-2512",
             "comma_pause_seconds": 0.45,
             "long_pause_seconds": 0.8,
             "merge_gap_seconds": 0.25,
@@ -707,12 +705,12 @@ def _merge_defaults(raw_data: dict) -> dict:
             "skip_funasr_when_vocals_silent": True,
             "vocal_skip_peak_rms_threshold": 0.010,
             "vocal_skip_active_ratio_threshold": 0.020,
-            "implementation": "v1",
+            "implementation": "v2",
             "visual_lead_seconds": 0.06,
             "long_instrumental_gap_seconds": 5.0,
             "lyric_boundary_near_anchor_seconds": 1.5,
             "content_role_tiny_merge_bars": 0.8,
-            "long_lyric_resplit_max_bars": 3.0,
+            "long_lyric_resplit_max_bars": 2.0,
             "long_other_split_min_bars": 1.0,
             "major_split_step_bars": 2.5,
         },
@@ -764,6 +762,42 @@ def _is_valid_device_spec(device_text: str) -> bool:
     return bool(CUDA_DEVICE_PATTERN.fullmatch(normalized))
 
 
+COMMON_CONFIG_NAME = "common.json"
+
+
+def _load_common_and_task_config(config_path: Path) -> dict:
+    """
+    功能说明：加载公共配置 common.json 与 per-task 配置，合并后返回。
+    参数说明：
+    - config_path: per-task 配置文件路径。
+    返回值：
+    - dict: 合并后的配置字典（common.json 为基底，per-task 配置覆盖）。
+    异常说明：
+    - FileNotFoundError/json.JSONDecodeError: 由读取函数抛出。
+    边界条件：common.json 不存在时等价于仅加载 per-task 配置。
+    """
+    common_path = config_path.parent.parent / COMMON_CONFIG_NAME
+    common_data: dict = {}
+    if common_path.exists() and common_path.is_file():
+        common_data = _read_json_config(common_path) or {}
+    raw_data = _read_json_config(config_path) or {}
+    if not common_data:
+        return raw_data
+    # 浅层合并：common_data 做基底，raw_data 覆盖
+    merged: dict = {}
+    all_keys = set(common_data.keys()) | set(raw_data.keys())
+    for key in all_keys:
+        common_val = common_data.get(key)
+        override_val = raw_data.get(key)
+        if isinstance(common_val, dict) and isinstance(override_val, dict):
+            merged[key] = {**common_val, **override_val}
+        elif key in raw_data:
+            merged[key] = override_val
+        elif key in common_data:
+            merged[key] = common_val
+    return merged
+
+
 def load_config(config_path: Path) -> AppConfig:
     """
     功能说明：加载配置文件并转换为 AppConfig。
@@ -773,9 +807,9 @@ def load_config(config_path: Path) -> AppConfig:
     - AppConfig: 应用配置对象。
     异常说明：
     - FileNotFoundError/json.JSONDecodeError: 由读取函数抛出。
-    边界条件：当配置缺失字段时自动补默认值。
+    边界条件：当配置缺失字段时自动补默认值。自动加载同目录下 common.json。
     """
-    raw_data = _read_json_config(config_path)
+    raw_data = _load_common_and_task_config(config_path)
     raw_bypy_upload_data = raw_data.get("bypy_upload", {})
     if raw_bypy_upload_data is not None and not isinstance(raw_bypy_upload_data, dict):
         raise TypeError("配置错误：bypy_upload 必须是对象。")
@@ -845,7 +879,7 @@ def load_config(config_path: Path) -> AppConfig:
         raise TypeError("配置错误：bypy_upload 必须是对象。")
     render_data = merged.get("render", {})
     if not isinstance(render_data, dict):
-        raise TypeError("配置错误：render 必须是对象。")
+        render_data = {}
     render_data = dict(render_data)
 
     module_a_data = dict(merged["module_a"])

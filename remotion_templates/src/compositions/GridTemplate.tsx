@@ -13,6 +13,8 @@ import type {ReactElement} from "react";
 import {BackgroundLayer} from "../shared/BackgroundLayer";
 // 项目内模块：用于渲染多图条带层。
 import {SymbolStripLayer} from "../shared/SymbolStripLayer";
+// 项目内模块：用于渲染歌词叠加层。
+import {LyricsOverlay} from "../shared/LyricsOverlay";
 // 项目内模块：用于提供模板请求类型。
 import type {GridTemplateRequest} from "../types";
 
@@ -35,10 +37,10 @@ const getSlotLeftList = (
   return [0, 1, 2].map((index) => startLeft + index * slotWidth);
 };
 
-// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
-const TEMPLATE_WIDTH = 1920;
-// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
-const TEMPLATE_HEIGHT = 1200;
+// 常量：模板画布固定宽度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_WIDTH = 1344;
+// 常量：模板画布固定高度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_HEIGHT = 840;
 // 常量：模板自然动画帧数（保持不变速）。
 const NATURAL_FRAMES = 84;
 
@@ -59,8 +61,8 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
   const visibleCellCount = Math.max(1, props.layout.visible_cell_count);
   const slotWidth = TEMPLATE_WIDTH / visibleCellCount;
   const leftList = getSlotLeftList(TEMPLATE_WIDTH, slotWidth);
-  const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.26));
-  const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.52));
+  const widthList = props.slots.map((slot) => TEMPLATE_WIDTH * (slot.frames[0]?.width_ratio ?? 0.30));
+  const heightList = props.slots.map((slot) => TEMPLATE_HEIGHT * (slot.frames[0]?.height_ratio ?? 0.85));
   // 图片容器宽度小于格子宽度时，将每个图片容器在格子内居中偏移
   const centeredLeftList = leftList.map((slotLeft, i) => {
     const imgW = widthList[i] ?? slotWidth;
@@ -74,11 +76,13 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
   );
   const enterFrames = Math.max(1, Math.floor(totalActiveFrames / 3));
 
-  // 每个 slot 独立从 frames 数组按进度取当前帧
+  // 每个 slot 独立从 frames 数组按本地时间轴进度取当前帧
   const activeSymbolAt = (index: number) => {
     const slotFrames = props.slots[index]?.frames ?? [];
     if (slotFrames.length <= 1) return slotFrames[0] ?? null;
-    const progress = animFrame / Math.max(1, props.duration_in_frames);
+    const localFrame = Math.max(0, animFrame - enterFrames * index);
+    const localDuration = props.duration_in_frames - enterFrames * index;
+    const progress = localFrame / Math.max(1, localDuration);
     return slotFrames[Math.min(Math.floor(progress * slotFrames.length), slotFrames.length - 1)];
   };
 
@@ -92,6 +96,7 @@ export const GridTemplate = (props: GridTemplateRequest): ReactElement => {
       }}
     >
       <BackgroundLayer background={props.background} />
+      <LyricsOverlay lyrics={props.lyrics} />
       {props.slots.map((_slot, index) => {
         const localFrame = Math.max(0, animFrame - enterFrames * index);
         const rawProgress = Math.min(1, localFrame / Math.max(1, enterFrames));

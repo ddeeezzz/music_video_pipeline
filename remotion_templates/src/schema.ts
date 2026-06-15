@@ -32,6 +32,20 @@ export const backgroundRequestSchema = z.object({
 });
 
 /**
+ * 功能说明：定义单行歌词字段 schema。
+ * 参数说明：无。
+ * 返回值：不适用。
+ * 异常说明：不适用。
+ * 边界条件：start_frame/end_frame 为相对模板时间轴的帧序号。
+ */
+const lyricItemSchema = z.object({
+  text: z.string(),
+  translated_text: z.string().optional(),
+  start_frame: z.number().int().min(0),
+  end_frame: z.number().int().min(0),
+});
+
+/**
  * 功能说明：定义 CenterTemplate 的 props schema。
  * 参数说明：无。
  * 返回值：不适用。
@@ -50,6 +64,8 @@ export const centerTemplateSchema = z.object({
   }),
   energy_level: z.enum(["low", "mid", "high"]).optional(),
   rhythm_tension: z.number().min(0).max(1).optional(),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });
 
 /**
@@ -76,6 +92,8 @@ export const gridTemplateSchema = z.object({
     overshoot_ratio: z.number().min(0),
     enter_distance: z.number().min(0)
   }),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });
 
 /**
@@ -108,6 +126,8 @@ export const scrollTemplateSchema = z.object({
       });
     }
   }),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });
 
 /**
@@ -140,6 +160,8 @@ export const tiltUpTemplateSchema = z.object({
   frames: z.array(symbolRequestSchema).optional(),
   energy_level: z.enum(["low", "mid", "high"]).optional(),
   rhythm_tension: z.number().min(0).max(1).optional(),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });
 
 /**
@@ -156,6 +178,8 @@ export const tiltDownTemplateSchema = z.object({
   frames: z.array(symbolRequestSchema).optional(),
   energy_level: z.enum(["low", "mid", "high"]).optional(),
   rhythm_tension: z.number().min(0).max(1).optional(),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });
 
 /**
@@ -172,4 +196,6 @@ export const panRightTemplateSchema = z.object({
   frames: z.array(symbolRequestSchema).optional(),
   energy_level: z.enum(["low", "mid", "high"]).optional(),
   rhythm_tension: z.number().min(0).max(1).optional(),
+  lyrics: z.array(lyricItemSchema).optional(),
+  font_path: z.string().optional(),
 });

@@ -33,6 +33,7 @@ const moduleCShotSchema = z.object({
       video_prompt_zh: "",
       video_prompt_en: "",
     }),
+  lyrics: z.array(z.string()).optional().default([]),
 });
 
 const moduleCActiveRerunSchema = z.object({

@@ -11,6 +11,11 @@ import {
   taskDetailResponseSchema,
   taskListResponseSchema,
 } from "@/schemas/tasks";
+import {
+  defaultConfigResponseSchema,
+  taskConfigResponseSchema,
+  taskConfigSaveResponseSchema,
+} from "@/schemas/config";
 import { taskMonitorSnapshotSchema } from "@/schemas/monitor";
 import { taskWebDataSchema } from "@/schemas/webData";
 
@@ -113,14 +118,39 @@ export async function copyTask(input: {
   return payload;
 }
 
-export async function rerunTask(taskId: string) {
-  appLogger.info("任务详情", "开始触发任务重跑", { taskId });
+export async function rerunTask(taskId: string, force = false) {
+  appLogger.info("任务详情", "开始触发任务重跑", { taskId, force });
   const payload = await fetchJson(
-    `/api/task/rerun?${buildQueryString({ task_id: taskId })}`,
+    `/api/task/rerun?${buildQueryString({ task_id: taskId, force: String(force) })}`,
     taskActionResponseSchema,
   );
   appLogger.info("任务详情", "任务重跑请求已提交", { taskId });
   return payload;
+}
+
+export async function resumeTask(taskId: string) {
+  appLogger.info("任务详情", "开始触发全链路续跑", { taskId });
+  const payload = await fetchJson(
+    `/api/task/resume?${buildQueryString({ task_id: taskId })}`,
+    taskActionResponseSchema,
+  );
+  appLogger.info("任务详情", "全链路续跑请求已提交", { taskId });
+  return payload;
+}
+
+export async function resetModuleAStatus(taskId: string, status = "pending") {
+  const payload = await fetchJson(
+    `/api/module-a/reset-status?${buildQueryString({ task_id: taskId, status })}`,
+    taskActionResponseSchema,
+  );
+  return payload;
+}
+
+export async function resetTaskStatus(taskId: string, status: string) {
+  return fetchJson(
+    `/api/task/reset-status?${buildQueryString({ task_id: taskId, status })}`,
+    taskActionResponseSchema,
+  );
 }
 
 export async function searchTaskModuleALyrics(
@@ -182,6 +212,7 @@ export async function selectTaskModuleALyrics(
   artist?: string,
   title?: string,
   wordTimedLyrics?: string,
+  instrumental?: boolean,
 ) {
   const params: Record<string, string> = {
     task_id: taskId,
@@ -199,6 +230,7 @@ export async function selectTaskModuleALyrics(
   }
   if (artist) params.artist = artist;
   if (title) params.title = title;
+  if (instrumental) params.instrumental = "1";
   appLogger.info("模块A", "开始提交 lrc 歌词选择", { taskId, candidateId, enable, rerunMode, hasLyricsText: Boolean(lyricsText) });
   return fetchJson(
     `/api/module-a/select-lyrics?${buildQueryString(params)}`,
@@ -263,10 +295,26 @@ export async function rebuildModuleBOutput(taskId: string) {
   );
 }
 
-export async function resumeModuleB(taskId: string) {
-  appLogger.info("模块B", "开始触发断点续跑", { taskId });
+export async function resumeModuleB(taskId: string, mode = "bcd") {
+  appLogger.info("模块B", "开始触发续跑", { taskId, mode });
   return fetchJson(
-    `/api/module-b/resume?${buildQueryString({ task_id: taskId })}`,
+    `/api/module-b/resume?${buildQueryString({ task_id: taskId, mode })}`,
+    taskActionResponseSchema,
+  );
+}
+
+export async function resumeModuleC(taskId: string) {
+  appLogger.info("模块C", "开始触发断点续跑", { taskId });
+  return fetchJson(
+    `/api/module-c/resume?${buildQueryString({ task_id: taskId })}`,
+    taskActionResponseSchema,
+  );
+}
+
+export async function resumeModuleD(taskId: string) {
+  appLogger.info("模块D", "开始触发断点续跑", { taskId });
+  return fetchJson(
+    `/api/module-d/resume?${buildQueryString({ task_id: taskId })}`,
     taskActionResponseSchema,
   );
 }
@@ -410,6 +458,29 @@ export async function rerunModuleDAllToonCrafter(taskId: string) {
   );
 }
 
+export async function rerunModuleDBatchToonCrafter(
+  taskId: string,
+  segmentIds: string[],
+  mode: string,
+) {
+  appLogger.info("模块D", "开始触发模块 D 批量 ToonCrafter 重跑（指定 segment）", {
+    taskId,
+    segmentCount: segmentIds.length,
+    mode,
+  });
+  const params: Record<string, string> = {
+    task_id: taskId,
+    segment_ids: segmentIds.join(","),
+  };
+  if (mode && mode !== "slow") {
+    params.mode = mode;
+  }
+  return fetchJson(
+    `/api/module-d/rerun-tooncrafter-module?${buildQueryString(params)}`,
+    taskActionResponseSchema,
+  );
+}
+
 export async function rerunModuleDSegmentRemotion(taskId: string, segmentId: string, mode?: string, transitionBg?: string) {
   appLogger.info("模块D", "开始触发模块 D segment Remotion 重渲", { taskId, segmentId, mode, transitionBg });
   const params: Record<string, string> = { task_id: taskId, segment_id: segmentId };
@@ -430,6 +501,30 @@ export async function rerunModuleDAllRemotion(taskId: string) {
   return fetchJson(
     `/api/module-d/rerun-remotion-module?${buildQueryString({
       task_id: taskId,
+    })}`,
+    taskActionResponseSchema,
+  );
+}
+
+export interface BatchRerenderSegmentConfig {
+  segment_id: string;
+  mode?: "slow" | "pingpong" | "holdtail";
+  transition_bg?: "" | "white" | "black";
+  action?: "tooncrafter" | "remotion";
+}
+
+export async function rerunModuleDBatchRerender(
+  taskId: string,
+  segmentConfigs: BatchRerenderSegmentConfig[],
+) {
+  appLogger.info("模块D", "开始触发模块 D 批量重渲（逐 segment 配置）", {
+    taskId,
+    segmentCount: segmentConfigs.length,
+  });
+  return fetchJson(
+    `/api/module-d/batch-rerender?${buildQueryString({
+      task_id: taskId,
+      segments: JSON.stringify(segmentConfigs),
     })}`,
     taskActionResponseSchema,
   );
@@ -561,4 +656,35 @@ export async function rerunModuleCFrame(
     })}`,
     taskActionResponseSchema,
   );
+}
+
+// ── Config API ──────────────────────────────────────────
+
+export const configQueryKeys = {
+  default: ["config", "default"] as const,
+  taskConfig: (taskId: string) => ["config", "task", taskId] as const,
+};
+
+export async function getDefaultConfig() {
+  return fetchJson("/api/config/default", defaultConfigResponseSchema);
+}
+
+export async function getTaskConfig(taskId: string) {
+  return fetchJson(
+    `/api/task/config?${buildQueryString({ task_id: taskId })}`,
+    taskConfigResponseSchema,
+  );
+}
+
+export async function saveTaskConfig(taskId: string, overrides: Record<string, unknown>) {
+  appLogger.info("任务配置", "开始保存任务配置覆盖", { taskId });
+  const payload = await fetchJson(
+    `/api/task/config?${buildQueryString({
+      task_id: taskId,
+      overrides: JSON.stringify(overrides),
+    })}`,
+    taskConfigSaveResponseSchema,
+  );
+  appLogger.info("任务配置", "任务配置保存完成", { taskId });
+  return payload;
 }

@@ -16,13 +16,15 @@ import type {ReactElement} from "react";
 import {BackgroundLayer} from "../shared/BackgroundLayer";
 // 项目内模块：用于渲染中心符号层。
 import {SymbolLayer} from "../shared/SymbolLayer";
+// 项目内模块：用于渲染歌词叠加层。
+import {LyricsOverlay} from "../shared/LyricsOverlay";
 // 项目内模块：用于提供模板请求类型。
 import type {CenterTemplateRequest} from "../types";
 
-// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
-const TEMPLATE_WIDTH = 1920;
-// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
-const TEMPLATE_HEIGHT = 1200;
+// 常量：模板画布固定宽度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_WIDTH = 1344;
+// 常量：模板画布固定高度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_HEIGHT = 840;
 
 /**
  * 功能说明：渲染居中单图模板。
@@ -72,6 +74,7 @@ export const CenterTemplate = (props: CenterTemplateRequest): ReactElement => {
             heightRatio={currentSymbol.height_ratio}
           />
         </AbsoluteFill>
+        <LyricsOverlay lyrics={props.lyrics} />
       </AbsoluteFill>
     );
   }
@@ -128,6 +131,7 @@ export const CenterTemplate = (props: CenterTemplateRequest): ReactElement => {
           heightRatio={currentSymbol.height_ratio}
         />
       </AbsoluteFill>
+      <LyricsOverlay lyrics={props.lyrics} />
     </AbsoluteFill>
   );
 };

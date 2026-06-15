@@ -22,6 +22,7 @@ export const taskDetailSchema = z.object({
   created_at: z.string(),
   error_message: z.string(),
   module_status: moduleStatusSchema,
+  config: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const taskListResponseSchema = z.object({

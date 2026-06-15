@@ -46,8 +46,32 @@ def build_module_b_units(module_a_output: dict[str, Any]) -> list[ModuleBUnit]:
     异常说明：按具体实现定义。
     边界条件：单元顺序应与模块 A 时间线保持一致。
     """
-    del module_a_output
-    raise NotImplementedError("module_b: build_module_b_units is not implemented.")
+    big_segments: list[dict[str, Any]] = module_a_output.get("big_segments", []) or []
+    if not isinstance(big_segments, list):
+        big_segments = []
+    if not big_segments:
+        if module_a_output.get("segments"):
+            big_segments = module_a_output["segments"]
+
+    units: list[ModuleBUnit] = []
+    for idx, seg in enumerate(big_segments):
+        if not isinstance(seg, dict):
+            continue
+        seg_id = str(seg.get("segment_id", "")).strip() or f"seg_{idx:04d}"
+        start_time = float(seg.get("start_time", 0) or 0)
+        end_time = float(seg.get("end_time", start_time) or start_time)
+        duration = float(seg.get("duration", 0) or max(0.5, end_time - start_time))
+        units.append(
+            ModuleBUnit(
+                unit_id=seg_id,
+                unit_index=idx,
+                segment=seg,
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration,
+            )
+        )
+    return units
 
 
 def build_unit_sync_payload(units: list[ModuleBUnit]) -> list[dict[str, Any]]:
@@ -60,8 +84,16 @@ def build_unit_sync_payload(units: list[ModuleBUnit]) -> list[dict[str, Any]]:
     异常说明：按具体实现定义。
     边界条件：输出字段应满足状态库写入要求。
     """
-    del units
-    raise NotImplementedError("module_b: build_unit_sync_payload is not implemented.")
+    return [
+        {
+            "unit_id": unit.unit_id,
+            "unit_index": unit.unit_index,
+            "start_time": unit.start_time,
+            "end_time": unit.end_time,
+            "duration": unit.duration,
+        }
+        for unit in units
+    ]
 
 
 def build_unit_map(units: list[ModuleBUnit]) -> dict[str, ModuleBUnit]:
@@ -74,5 +106,4 @@ def build_unit_map(units: list[ModuleBUnit]) -> dict[str, ModuleBUnit]:
     异常说明：按具体实现定义。
     边界条件：映射键应与单元唯一标识保持一致。
     """
-    del units
-    raise NotImplementedError("module_b: build_unit_map is not implemented.")
+    return {unit.unit_id: unit for unit in units}

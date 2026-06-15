@@ -3,6 +3,7 @@ import {
   PlaySquareOutlined,
   ReloadOutlined,
   ExperimentOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
   Alert,
@@ -32,13 +33,16 @@ import {
   rerunModuleDAll,
   rerunModuleDSegmentToonCrafter,
   rerunModuleDAllToonCrafter,
+  rerunModuleDBatchToonCrafter,
   rerunModuleDSegmentRemotion,
   rerunModuleDAllRemotion,
+  rerunModuleDBatchRerender,
+  resumeModuleD,
   setToonCrafterMode,
   setToonCrafterShotMode,
   taskQueryKeys,
 } from "@/api/taskApi";
-import type { AudioCandidate } from "@/api/taskApi";
+import type { AudioCandidate, BatchRerenderSegmentConfig } from "@/api/taskApi";
 import {
   buildSegmentVideoUrl,
   probeSegmentVideoExists,
@@ -69,7 +73,7 @@ function RerunSegmentModal({
   loading,
 }: RerunSegmentModalProps) {
   const [frameType, setFrameType] = useState<"start" | "end">("start");
-  const [transitionBg, setTransitionBg] = useState<"white" | "black">("white");
+  const [transitionBg, setTransitionBg] = useState("");
   const remotionId = segment.remotion_id || "";
   const isTransition = remotionId && new Set(["TiltUpTemplate", "TiltDownTemplate", "PanRightTemplate"]).has(remotionId);
   const multiSubjectTemplates = new Set(["GridTemplate", "ScrollTemplate"]);
@@ -80,7 +84,7 @@ function RerunSegmentModal({
       title={`重跑 segment：${segment.segment_id}`}
       open={open}
       onCancel={onCancel}
-      onOk={() => onConfirm(frameType, isTransition ? transitionBg : undefined)}
+      onOk={() => onConfirm(frameType, isTransition ? (transitionBg || undefined) as "white" | "black" | undefined : undefined)}
       confirmLoading={loading}
       okText="确认重跑"
       cancelText="取消"
@@ -123,8 +127,13 @@ function RerunSegmentModal({
 
         {isTransition ? (
           <Space direction="vertical" style={{ width: "100%" }}>
-            <Alert type="info" showIcon message={`使用 ${transitionBg === "white" ? "白屏" : "黑屏"} + 当前 segment 选择帧进行过渡渲染。`} />
+            <Alert type="info" showIcon message={
+              transitionBg === ""
+                ? "使用上一个 segment 尾帧 + 当前 segment 选择帧进行过渡渲染。"
+                : `使用 ${transitionBg === "white" ? "白屏" : "黑屏"} + 当前 segment 选择帧进行过渡渲染。`
+            } />
             <Radio.Group value={transitionBg} onChange={(e) => setTransitionBg(e.target.value)}>
+              <Radio.Button value="">上一个 segment 尾帧</Radio.Button>
               <Radio.Button value="white">白屏</Radio.Button>
               <Radio.Button value="black">黑屏</Radio.Button>
             </Radio.Group>
@@ -223,6 +232,7 @@ function SegmentCard({
   rerunBothLoading,
   tooncrafterLoading,
   remotionLoading,
+  phase,
 }: {
   taskId: string;
   segment: TaskModuleDSegment;
@@ -235,6 +245,7 @@ function SegmentCard({
   rerunBothLoading: boolean;
   tooncrafterLoading: boolean;
   remotionLoading: boolean;
+  phase?: string;
 }) {
   const remotionId = segment.remotion_id;
   const basePath = resolveSegmentVideoBasePath(taskId, segment.segment_id);
@@ -259,6 +270,9 @@ function SegmentCard({
           <Typography.Text strong style={{ fontSize: 13 }}>{segment.segment_id}</Typography.Text>
           {remotionId ? <Tag color="blue" style={{ fontSize: 10, lineHeight: "16px" }}>{remotionId}</Tag> : null}
           <TaskStatusTag status={segStatus} />
+          {phase === "tooncrafter" ? <Tag color="purple" style={{ fontSize: 10, lineHeight: "16px" }}>ToonCrafter</Tag> : null}
+          {phase === "remotion" ? <Tag color="blue" style={{ fontSize: 10, lineHeight: "16px" }}>Remotion</Tag> : null}
+          {phase === "rebuild" ? <Tag color="orange" style={{ fontSize: 10, lineHeight: "16px" }}>拼接中</Tag> : null}
           {hasMultiSubjects ? (
             <Tag color="orange" style={{ fontSize: 10, lineHeight: "16px" }}>{segment.shots.length} 主体</Tag>
           ) : null}
@@ -267,6 +281,13 @@ function SegmentCard({
               {segStart.toFixed(2)}~{segEnd.toFixed(2)}s
             </Typography.Text>
           ) : null}
+          {segment.lyrics && segment.lyrics.length > 0 ? (
+            <Tag color="purple" style={{ fontSize: 10, lineHeight: "16px", maxWidth: 280 }} title={segment.lyrics.join(" | ")}>
+              {segment.lyrics.slice(0, 2).join(" / ")}{segment.lyrics.length > 2 ? "…" : ""}
+            </Tag>
+          ) : (
+            <Typography.Text style={{ fontSize: 11, color: "#bbb" }}>无歌词</Typography.Text>
+          )}
         </Space>
       }
     >
@@ -576,6 +597,308 @@ function FrameModeModal({
   );
 }
 
+interface BatchToonCrafterModalProps {
+  open: boolean;
+  segments: TaskModuleDSegment[];
+  selectedSegments: Set<string>;
+  onSelectionChange: (selected: Set<string>) => void;
+  frameMode: "slow" | "pingpong" | "holdtail";
+  onFrameModeChange: (mode: "slow" | "pingpong" | "holdtail") => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  loading: boolean;
+}
+
+function BatchToonCrafterModal({
+  open,
+  segments,
+  selectedSegments,
+  onSelectionChange,
+  frameMode,
+  onFrameModeChange,
+  onCancel,
+  onConfirm,
+  loading,
+}: BatchToonCrafterModalProps) {
+  const bigSegments = useMemo(() => {
+    const map = new Map<string, TaskModuleDSegment[]>();
+    for (const seg of segments) {
+      const bigId = seg.big_segment_id || "unknown";
+      if (!map.has(bigId)) map.set(bigId, []);
+      map.get(bigId)!.push(seg);
+    }
+    return Array.from(map.entries());
+  }, [segments]);
+
+  const allSelected = segments.length > 0 && segments.every((s) => selectedSegments.has(s.segment_id));
+
+  const toggleSegment = (sid: string) => {
+    const next = new Set(selectedSegments);
+    if (next.has(sid)) next.delete(sid);
+    else next.add(sid);
+    onSelectionChange(next);
+  };
+
+  const toggleAll = () => {
+    if (allSelected) {
+      onSelectionChange(new Set());
+    } else {
+      onSelectionChange(new Set(segments.map((s) => s.segment_id)));
+    }
+  };
+
+  const toggleBig = (bigId: string, segIds: string[]) => {
+    const bigAll = segIds.every((sid) => selectedSegments.has(sid));
+    const next = new Set(selectedSegments);
+    for (const sid of segIds) {
+      if (bigAll) next.delete(sid);
+      else next.add(sid);
+    }
+    onSelectionChange(next);
+  };
+
+  return (
+    <Modal
+      title="ToonCrafter 批量重跑"
+      open={open}
+      onCancel={onCancel}
+      onOk={onConfirm}
+      confirmLoading={loading}
+      okText={`确认重跑（${selectedSegments.size} 段）`}
+      cancelText="取消"
+      destroyOnClose
+      width={580}
+    >
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Typography.Text strong style={{ fontSize: 13 }}>
+          选择需要重跑 ToonCrafter 的片段
+        </Typography.Text>
+
+        <Checkbox checked={allSelected} onChange={toggleAll}>
+          <Typography.Text strong>全选（{segments.length} 段）</Typography.Text>
+        </Checkbox>
+
+        {bigSegments.length > 0 ? (
+          bigSegments.map(([bigId, segs]) => {
+            const bigAll = segs.every((s) => selectedSegments.has(s.segment_id));
+            const someSelected = segs.some((s) => selectedSegments.has(s.segment_id));
+            return (
+              <Card key={bigId} size="small" style={{ width: "100%" }}>
+                <Checkbox
+                  checked={bigAll}
+                  indeterminate={!bigAll && someSelected}
+                  onChange={() => toggleBig(bigId, segs.map((s) => s.segment_id))}
+                >
+                  <Typography.Text strong code style={{ fontSize: 12 }}>{bigId}</Typography.Text>
+                  <Typography.Text style={{ fontSize: 12, marginLeft: 6 }}>{segs.length} 段</Typography.Text>
+                </Checkbox>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6, marginLeft: 24 }}>
+                  {segs.map((seg) => (
+                    <Checkbox
+                      key={seg.segment_id}
+                      checked={selectedSegments.has(seg.segment_id)}
+                      onChange={() => toggleSegment(seg.segment_id)}
+                    >
+                      <Typography.Text code style={{ fontSize: 11 }}>{seg.segment_id}</Typography.Text>
+                    </Checkbox>
+                  ))}
+                </div>
+              </Card>
+            );
+          })
+        ) : (
+          <Typography.Text type="secondary">无 segment 数据</Typography.Text>
+        )}
+
+        <div style={{ borderTop: "1px solid #f0f0f0", marginTop: 8, paddingTop: 12 }}>
+          <Typography.Text strong style={{ fontSize: 13, display: "block", marginBottom: 8 }}>
+            选择帧填充模式（适用于所有选中 segment）
+          </Typography.Text>
+          <Radio.Group value={frameMode} onChange={(e) => onFrameModeChange(e.target.value)}>
+            <Space direction="vertical">
+              {_modeRadio("慢放", "slow", frameMode, true)}
+              {_modeRadio("Ping-pong 循环", "pingpong", frameMode, true)}
+              {_modeRadio("尾帧保持", "holdtail", frameMode, true)}
+            </Space>
+          </Radio.Group>
+        </div>
+      </Space>
+    </Modal>
+  );
+}
+
+const _TRANSITION_TEMPLATE_SET = new Set(["TiltUpTemplate", "TiltDownTemplate", "PanRightTemplate"]);
+const _MULTI_SUBJECT_TEMPLATE_SET = new Set(["GridTemplate", "ScrollTemplate"]);
+
+interface BatchRerenderModalProps {
+  open: boolean;
+  segments: TaskModuleDSegment[];
+  selectedSegments: Set<string>;
+  segmentModes: Record<string, "slow" | "pingpong" | "holdtail">;
+  segmentTransitionBgs: Record<string, string>;
+  onSelectionChange: (selected: Set<string>) => void;
+  onSegmentModeChange: (segmentId: string, mode: "slow" | "pingpong" | "holdtail") => void;
+  onSegmentTransitionBgChange: (segmentId: string, bg: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  loading: boolean;
+}
+
+function BatchRerenderModal({
+  open,
+  segments,
+  selectedSegments,
+  segmentModes,
+  segmentTransitionBgs,
+  onSelectionChange,
+  onSegmentModeChange,
+  onSegmentTransitionBgChange,
+  onCancel,
+  onConfirm,
+  loading,
+}: BatchRerenderModalProps) {
+  const bigSegments = useMemo(() => {
+    const map = new Map<string, TaskModuleDSegment[]>();
+    for (const seg of segments) {
+      const bigId = seg.big_segment_id || "unknown";
+      if (!map.has(bigId)) map.set(bigId, []);
+      map.get(bigId)!.push(seg);
+    }
+    return Array.from(map.entries());
+  }, [segments]);
+
+  const allSelected = segments.length > 0 && segments.every((s) => selectedSegments.has(s.segment_id));
+
+  const toggleSegment = (sid: string) => {
+    const next = new Set(selectedSegments);
+    if (next.has(sid)) next.delete(sid);
+    else next.add(sid);
+    onSelectionChange(next);
+  };
+
+  const toggleAll = () => {
+    if (allSelected) {
+      onSelectionChange(new Set());
+    } else {
+      onSelectionChange(new Set(segments.map((s) => s.segment_id)));
+    }
+  };
+
+  const toggleBig = (bigId: string, segIds: string[]) => {
+    const bigAll = segIds.every((sid) => selectedSegments.has(sid));
+    const next = new Set(selectedSegments);
+    for (const sid of segIds) {
+      if (bigAll) next.delete(sid);
+      else next.add(sid);
+    }
+    onSelectionChange(next);
+  };
+
+  return (
+    <Modal
+      title="批量重渲 — 逐 segment 配置"
+      open={open}
+      onCancel={onCancel}
+      onOk={onConfirm}
+      confirmLoading={loading}
+      okText={`确认重渲（${selectedSegments.size} 段）`}
+      cancelText="取消"
+      destroyOnClose
+      width={900}
+    >
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Alert type="info" showIcon message="勾选需要重渲的 segment，逐项设置帧填充模式和过渡背景后提交。" />
+
+        <Checkbox checked={allSelected} onChange={toggleAll}>
+          <Typography.Text strong>全选（{segments.length} 段）</Typography.Text>
+        </Checkbox>
+
+        <div style={{ maxHeight: 500, overflowY: "auto" }}>
+          {bigSegments.length > 0 ? (
+            bigSegments.map(([bigId, segs]) => {
+              const bigAll = segs.every((s) => selectedSegments.has(s.segment_id));
+              const someSelected = segs.some((s) => selectedSegments.has(s.segment_id));
+              return (
+                <Card key={bigId} size="small" style={{ width: "100%", marginBottom: 8 }}>
+                  <Checkbox
+                    checked={bigAll}
+                    indeterminate={!bigAll && someSelected}
+                    onChange={() => toggleBig(bigId, segs.map((s) => s.segment_id))}
+                  >
+                    <Typography.Text strong code style={{ fontSize: 12 }}>{bigId}</Typography.Text>
+                    <Typography.Text style={{ fontSize: 12, marginLeft: 6 }}>{segs.length} 段</Typography.Text>
+                  </Checkbox>
+                  <div style={{ marginTop: 8 }}>
+                    {segs.map((seg) => {
+                      const checked = selectedSegments.has(seg.segment_id);
+                      const isTransition = _TRANSITION_TEMPLATE_SET.has(seg.remotion_id || "");
+                      return (
+                        <Card
+                          key={seg.segment_id}
+                          size="small"
+                          style={{
+                            marginBottom: 6,
+                            borderLeft: checked ? "3px solid #1677ff" : "3px solid transparent",
+                            opacity: checked ? 1 : 0.6,
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                            <Checkbox checked={checked} onChange={() => toggleSegment(seg.segment_id)}>
+                              <Typography.Text code style={{ fontSize: 12 }}>{seg.segment_id}</Typography.Text>
+                            </Checkbox>
+                            {seg.remotion_id ? <Tag style={{ fontSize: 10 }}>{seg.remotion_id}</Tag> : null}
+                            {seg.shots.length > 1 ? <Tag color="orange" style={{ fontSize: 10 }}>{seg.shots.length}主体</Tag> : null}
+                          </div>
+
+                          {checked ? (
+                            <div style={{ marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+                              {/* Mode */}
+                              <Space size={4}>
+                                <Typography.Text style={{ fontSize: 11, color: "#888" }}>模式:</Typography.Text>
+                                <Radio.Group
+                                  size="small"
+                                  value={segmentModes[seg.segment_id] || "slow"}
+                                  onChange={(e) => onSegmentModeChange(seg.segment_id, e.target.value)}
+                                >
+                                  <Radio.Button value="slow" style={{ fontSize: 11, lineHeight: "18px" }}>慢放</Radio.Button>
+                                  <Radio.Button value="pingpong" style={{ fontSize: 11, lineHeight: "18px" }}>循环</Radio.Button>
+                                  <Radio.Button value="holdtail" style={{ fontSize: 11, lineHeight: "18px" }}>尾帧保持</Radio.Button>
+                                </Radio.Group>
+                              </Space>
+
+                              {/* Transition bg */}
+                              {isTransition ? (
+                                <Space size={4}>
+                                  <Typography.Text style={{ fontSize: 11, color: "#888" }}>过渡:</Typography.Text>
+                                  <Radio.Group
+                                    size="small"
+                                    value={segmentTransitionBgs[seg.segment_id] || ""}
+                                    onChange={(e) => onSegmentTransitionBgChange(seg.segment_id, e.target.value)}
+                                  >
+                                    <Radio.Button value="" style={{ fontSize: 11, lineHeight: "18px" }}>上段尾帧</Radio.Button>
+                                    <Radio.Button value="white" style={{ fontSize: 11, lineHeight: "18px" }}>白屏</Radio.Button>
+                                    <Radio.Button value="black" style={{ fontSize: 11, lineHeight: "18px" }}>黑屏</Radio.Button>
+                                  </Radio.Group>
+                                </Space>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </Card>
+              );
+            })
+          ) : (
+            <Typography.Text type="secondary">无 segment 数据</Typography.Text>
+          )}
+        </div>
+      </Space>
+    </Modal>
+  );
+}
+
 function _fmtNow(): string {
   const now = new Date();
   const y = now.getFullYear();
@@ -606,6 +929,13 @@ export function TaskModuleDPage() {
   const [rebuildSubmitted, setRebuildSubmitted] = useState(false);
   const [audioCandidates, setAudioCandidates] = useState<AudioCandidate[]>([]);
   const [selectedAudioPath, setSelectedAudioPath] = useState<string>("");
+  const [batchToonCrafterOpen, setBatchToonCrafterOpen] = useState(false);
+  const [batchToonCrafterSegments, setBatchToonCrafterSegments] = useState<Set<string>>(new Set());
+  const [batchToonCrafterMode, setBatchToonCrafterMode] = useState<"slow" | "pingpong" | "holdtail">("slow");
+  const [batchRerenderOpen, setBatchRerenderOpen] = useState(false);
+  const [batchRerenderSegments, setBatchRerenderSegments] = useState<Set<string>>(new Set());
+  const [batchRerenderModes, setBatchRerenderModes] = useState<Record<string, "slow" | "pingpong" | "holdtail">>({});
+  const [batchRerenderTransitionBgs, setBatchRerenderTransitionBgs] = useState<Record<string, string>>({});
 
   const { data } = useQuery({
     queryKey: taskQueryKeys.moduleD(taskId),
@@ -619,6 +949,9 @@ export function TaskModuleDPage() {
       // 成片输出已提交但未收到完成态：强制轮询避免错过更新
       if (rebuildSubmitted && !rebuildFinalVideoUrl) return 5000;
       if (payload.module_d_status === "running") return 5000;
+      // 有 unit 仍在 running 中：持续轮询
+      const unitSummary = payload.unit_summary;
+      if (unitSummary?.status_counts?.running && unitSummary.status_counts.running > 0) return 5000;
       return false;
     },
   });
@@ -630,7 +963,7 @@ export function TaskModuleDPage() {
     queryFn: () => getModuleDSegmentVideos(taskId),
     enabled: Boolean(taskId),
     staleTime: 0,
-    refetchInterval: activeRerun?.active ? 800 : 2000,
+    refetchInterval: activeRerun?.active ? 800 : (data?.module_d_status === "running" ? 2000 : 2000),
   });
 
   const rerunMutation = useMutation({
@@ -766,6 +1099,31 @@ export function TaskModuleDPage() {
     },
   });
 
+  const rerunModuleBatchToonCrafterMutation = useMutation({
+    mutationFn: ({
+      segmentIds,
+      mode,
+    }: {
+      segmentIds: string[];
+      mode: string;
+    }) => rerunModuleDBatchToonCrafter(taskId, segmentIds, mode),
+    onSuccess: () => {
+      setBatchToonCrafterOpen(false);
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleD(taskId) });
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleDSegmentVideos(taskId) });
+    },
+  });
+
+  const rerunBatchRerenderMutation = useMutation({
+    mutationFn: async (segmentConfigs: BatchRerenderSegmentConfig[]) =>
+      rerunModuleDBatchRerender(taskId, segmentConfigs),
+    onSuccess: () => {
+      setBatchRerenderOpen(false);
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleD(taskId) });
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleDSegmentVideos(taskId) });
+    },
+  });
+
   const rerunRemotionMutation = useMutation({
     mutationFn: ({ segmentId, mode, transitionBg }: { segmentId: string; mode?: string; transitionBg?: string }) => rerunModuleDSegmentRemotion(taskId, segmentId, mode, transitionBg),
     onSuccess: () => {
@@ -840,6 +1198,17 @@ export function TaskModuleDPage() {
       });
       queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleD(taskId) });
       queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleDSegmentVideos(taskId) });
+    },
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeModuleD(taskId),
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleD(taskId) });
+      queryClient.invalidateQueries({ queryKey: taskQueryKeys.moduleDSegmentVideos(taskId) });
+    },
+    onError: () => {
+      // 错误由 refetch 自动显示
     },
   });
 
@@ -952,10 +1321,35 @@ export function TaskModuleDPage() {
         <Button
           size="small"
           icon={<ExperimentOutlined />}
+          loading={rerunModuleBatchToonCrafterMutation.isPending}
+          onClick={() => {
+            setBatchToonCrafterSegments(new Set(segments.map((s) => s.segment_id)));
+            setBatchToonCrafterMode("slow");
+            setBatchToonCrafterOpen(true);
+          }}
+        >
+          ToonCrafter 批量重跑
+        </Button>
+        <Button
+          size="small"
+          icon={<ExperimentOutlined />}
           loading={rerunModuleAllRemotionMutation.isPending}
           onClick={() => rerunModuleAllRemotionMutation.mutate()}
         >
           Remotion 重渲 module
+        </Button>
+        <Button
+          size="small"
+          icon={<ThunderboltOutlined />}
+          loading={rerunBatchRerenderMutation.isPending}
+          onClick={() => {
+            setBatchRerenderSegments(new Set(segments.map((s) => s.segment_id)));
+            setBatchRerenderModes({});
+            setBatchRerenderTransitionBgs({});
+            setBatchRerenderOpen(true);
+          }}
+        >
+          批量重渲
         </Button>
         <Button
           size="small"
@@ -972,6 +1366,20 @@ export function TaskModuleDPage() {
           }}
         >
           输出成片
+        </Button>
+        <Button
+          icon={<ReloadOutlined />}
+          size="small"
+          loading={resumeMutation.isPending}
+          onClick={() => {
+            Modal.confirm({
+              title: "断点续跑 Module D",
+              content: "将扫描所有 segment，对缺少视频产物的 segment 逐个补跑。已有产物的 segment 会跳过。",
+              onOk: () => resumeMutation.mutate(),
+            });
+          }}
+        >
+          断点续跑
         </Button>
       </Space>
 
@@ -1017,6 +1425,53 @@ export function TaskModuleDPage() {
         onAudioPathChange={setSelectedAudioPath}
       />
 
+      <BatchToonCrafterModal
+        open={batchToonCrafterOpen}
+        segments={segments}
+        selectedSegments={batchToonCrafterSegments}
+        onSelectionChange={setBatchToonCrafterSegments}
+        frameMode={batchToonCrafterMode}
+        onFrameModeChange={(m) => setBatchToonCrafterMode(m)}
+        onCancel={() => setBatchToonCrafterOpen(false)}
+        onConfirm={() => {
+          if (batchToonCrafterSegments.size > 0) {
+            rerunModuleBatchToonCrafterMutation.mutate({
+              segmentIds: Array.from(batchToonCrafterSegments),
+              mode: batchToonCrafterMode,
+            });
+          }
+        }}
+        loading={rerunModuleBatchToonCrafterMutation.isPending}
+      />
+
+      <BatchRerenderModal
+        open={batchRerenderOpen}
+        segments={segments}
+        selectedSegments={batchRerenderSegments}
+        segmentModes={batchRerenderModes}
+        segmentTransitionBgs={batchRerenderTransitionBgs}
+        onSelectionChange={setBatchRerenderSegments}
+        onSegmentModeChange={(segmentId, mode) =>
+          setBatchRerenderModes((prev) => ({ ...prev, [segmentId]: mode }))
+        }
+        onSegmentTransitionBgChange={(segmentId, bg) =>
+          setBatchRerenderTransitionBgs((prev) => ({ ...prev, [segmentId]: bg }))
+        }
+        onCancel={() => setBatchRerenderOpen(false)}
+        onConfirm={() => {
+          if (batchRerenderSegments.size > 0) {
+            const configs = Array.from(batchRerenderSegments).map((sid) => ({
+              segment_id: sid,
+              mode: batchRerenderModes[sid] || "slow",
+              transition_bg: batchRerenderTransitionBgs[sid] ?? "",
+              action: "remotion" as const,
+            })) as BatchRerenderSegmentConfig[];
+            rerunBatchRerenderMutation.mutate(configs);
+          }
+        }}
+        loading={rerunBatchRerenderMutation.isPending}
+      />
+
       {segments.length === 0 ? (
         <Typography.Text type="secondary">暂无 segment 数据，请先执行模块 B。</Typography.Text>
       ) : (
@@ -1030,6 +1485,12 @@ export function TaskModuleDPage() {
                 watchFast={
                   Boolean(activeRerun?.active)
                   && (activeRerun?.segment_id === segment.segment_id || !activeRerun?.segment_id)
+                }
+                phase={
+                  activeRerun?.active
+                  && (activeRerun?.segment_id === segment.segment_id || !activeRerun?.segment_id)
+                    ? activeRerun?.phase
+                    : undefined
                 }
                 onRerun={handleRerun}
                 onRerunBoth={handleRerunBoth}

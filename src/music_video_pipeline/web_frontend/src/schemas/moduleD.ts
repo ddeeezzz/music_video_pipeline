@@ -28,6 +28,7 @@ const moduleDActiveRerunSchema = z.object({
   big_segment_id: z.string().optional(),
   segment_id: z.string().optional(),
   frame_type: z.string().optional(),
+  phase: z.string().optional(),
   submitted_at: z.string(),
   submitted_at_ms: z.number().optional().default(0),
   started_at_ms: z.number().optional().default(0),
@@ -59,6 +60,7 @@ const moduleDSegmentSchema = z.object({
   duration: z.number().optional().default(0),
   error_message: z.string().optional().default(""),
   shots: z.array(moduleDShotSchema),
+  lyrics: z.array(z.string()).optional().default([]),
 });
 
 export const taskModuleDDataSchema = z.object({

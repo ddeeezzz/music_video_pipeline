@@ -718,10 +718,18 @@ def _build_shot_id(segment_id: str, subject_index: int) -> str:
     return f"shot_{seg_number}_{int(subject_index)}"
 
 
+def _strip_template_boilerplate(text: str) -> str:
+    """去除 scene_desc_zh 开头的模板运动套话，只保留实际画面内容。"""
+    if not text:
+        return text
+    pattern = r'^(?:镜头[左右上下]移[，,]\s*|中心出现[，,]\s*|从左到右(?:依次)?出现[，,。]?\s*)+'
+    result = re.sub(pattern, '', text)
+    return result.strip()
+
+
 def _run_role4_llm_shot(
     context: RuntimeContext,
     project_root: Path,
-    remotion_catalog: dict[str, str],
     visual_registry: dict[str, str],
     sp: ShotPlan,
     subj_idx: int,
@@ -742,26 +750,20 @@ def _run_role4_llm_shot(
         artifacts_dir=context.artifacts_dir,
     )
 
-    shot_brief_lines: list[str] = []
-    shot_brief_lines.append(f"- segment_id: {segment_id}")
-    shot_brief_lines.append(f"- shot_id: {shot_id}")
-    shot_brief_lines.append(f"- big_segment_id: {str(sp.big_segment_id).strip()}")
-    shot_brief_lines.append(f"- scene_desc_zh: {scene_desc}")
-    shot_brief_lines.append(f"- remotion_id: {remotion_id}")
     shot_subject_kind = str(getattr(sp, "shot_subject_kind", "human")).strip()
-    shot_brief_lines.append(f"- subject_kind: {shot_subject_kind}")
     subjects = _parse_subject_descriptions(scene_desc, remotion_id)
-    if len(subjects) > 1:
-        shot_brief_lines.append(f"- subject_index: {subj_idx}")
-        shot_brief_lines.append(f"- subject_count: {len(subjects)}")
-        shot_brief_lines.append(f"- subject_desc: {subject_desc}")
-    shot_brief = "\n".join(shot_brief_lines)
+    is_multi = len(subjects) > 1
 
-    remotion_template = remotion_catalog.get(remotion_id, "")
+    # 多主体只传主体描述，不传 metadata
+    if is_multi:
+        shot_brief = f"- subject_desc: {subject_desc}"
+    else:
+        cleaned_desc = _strip_template_boilerplate(scene_desc)
+        shot_brief = f"- scene_desc_zh: {cleaned_desc}"
+
     shot_visual_reference = _filter_visual_reference(visual_registry, scene_desc)
 
     user_variables: dict[str, str] = {
-        "remotion_template": remotion_template,
         "shot_brief": shot_brief,
         "subject_desc": subject_desc,
         "visual_reference": shot_visual_reference,
@@ -772,27 +774,29 @@ def _run_role4_llm_shot(
     return planner.generate(user_variables=user_variables, shot_id=shot_id, subject_kind=shot_subject_kind)
 
 
-def run_module_b_role4(context: RuntimeContext) -> Path:
+def run_module_b_role4(
+    context: RuntimeContext,
+    *,
+    unit_outputs_dir: Path | None = None,
+    segment_shot_count_map: dict[str, int] | None = None,
+) -> Path:
     """
     功能说明：仅执行模块 B 的 role4，并写出 role4 Markdown 产物。
     role4 按 shot 逐个调 LLM，依赖 role1 与 role3 输出。
     参数说明：
     - context: 运行上下文对象。
+    - unit_outputs_dir: 可选，跨模块链路产物目录（用于流式写 per-segment artifact）。
+    - segment_shot_count_map: 可选，跨模块链路 segment->shot 计数映射（用于产 artifact 时确认全量）。
     返回值：
     - Path: role4 Markdown 产物路径。
     异常说明：按 role4 真实执行逻辑定义。
     边界条件：必须存在 role1 与 role3 产物。
     """
     project_root = _resolve_project_root()
-    storyboard_template_path = _resolve_storyboard_template_path(context=context, project_root=project_root)
-    storyboard_template_text = storyboard_template_path.read_text(encoding="utf-8")
     # 从 config 读取全局前后缀，作为告知性信息注入到 role4 prompt
     comfyui_cfg = context.config.module_c.comfyui if hasattr(context.config, "module_c") else None
     role4_prompt_prefix = str(getattr(comfyui_cfg, "prompt_prefix", "")).strip() if comfyui_cfg else ""
     role4_prompt_suffix = str(getattr(comfyui_cfg, "prompt_suffix", "")).strip() if comfyui_cfg else ""
-
-    # 解析模板目录为 {模板ID: 模板描述}，供 role4 按 remotion_id 精确匹配
-    remotion_catalog = _parse_remotion_catalog(storyboard_template_text)
 
     # 读取 role1 streaming 输出（标题行正确），解析为 {意象名: 完整块} 供后续按 shot 筛选
     role1_output_path = get_module_b_role_result_path(context.artifacts_dir, "role1")
@@ -854,7 +858,6 @@ def run_module_b_role4(context: RuntimeContext) -> Path:
                 _run_role4_llm_shot,
                 context=context,
                 project_root=project_root,
-                remotion_catalog=remotion_catalog,
                 visual_registry=visual_registry,
                 sp=task["sp"],
                 subj_idx=task["subj_idx"],
@@ -873,12 +876,24 @@ def run_module_b_role4(context: RuntimeContext) -> Path:
                 if seg_id:
                     segment_done_counts[seg_id] = segment_done_counts.get(seg_id, 0) + 1
                     if segment_done_counts[seg_id] >= segment_shot_counts.get(seg_id, 0):
+                        artifact_path_str = ""
+                        if unit_outputs_dir is not None:
+                            artifact_path_str = _build_segment_b_artifact_json(
+                                unit_outputs_dir=unit_outputs_dir,
+                                seg_id=seg_id,
+                                shot_tasks=shot_tasks,
+                                output_parts_map=output_parts_map,
+                                shot_plans=shot_plans,
+                                segment_shot_count_map=segment_shot_count_map,
+                            )
                         context.state_store.set_module_unit_status(
                             task_id=context.task_id,
                             module_name="B",
                             unit_id=seg_id,
                             status="done",
+                            artifact_path=artifact_path_str,
                         )
+                        _try_heal_b_self(context=context)
             except Exception as exc:  # noqa: BLE001
                 context.logger.error("模块B role4 shot 处理失败（索引 %s）：%s", idx, exc)
                 failed_count += 1
@@ -914,9 +929,6 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
     segment_id = f"seg_{seg_number}"
 
     project_root = _resolve_project_root()
-    storyboard_template_path = _resolve_storyboard_template_path(context=context, project_root=project_root)
-    storyboard_template_text = storyboard_template_path.read_text(encoding="utf-8")
-    remotion_catalog = _parse_remotion_catalog(storyboard_template_text)
 
     planner = Role4PromptBuilder(
         logger=context.logger,
@@ -959,7 +971,6 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
         raise RuntimeError(f"模块B role4 shot 重跑失败：role3 流式产物中找不到 segment_id={segment_id}（shot_id={sid}）")
 
     remotion_id = str(target_sp.remotion_id).strip()
-    remotion_template = remotion_catalog.get(remotion_id, "")
     scene_desc = str(target_sp.scene_desc_zh).strip()
     subjects = _parse_subject_descriptions(scene_desc, remotion_id)
 
@@ -969,18 +980,12 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
         )
     subject_desc = subjects[subject_index - 1]
 
-    shot_brief_lines: list[str] = []
-    shot_brief_lines.append(f"- segment_id: {segment_id}")
-    shot_brief_lines.append(f"- shot_id: {sid}")
-    shot_brief_lines.append(f"- big_segment_id: {str(target_sp.big_segment_id).strip()}")
-    shot_brief_lines.append(f"- scene_desc_zh: {scene_desc}")
-    shot_brief_lines.append(f"- remotion_id: {remotion_id}")
     shot_subject_kind = str(getattr(target_sp, "shot_subject_kind", "human")).strip()
-    shot_brief_lines.append(f"- subject_kind: {shot_subject_kind}")
     if len(subjects) > 1:
-        shot_brief_lines.append(f"- subject_index: {subject_index}")
-        shot_brief_lines.append(f"- subject_count: {len(subjects)}")
-        shot_brief_lines.append(f"- subject_desc: {subject_desc}")
+        shot_brief = f"- subject_desc: {subject_desc}"
+    else:
+        cleaned_desc = _strip_template_boilerplate(scene_desc)
+        shot_brief = f"- scene_desc_zh: {cleaned_desc}"
     shot_visual_reference = _filter_visual_reference(visual_registry, scene_desc)
 
     comfyui_cfg = context.config.module_c.comfyui if hasattr(context.config, "module_c") else None
@@ -988,8 +993,7 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
     prompt_suffix_inject = str(getattr(comfyui_cfg, "prompt_suffix", "")).strip() if comfyui_cfg else ""
 
     user_variables: dict[str, str] = {
-        "remotion_template": remotion_template,
-        "shot_brief": "\n".join(shot_brief_lines),
+        "shot_brief": shot_brief,
         "subject_desc": subject_desc,
         "visual_reference": shot_visual_reference,
         "prompt_prefix": prompt_prefix_inject,
@@ -1000,20 +1004,32 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
     planner.generate(user_variables=user_variables, shot_id=sid, subject_kind=shot_subject_kind)
     context.logger.info("模块B role4 单 shot 重跑完成：%s", sid)
 
-    # 级联回填：segment → role(1-4) → module B
-    context.state_store.set_module_unit_status(
-        task_id=context.task_id, module_name="B", unit_id=segment_id, status="done"
+    # 检查该 segment 的所有 shot 是否都已存在 streaming 文件（可能有多个 subject）
+    role4_streaming_dir = get_module_b_streaming_dir(context.artifacts_dir, "role4")
+    all_shots_done = all(
+        (role4_streaming_dir / f"role4_prompt_output.streaming.{_build_shot_id(segment_id, subj_idx)}.md").exists()
+        and (role4_streaming_dir / f"role4_prompt_output.streaming.{_build_shot_id(segment_id, subj_idx)}.md").stat().st_size > 0
+        for subj_idx in range(1, len(subjects) + 1)
     )
-    all_b_units = context.state_store.list_module_units(task_id=context.task_id, module_name="B")
-    seg_units = [u for u in all_b_units if str(u.get("unit_id", "")).startswith("seg_")]
-    if seg_units and all(str(u.get("status", "")).strip() == "done" for u in seg_units):
-        for role_id in ("role1", "role2", "role3", "role4"):
-            context.state_store.set_module_unit_status(
-                task_id=context.task_id, module_name="B", unit_id=role_id, status="done"
-            )
-        context.state_store.set_module_status(
-            task_id=context.task_id, module_name="B", status="done"
+    if all_shots_done:
+        # 构建 artifact JSON
+        artifact_path = _build_single_shot_b_artifact_json(
+            artifacts_dir=context.artifacts_dir, segment_id=segment_id,
         )
+        context.state_store.set_module_unit_status(
+            task_id=context.task_id, module_name="B", unit_id=segment_id, status="done",
+            artifact_path=artifact_path,
+        )
+        all_b_units = context.state_store.list_module_units(task_id=context.task_id, module_name="B")
+        seg_units = [u for u in all_b_units if str(u.get("unit_id", "")).startswith("seg_")]
+        if seg_units and all(str(u.get("status", "")).strip() == "done" for u in seg_units):
+            for role_id in ("role1", "role2", "role3", "role4"):
+                context.state_store.set_module_unit_status(
+                    task_id=context.task_id, module_name="B", unit_id=role_id, status="done"
+                )
+            context.state_store.set_module_status(
+                task_id=context.task_id, module_name="B", status="done"
+            )
 
     return get_module_b_streaming_dir(context.artifacts_dir, "role4") / f"role4_prompt_output.streaming.{sid}.md"
 
@@ -1021,9 +1037,74 @@ def run_module_b_role4_shot(context: RuntimeContext, shot_id: str) -> Path:
 def _write_role4_markdown_output(context: RuntimeContext, output_parts: list[str]) -> Path:
     """把 role4 的原始 LLM 输出拼接写入单个 Markdown 文件。"""
     output_path = get_module_b_role_result_path(context.artifacts_dir, "role4")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     joined = "\n\n".join(part.strip() for part in output_parts if part.strip())
     output_path.write_text((joined + "\n") if joined else "", encoding="utf-8")
     return output_path
+
+
+def _build_single_shot_b_artifact_json(*, artifacts_dir: Path, segment_id: str) -> str:
+    """从 role3/4 streaming 文件为单个 seg 构建 artifact JSON。"""
+    r3_dir = artifacts_dir / "module_b_work" / "role3" / "streaming"
+    r4_dir = artifacts_dir / "module_b_work" / "role4" / "streaming"
+    unit_dir = artifacts_dir / "module_b_units"
+    import re as _re
+    from music_video_pipeline.modules.module_b.markdown_contracts import parse_shot_plans
+    # 收集所有 shot_tasks 和 output_parts_map
+    all_plans: list = []
+    all_tasks: list = []
+    for _fp in sorted(r3_dir.glob("role3_segment_output.streaming.*.md")):
+        if _fp.name.endswith(".meta.json"):
+            continue
+        try:
+            _plans = parse_shot_plans(_fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        all_plans.extend(_plans)
+        for _sp in _plans:
+            _sid = str(_sp.segment_id).strip()
+            _subs = _parse_subject_descriptions(str(_sp.scene_desc_zh).strip(), str(_sp.remotion_id).strip())
+            for _sji, _sjd in enumerate(_subs, start=1):
+                all_tasks.append({"sp": _sp, "subj_idx": _sji, "subject_desc": _sjd})
+    _opm: dict[int, str] = {}
+    for _ti, _tk in enumerate(all_tasks):
+        _shid = _build_shot_id(str(_tk["sp"].segment_id).strip(), _tk["subj_idx"])
+        _sp = r4_dir / f"role4_prompt_output.streaming.{_shid}.md"
+        if _sp.exists() and _sp.stat().st_size > 0:
+            _opm[_ti] = _sp.read_text(encoding="utf-8")
+    return _build_segment_b_artifact_json(
+        unit_outputs_dir=unit_dir, seg_id=segment_id,
+        shot_tasks=all_tasks, output_parts_map=_opm,
+        shot_plans=all_plans, segment_shot_count_map={},
+    )
+
+
+def _try_heal_b_self(context: RuntimeContext) -> None:
+    """检查全部 seg 是否 done → 自愈 B module + 重建 B 输出。"""
+    from music_video_pipeline.modules.module_b.output_builder import build_module_b_output
+    from music_video_pipeline.io_utils import read_json, write_json
+    all_b_rows = context.state_store.list_module_units(task_id=context.task_id, module_name="B") or []
+    seg_rows = [r for r in all_b_rows if str(r.get("unit_id", "")).startswith("seg_")]
+    if not seg_rows:
+        return
+    if not all(str(r.get("status", "")).lower() == "done" for r in seg_rows):
+        return
+    module_a_path = context.artifacts_dir / "module_a_output.json"
+    module_a_output = read_json(module_a_path) if module_a_path.exists() else {}
+    done_records = context.state_store.list_module_units_by_status(
+        task_id=context.task_id, module_name="B", statuses=["done"],
+    )
+    output = build_module_b_output(
+        done_unit_records=list(done_records or []),
+        module_a_output=module_a_output, instrumental_labels=[],
+        artifacts_dir=context.artifacts_dir,
+    )
+    write_json(context.artifacts_dir / "module_b_output.json", output)
+    context.state_store.set_module_status(
+        task_id=context.task_id, module_name="B", status="done",
+        artifact_path=str(context.artifacts_dir / "module_b_output.json"),
+    )
+    context.logger.info("模块B 自愈 done（全部 seg 完成），task_id=%s", context.task_id)
 
 
 def _resolve_project_root() -> Path:
@@ -1217,3 +1298,124 @@ def _filter_visual_reference(visual_registry: dict[str, str], scene_desc_zh: str
             downgraded = re.sub(r'^## ', '### ', block, flags=re.MULTILINE)
             matched_blocks.append(downgraded)
     return "\n\n".join(matched_blocks)
+
+
+def _build_segment_b_artifact_json(
+    *,
+    unit_outputs_dir: Path,
+    seg_id: str,
+    shot_tasks: list[dict[str, Any]],
+    output_parts_map: dict[int, str],
+    shot_plans: list[Any],
+    segment_shot_count_map: dict[str, int] | None = None,
+    lyric_units: list[dict[str, Any]] | None = None,
+) -> str:
+    """为跨模块链路构建 per-segment B artifact JSON。
+
+    从 role4 已完成 shot 的 LLM 输出中提取 prompt 字段，组合为 single-shot 结构，
+    写入 unit_outputs_dir/{seg_id}.json。C 的 _run_c_chain_unit 直接读取此 JSON。
+    返回 artifact 绝对路径字符串。
+    """
+    unit_outputs_dir = Path(unit_outputs_dir)
+    unit_outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    # 收集该 segment 下所有已完成的 shot
+    shot_ids: list[str] = []
+    prompt_fields_list: list[dict[str, str]] = []
+    seg_shot_indices = [idx for idx, task in enumerate(shot_tasks) if str(task["sp"].segment_id).strip() == seg_id and idx in output_parts_map]
+
+    for idx in seg_shot_indices:
+        task = shot_tasks[idx]
+        raw_text = output_parts_map.get(idx, "")
+        sp = task["sp"]
+        segment_id = str(sp.segment_id).strip()
+        remotion_id = str(sp.remotion_id).strip()
+        scene_desc = str(sp.scene_desc_zh).strip()
+        big_segment_id = str(getattr(sp, "big_segment_id", "")).strip()
+
+        # 解析 LLM 输出中的 prompt 字段
+        fields: dict[str, str] = {}
+        role4_fields = [
+            "subject_kind",
+            "keyframe_prompt_start_zh", "keyframe_prompt_start_en",
+            "keyframe_prompt_end_zh", "keyframe_prompt_end_en",
+            "video_prompt_zh", "video_prompt_en",
+        ]
+        for f in role4_fields:
+            m = re.search(rf"^- {re.escape(f)}:\s*(.*)", raw_text, re.MULTILINE)
+            fields[f] = m.group(1).strip() if m else ""
+
+        shot_id = _build_shot_id(segment_id, task["subj_idx"])
+        shot_ids.append(shot_id)
+        prompt_fields_list.append(fields)
+
+    if not prompt_fields_list:
+        return ""
+
+    # 构建 artifact JSON — 使用第一个 shot 作为主 shot，所有 shots 写入 sub_shots
+    primary = prompt_fields_list[0]
+    primary_shot_id = shot_ids[0]
+    sp = shot_tasks[seg_shot_indices[0]]["sp"]
+
+    # 从 shot_plans 查找 remotion_id / scene_desc（回退 shot_tasks 内嵌值）
+    plan_map: dict[str, Any] = {}
+    for plan in shot_plans:
+        sid = str(getattr(plan, "segment_id", "")).strip()
+        if sid:
+            plan_map[sid] = plan
+
+    plan = plan_map.get(seg_id)
+    remotion_id = str(plan.remotion_id if plan else sp.remotion_id).strip()
+    scene_desc = str(plan.scene_desc_zh if plan else sp.scene_desc_zh).strip()
+    big_segment_id = str(plan.big_segment_id if plan else getattr(sp, "big_segment_id", "")).strip()
+    subject_kind = primary.get("subject_kind", str(getattr(sp, "shot_subject_kind", "human"))).strip()
+
+    artifact: dict[str, Any] = {
+        "shot_id": primary_shot_id,
+        "segment_id": seg_id,
+        "big_segment_id": big_segment_id,
+        "remotion_id": remotion_id,
+        "scene_desc": scene_desc,
+        "subject_kind": subject_kind,
+        "keyframe_prompt_start_zh": primary.get("keyframe_prompt_start_zh", ""),
+        "keyframe_prompt_start_en": primary.get("keyframe_prompt_start_en", ""),
+        "keyframe_prompt_end_zh": primary.get("keyframe_prompt_end_zh", ""),
+        "keyframe_prompt_end_en": primary.get("keyframe_prompt_end_en", ""),
+        "video_prompt_zh": primary.get("video_prompt_zh", ""),
+        "video_prompt_en": primary.get("video_prompt_en", ""),
+    }
+    if len(prompt_fields_list) > 1:
+        # 多主体模板：附上全部子 shot 数据用于 D 聚合
+        artifact["sub_shots"] = [
+            {
+                "shot_id": shot_ids[i],
+                "subject_index": shot_tasks[seg_shot_indices[i]]["subj_idx"],
+                "keyframe_prompt_start_zh": pf.get("keyframe_prompt_start_zh", ""),
+                "keyframe_prompt_start_en": pf.get("keyframe_prompt_start_en", ""),
+                "keyframe_prompt_end_zh": pf.get("keyframe_prompt_end_zh", ""),
+                "keyframe_prompt_end_en": pf.get("keyframe_prompt_end_en", ""),
+            }
+            for i, pf in enumerate(prompt_fields_list)
+        ]
+
+    # 传递 lyric_units 用于模块 D 字幕渲染
+    resolved_lyrics = lyric_units
+    if resolved_lyrics is None:
+        try:
+            module_a_path = Path(unit_outputs_dir).parent / "module_a_output.json"
+            if module_a_path.exists():
+                ma_data = json.loads(module_a_path.read_text(encoding="utf-8"))
+                raw_lyrics = ma_data.get("lyric_units", []) if isinstance(ma_data, dict) else []
+                if isinstance(raw_lyrics, list):
+                    resolved_lyrics = [
+                        lu for lu in raw_lyrics
+                        if isinstance(lu, dict) and str(lu.get("segment_id", "")).strip() == seg_id
+                    ]
+        except Exception:
+            resolved_lyrics = None
+    if resolved_lyrics:
+        artifact["lyric_units"] = resolved_lyrics
+
+    artifact_path = unit_outputs_dir / f"{seg_id}.json"
+    artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return str(artifact_path)

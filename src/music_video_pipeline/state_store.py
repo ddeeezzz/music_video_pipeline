@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 # 标准库：用于 SQLite 持久化
 import sqlite3
+# 标准库：用于日志
+import logging
 # 标准库：用于类型提示
 from typing import Any
 
@@ -22,6 +24,8 @@ from music_video_pipeline.constants import MODULE_ORDER, TASK_STATES
 
 # 常量：当前状态库中以 task_id 作为主关联键的表名列表
 TASK_ID_RELATED_TABLES = ("tasks", "module_runs", "module_unit_runs")
+
+_logger = logging.getLogger(__name__)
 
 
 def _local_now_text() -> str:
@@ -1103,7 +1107,11 @@ class StateStore:
         unit_index = int(b_unit["unit_index"])
         c_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="C", unit_index=unit_index)
         d_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="D", unit_index=unit_index)
-        shot_id = str(c_unit["unit_id"]) if c_unit else (str(d_unit["unit_id"]) if d_unit else f"shot_{unit_index + 1:03d}")
+        if not c_unit and not d_unit:
+            raise RuntimeError(
+                f"重置链路失败：unit_index={unit_index} 下无 C/D 单元记录，task_id={task_id}"
+            )
+        shot_id = str(c_unit["unit_id"]) if c_unit else str(d_unit["unit_id"])
 
         now_text = _local_now_text()
         with self._connect() as connection:
@@ -1211,7 +1219,11 @@ class StateStore:
         unit_index = int(b_unit["unit_index"])
         c_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="C", unit_index=unit_index)
         d_unit = self.get_module_unit_record_by_index(task_id=task_id, module_name="D", unit_index=unit_index)
-        shot_id = str(c_unit["unit_id"]) if c_unit else (str(d_unit["unit_id"]) if d_unit else f"shot_{unit_index + 1:03d}")
+        if not c_unit and not d_unit:
+            raise RuntimeError(
+                f"重置链路失败：unit_index={unit_index} 下无 C/D 单元记录，task_id={task_id}"
+            )
+        shot_id = str(c_unit["unit_id"]) if c_unit else str(d_unit["unit_id"])
         target_modules = ["C", "D"] if normalized_from == "B" else ["D"]
 
         now_text = _local_now_text()
@@ -1346,7 +1358,11 @@ class StateStore:
                 (now_text, task_id, module_name, unit_id),
             )
             if int(cursor.rowcount) == 0:
-                raise RuntimeError(f"模块单元不存在，无法重置：task_id={task_id}，module={module_name}，unit_id={unit_id}")
+                _logger.warning(
+                    "模块单元不存在（可能是重跑前已被清理），忽略：task_id=%s，module=%s，unit_id=%s",
+                    task_id, module_name, unit_id,
+                )
+                return
             connection.commit()
 
     def list_module_c_done_frame_items(self, task_id: str, frames_dir: Path | None = None) -> list[dict[str, Any]]:

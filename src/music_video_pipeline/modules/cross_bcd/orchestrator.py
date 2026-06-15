@@ -20,7 +20,7 @@ from music_video_pipeline.modules.cross_bcd.models import CrossChainUnit, build_
 # 项目内模块：跨模块调度器
 from music_video_pipeline.modules.cross_bcd.scheduler import execute_cross_bcd_wavefront
 # 项目内模块：模块 B 单元模型
-from music_video_pipeline.modules.module_b.unit_models import build_module_b_units
+from music_video_pipeline.modules.module_b.unit_models import ModuleBUnit
 # 项目内模块：模块 B 输出构建器
 from music_video_pipeline.modules.module_b.output_builder import build_module_b_output
 # 项目内模块：模块 C 输出构建器
@@ -71,8 +71,17 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
     segments_dir = context.artifacts_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
 
-    b_units = build_module_b_units(module_a_output=module_a_output)
-    b_units_by_segment_id = {item.unit_id: item for item in b_units}
+    # 直接用 segments 构建 B 单元映射（与 chain_units 的 segment_id = seg_xxxx 一致）
+    b_units_by_segment_id = {}
+    for cu in chain_units:
+        b_units_by_segment_id[cu.segment_id] = ModuleBUnit(
+            unit_id=cu.segment_id,
+            unit_index=cu.unit_index,
+            segment={"segment_id": cu.segment_id},
+            start_time=cu.start_time,
+            end_time=cu.end_time,
+            duration=cu.duration,
+        )
 
     shot_stubs = _build_shot_stubs(chain_units=chain_units)
     audio_duration = _probe_media_duration(
@@ -91,14 +100,14 @@ def run_cross_module_bcd(context: RuntimeContext, target_segment_id: str | None 
         task_id=context.task_id,
         module_name="B",
         units=[
-            {"unit_id": "role1", "unit_index": 0, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
-            {"unit_id": "role2", "unit_index": 1, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
-            {"unit_id": "role3", "unit_index": 2, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
-            {"unit_id": "role4", "unit_index": 3, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role1", "unit_index": -4, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role2", "unit_index": -3, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role3", "unit_index": -2, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
+            {"unit_id": "role4", "unit_index": -1, "start_time": 0.0, "end_time": 0.0, "duration": 0.0},
             *(
                 {
                     "unit_id": item.segment_id,
-                    "unit_index": item.unit_index + 4,
+                    "unit_index": item.unit_index,
                     "start_time": item.start_time,
                     "end_time": item.end_time,
                     "duration": item.duration,

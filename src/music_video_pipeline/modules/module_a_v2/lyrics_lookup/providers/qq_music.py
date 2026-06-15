@@ -238,6 +238,57 @@ def _search_qq_music_songs(*, search_term: str, logger, limit: int) -> list[dict
     return normalized_songs
 
 
+def _enrich_song_durations(*, songs: list[dict[str, Any]], logger) -> None:
+    """
+    功能说明：通过 MusicU DoSearchForQQMusicDesktop 按歌曲名+歌手补查时长。
+    参数说明：
+    - songs: 歌曲列表（含 songmid/name/singer），原地修改。
+    - logger: 日志对象。
+    返回值：无。
+    异常说明：无；失败时保留原值（0.0）。
+    """
+    for song in songs:
+        if float(song.get("duration_seconds", 0.0) or 0.0) > 0:
+            continue
+        song_name = str(song.get("title", "") or song.get("name", "")).strip()
+        song_singer = str(song.get("artist", "") or song.get("singer", "")).strip()
+        query = f"{song_singer} {song_name}".strip()
+        if not query:
+            continue
+        payload = json.dumps(
+            {
+                "comm": {"ct": 11, "cv": "1003006"},
+                "req_1": {
+                    "method": "DoSearchForQQMusicDesktop",
+                    "module": "music.search.SearchCgiService",
+                    "param": {"num_per_page": 3, "page_num": 1, "query": query, "search_type": 0},
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request = Request(
+            url=QQ_MUSIC_MUSICU_API_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0", "Referer": "https://y.qq.com/"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=QQ_MUSIC_MUSICU_TIMEOUT_SECONDS) as resp:  # noqa: S310
+                raw_body = resp.read().decode("utf-8", errors="replace")
+            resp_data = json.loads(raw_body)
+            req_data = resp_data.get("req_1", {}) if isinstance(resp_data, dict) else {}
+            body_data = req_data.get("data", {}).get("body", {}) if isinstance(req_data, dict) else {}
+            song_list = body_data.get("song", {}).get("list", []) if isinstance(body_data, dict) else []
+            if isinstance(song_list, list) and song_list:
+                interval = int(song_list[0].get("interval", 0) or 0)
+                if interval > 0:
+                    song["duration_seconds"] = float(interval)
+                    logger.info("模块A V2-QQ音乐补查成功 song=%s interval=%s", query, interval)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _search_qq_music_songs_smartbox(*, search_term: str, logger, limit: int) -> list[dict[str, Any]]:
     """
     功能说明：按关键词检索 QQ 音乐歌曲列表（smartbox 回退方案）。
@@ -292,6 +343,7 @@ def _search_qq_music_songs_smartbox(*, search_term: str, logger, limit: int) -> 
         )
         if len(normalized_songs) >= max(1, int(limit)):
             break
+    _enrich_song_durations(songs=normalized_songs, logger=logger)
     return normalized_songs
 
 

@@ -92,6 +92,7 @@ const moduleBRoleSchema = z.object({
   source_path: z.string(),
   contract_fields: z.array(z.string()),
   implementation_status: z.string(),
+  implementation_detail: z.string().optional().default(""),
   supports_role_rerun: z.boolean(),
   supports_segment_retry: z.boolean(),
   segment_items: z.array(moduleBSegmentItemSchema).optional().default([]),

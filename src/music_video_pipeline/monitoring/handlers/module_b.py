@@ -154,8 +154,18 @@ class ModuleBHandlers:
             template_path = (project_root / Path(role_spec["template_relpath"])).resolve()
             contract_fields = [str(item) for item in role_spec["contract_fields"]]
             result_file_path = self._find_task_local_module_b_role_artifact(task_dir=task_dir, role_name=role_name)
-            implementation_status = self._describe_module_b_role_implementation(result_file_path=result_file_path)
-            is_implemented = implementation_status == "implemented"
+            # 查询 state store 获取该 role 的单元状态
+            role_units: list[dict[str, Any]] = []
+            try:
+                role_units = self.state_store.list_module_units(task_id=task_id, module_name="B")
+            except Exception:
+                pass
+            role_unit = next((u for u in role_units if str(u.get("unit_id", "")).strip() == role_name), None)
+            unit_status = str(role_unit.get("status", "")).strip() if role_unit else ""
+
+            # 初始状态（后续在 streaming 数据就绪后再细化）
+            implementation_status = "implemented" if (result_file_path and result_file_path.exists()) else "missing"
+            implementation_detail = ""
             role_active_rerun_payload = self._build_module_b_active_rerun_payload(task_id=task_id)
             is_role_active = (
                 role_active_rerun_payload.get("active")
@@ -190,6 +200,68 @@ class ModuleBHandlers:
                         task_dir=task_dir, shot_items=role4_shot_items
                     )
 
+            # 细化 implementation_status 为 4 种状态（活跃重跑 > 状态存储 > Streaming 文件）
+            if is_role_active:
+                implementation_status = "streaming"
+                if role_name in ("role3", "role4"):
+                    sd = get_module_b_streaming_dir((task_dir / "artifacts").resolve(), role_name)
+                    pat = "role3_segment_output.streaming.*.md" if role_name == "role3" else "role4_prompt_output.streaming.*.md"
+                    actual = len(list(sd.glob(pat))) if sd.exists() else 0
+                    expected = len(role4_shot_items) if role_name == "role4" else len(set(
+                        item.get("big_segment_id", "") for item in segment_items if item.get("big_segment_id")
+                    )) if segment_items else 0
+                    if expected == 0:
+                        implementation_detail = "流式输出中..."
+                    elif actual >= expected:
+                        implementation_detail = f"全部 {expected} 个分片已落盘，正在最终确认"
+                    else:
+                        implementation_detail = f"流式输出中（已完成 {actual}/{expected} 个分片）"
+                else:
+                    implementation_detail = "流式输出中..."
+            elif unit_status == "done":
+                implementation_status = "implemented"
+                implementation_detail = "执行完毕，已完全落地"
+            elif role_name == "role3":
+                sd = get_module_b_streaming_dir((task_dir / "artifacts").resolve(), "role3")
+                actual = len(list(sd.glob("role3_segment_output.streaming.*.md"))) if sd.exists() else 0
+                expected = len(set(item.get("big_segment_id", "") for item in segment_items if item.get("big_segment_id"))) if segment_items else 0
+                if expected == 0:
+                    implementation_status = "missing"
+                    implementation_detail = "尚未开始执行"
+                elif actual >= expected:
+                    implementation_status = "landed"
+                    implementation_detail = f"全部 {expected} 个分片已落盘"
+                elif actual > 0:
+                    implementation_status = "streaming"
+                    implementation_detail = f"已完成 {actual}/{expected} 个分片"
+                else:
+                    implementation_status = "missing"
+                    implementation_detail = "尚未开始执行"
+            elif role_name == "role4":
+                sd = get_module_b_streaming_dir((task_dir / "artifacts").resolve(), "role4")
+                actual = len(list(sd.glob("role4_prompt_output.streaming.*.md"))) if sd.exists() else 0
+                expected = len(role4_shot_items)
+                if expected == 0:
+                    implementation_status = "missing"
+                    implementation_detail = "尚未开始执行"
+                elif actual >= expected:
+                    implementation_status = "landed"
+                    implementation_detail = f"全部 {expected} 个分片已落盘"
+                elif actual > 0:
+                    implementation_status = "streaming"
+                    implementation_detail = f"已完成 {actual}/{expected} 个分片"
+                else:
+                    implementation_status = "missing"
+                    implementation_detail = "尚未开始执行"
+            elif role_name in ("role1", "role2"):
+                if stream_preview_path and stream_preview_path.exists():
+                    implementation_status = "landed"
+                    implementation_detail = "文件已落盘"
+                else:
+                    implementation_status = "missing"
+                    implementation_detail = "尚未开始执行"
+            # 兜底：保持初始状态
+
             role_payload = {
                 "role_name": role_name,
                 "title": str(role_spec["title"]).strip(),
@@ -197,6 +269,7 @@ class ModuleBHandlers:
                 "source_path": str(source_path),
                 "contract_fields": contract_fields,
                 "implementation_status": implementation_status,
+                "implementation_detail": implementation_detail,
                 "supports_role_rerun": role_name in {"role1", "role2", "role3", "role4"},
                 "supports_segment_retry": bool(role_spec["supports_segment_retry"]),
                 "segment_items": segment_items,
@@ -234,11 +307,11 @@ class ModuleBHandlers:
                 ),
                 "result": self._build_task_file_asset(
                     task_id=task_id,
-                    file_path=result_file_path,
+                    file_path=result_file_path or self._find_fallback_result_file(task_dir=task_dir, role_name=role_name),
                 ),
                 "result_text": self._build_task_text_file_asset(
                     task_id=task_id,
-                    file_path=result_file_path,
+                    file_path=result_file_path or self._find_fallback_result_file(task_dir=task_dir, role_name=role_name),
                 ),
             }
             role_payloads.append(role_payload)
@@ -543,7 +616,7 @@ class ModuleBHandlers:
             selector_items.append(
                 {
                     "segment_id": segment_id,
-                    "shot_id": str(item.get("shot_id", "")).strip() or f"shot_{index:03d}",
+                    "shot_id": str(item.get("shot_id", "")).strip(),
                     "start_time": float(item.get("start_time", 0.0) or 0.0),
                     "end_time": float(item.get("end_time", 0.0) or 0.0),
                     "label": str(item.get("label", "")).strip(),
@@ -595,6 +668,34 @@ class ModuleBHandlers:
         except ValueError:
             return None
         return result_path.resolve() if result_path.exists() else None
+
+    def _find_fallback_result_file(self, task_dir: Path, role_name: str) -> Path | None:
+        """
+        功能说明：当 role 无聚合产物文件时，从 streaming 文件兜底作为 result 资产。
+        role3/role4 返回第一个分片文件，role1/role2 使用 streaming 预览文件。
+        """
+        safe_role_name = str(role_name or "").strip()
+        try:
+            streaming_dir = get_module_b_streaming_dir((task_dir / "artifacts").resolve(), safe_role_name)
+        except ValueError:
+            return None
+        if not streaming_dir.exists():
+            return None
+        patterns = {
+            "role1": "role1_visual_output.streaming.md",
+            "role2": "role2_story_output.streaming.md",
+            "role3": "role3_segment_output.streaming.*.md",
+            "role4": "role4_prompt_output.streaming.*.md",
+        }
+        pat = patterns.get(safe_role_name)
+        if not pat:
+            return None
+        matches = sorted(streaming_dir.glob(pat))
+        if not matches:
+            return None
+        # 返回最新的文件（按 mtime）
+        best = max(matches, key=lambda p: p.stat().st_mtime)
+        return best.resolve()
 
     def _resolve_role_stream_preview_paths(
         self, task_dir: Path, role_name: str
@@ -1028,16 +1129,16 @@ class ModuleBHandlers:
         if self._load_active_module_b_rerun_process_meta(task_id=task_id, role_name=f"segment_{role_name}").get("active"):
             return {"ok": False, "error": f"模块B segment 重跑失败：任务已有后台子进程执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
         task_dir = self._resolve_task_dir(task_id=task_id)
-        shot_id = self._resolve_module_b_shot_id_from_segment(task_dir=task_dir, task_id=task_id, segment_id=segment_id, role_name=role_name)
-        if not shot_id:
-            segment_display = "big_segment" if role_name == "role3" else "shot"
-            segment_key = "big_segment_id" if role_name == "role3" else "shot_id"
-            return {
-                "ok": False,
-                "error": f"模块B role{role_name} {segment_display} 重跑失败：无法从当前任务解析 {segment_key}，{segment_key}={segment_id}。",
-            }, HTTPStatus.NOT_FOUND
         if role_name == "role3":
+            # role3 按 big_segment_id 重跑，不需要 shot_id
             shot_id = ""
+        else:
+            shot_id = self._resolve_module_b_shot_id_from_segment(task_dir=task_dir, task_id=task_id, segment_id=segment_id, role_name=role_name)
+            if not shot_id:
+                return {
+                    "ok": False,
+                    "error": f"模块B role{role_name} segment 重跑失败：无法从当前任务解析 shot_id，segment_id={segment_id}。",
+                }, HTTPStatus.NOT_FOUND
         rerun_thread = threading.Thread(
             target=self._run_module_b_role_segment_rerun_in_background,
             name=f"module-b-role-segment-rerun-{task_id}-{role_name}-{segment_id}",
@@ -1136,6 +1237,14 @@ class ModuleBHandlers:
             artifacts_dir=artifacts_dir,
         )
 
+        # 同步生成 artifact JSON 并写入 artifact_path
+        _rebuild_b_artifact_json(
+            state_store=self.state_store,
+            task_id=task_id,
+            artifacts_dir=artifacts_dir,
+            logger=self.logger,
+        )
+
         output_path = artifacts_dir / "module_b_output.json"
         try:
             output_path.write_text(
@@ -1185,26 +1294,21 @@ class ModuleBHandlers:
         }, HTTPStatus.OK
     def _handle_module_b_resume_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
         """
-        功能说明：处理模块 B 断点续跑请求（扫描 role3 输出的所有 shot，对缺少 role4 产物的 shot 逐个补跑）。
-        参数说明：
-        - parsed: 已解析的请求URL对象。
-        返回值：
-        - tuple[dict[str, Any], HTTPStatus]: JSON响应与状态码。
-        异常说明：无；错误统一转为 JSON。
-        边界条件：已有产物的 shot 会跳过。
+        功能说明：处理模块 B 断点续跑请求。mode=b 仅补跑 B；mode=bcd 跑 B→C→D。
         """
         query = parse_qs(parsed.query)
         task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        mode = str(query.get("mode", ["b"])[0]).strip().lower()
         task_record = self.state_store.get_task(task_id=task_id)
         if task_record is None:
             return {"ok": False, "error": f"任务不存在：{task_id}"}, HTTPStatus.NOT_FOUND
 
         active_thread = self._rerun_threads.get(task_id)
         if active_thread is not None and active_thread.is_alive():
-            return {
-                "ok": False,
-                "error": f"模块B 断点续跑失败：任务已有后台动作执行中，task_id={task_id}",
-            }, HTTPStatus.CONFLICT
+            return {"ok": False, "error": f"模块B 断点续跑失败：任务已有后台动作执行中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        if active_thread is not None and not active_thread.is_alive():
+            self._rerun_threads.pop(task_id, None)
+            self._rerun_thread_meta.pop(task_id, None)
 
         config_path_text = str(task_record.get("config_path", "")).strip()
         if not config_path_text:
@@ -1218,24 +1322,17 @@ class ModuleBHandlers:
         rerun_thread = threading.Thread(
             target=self._run_module_b_resume_in_background,
             name=f"module-b-resume-{task_id}",
-            args=(task_id, config_path_text, workspace_root),
+            args=(task_id, config_path_text, workspace_root, mode),
             daemon=True,
         )
         self._rerun_threads[task_id] = rerun_thread
         self._rerun_thread_meta[task_id] = {
-            "active": True,
-            "status": "queued",
-            "mode": "resume",
-            "submitted_at": current_time_text(),
-            "submitted_at_ms": int(time.time() * 1000),
+            "active": True, "status": "queued", "mode": f"{mode}_resume",
+            "submitted_at": current_time_text(), "submitted_at_ms": int(time.time() * 1000),
         }
         rerun_thread.start()
-        self.logger.info("[监督服务] 模块B 断点续跑已提交，task_id=%s", task_id)
-        return {
-            "ok": True,
-            "task_id": task_id,
-            "message": "模块 B 断点续跑已提交，后台开始扫描缺失 shot 并逐个补跑。",
-        }, HTTPStatus.OK
+        self.logger.info("[监督服务] 模块B %s 续跑已提交，task_id=%s", mode, task_id)
+        return {"ok": True, "task_id": task_id, "message": f"模块 B {mode} 续跑已提交。"}, HTTPStatus.OK
     def _resolve_module_b_shot_id_from_segment(self, task_dir: Path, task_id: str, segment_id: str, role_name: str = "") -> str:
         """
         功能说明：根据当前任务的 segment 上下文解析对应 shot_id。
@@ -1426,16 +1523,9 @@ class ModuleBHandlers:
             current_thread = self._rerun_threads.get(rerun_key)
             if current_thread is threading.current_thread():
                 self._rerun_threads.pop(rerun_key, None)
-    def _run_module_b_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path) -> None:
+    def _run_module_b_resume_in_background(self, task_id: str, config_path_text: str, workspace_root: Path, mode: str = "b") -> None:
         """
-        功能说明：在后台线程中执行模块 B 断点续跑，通过 CLI 子进程执行 resume 命令。
-        参数说明：
-        - task_id: 任务唯一标识。
-        - config_path_text: 配置文件路径。
-        - workspace_root: 工作区根目录。
-        返回值：无。
-        异常说明：异常统一记录日志，不向前端线程传播。
-        边界条件：线程退出时必须清理并发占位。
+        功能说明：后台模块 B 断点续跑。mode=b 仅补跑 B；mode=bcd 调波前调度（role4 逐 seg done → 立即 C → C done → 立即 D）。
         """
         import sys
         started_at_ms = int(time.time() * 1000)
@@ -1446,28 +1536,59 @@ class ModuleBHandlers:
             meta["started_at"] = current_time_text()
             meta["started_at_ms"] = started_at_ms
         try:
-            self.logger.info("[监督服务] 后台开始执行模块B 断点续跑，task_id=%s", task_id)
+            self.logger.info("[监督服务] 后台开始执行模块B 断点续跑，task_id=%s，mode=%s", task_id, mode)
+
+            # ── mode=bcd：直接调波前调度器（_run_b_chain_batch 内部流式跑 B，逐 seg 触发 C/D）──
+            if mode == "bcd":
+                from music_video_pipeline.config import load_config
+                from music_video_pipeline.context import RuntimeContext
+                resolved_config = load_config(config_path=Path(config_path_text))
+                task_dir = self._resolve_task_dir(task_id=task_id)
+                artifacts_dir = task_dir / "artifacts"
+                task_record = self.state_store.get_task(task_id=task_id) or {}
+                audio_path = self._resolve_task_audio_path_from_record(
+                    task_id=task_id, task_record=task_record, persist=True,
+                )
+                ctx = RuntimeContext(
+                    task_id=task_id, audio_path=audio_path,
+                    task_dir=task_dir, artifacts_dir=artifacts_dir,
+                    config=resolved_config, logger=self.logger,
+                    state_store=self.state_store,
+                )
+                self.logger.info("[监督服务] BCD 续跑开始波前调度，task_id=%s", task_id)
+                from music_video_pipeline.modules.cross_bcd import run_cross_module_bcd
+                run_cross_module_bcd(context=ctx, target_segment_id=None)
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+                self.logger.info("[监督服务] BCD 续跑波前调度完成，task_id=%s", task_id)
+                finished_at_ms = int(time.time() * 1000)
+                if isinstance(meta, dict):
+                    meta["active"] = False; meta["status"] = "succeeded"
+                    meta["finished_at"] = current_time_text(); meta["finished_at_ms"] = finished_at_ms
+                    meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
+                return
+
+            # ── mode=b：CLI 子进程跑 B 全量 ──
             command = [
-                sys.executable,
-                "-m",
-                "music_video_pipeline.cli",
-                "resume",
-                "--task-id",
-                task_id,
-                "--config",
-                config_path_text,
+                sys.executable, "-m", "music_video_pipeline.cli", "resume",
+                "--task-id", task_id, "--config", config_path_text,
             ]
             completed = subprocess.run(
-                command,
-                cwd=str(workspace_root),
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=7200,
+                command, cwd=str(workspace_root),
+                check=False, capture_output=True, text=True, timeout=7200,
             )
             if completed.returncode != 0:
                 error_excerpt = (completed.stderr or "").strip() or (completed.stdout or "").strip()
                 raise RuntimeError(f"断点续跑子进程退出码={completed.returncode}，{error_excerpt[:500]}")
+            # 写 seg_xxxx + big_xxx 状态
+            _task_dir = self._resolve_task_dir(task_id=task_id)
+            _artifacts_dir = _task_dir / "artifacts"
+            role4_streaming_dir = (_artifacts_dir / "module_b_work" / "role4" / "streaming").resolve()
+            if role4_streaming_dir.exists():
+                _update_b_seg_statuses_from_streaming(
+                    state_store=self.state_store, task_id=task_id,
+                    role4_streaming_dir=role4_streaming_dir,
+                    logger=self.logger, artifacts_dir=_artifacts_dir,
+                )
             finished_at_ms = int(time.time() * 1000)
             meta = self._rerun_thread_meta.get(task_id)
             if isinstance(meta, dict):
@@ -1488,6 +1609,14 @@ class ModuleBHandlers:
                 meta["duration_ms"] = max(0, finished_at_ms - started_at_ms)
                 meta["last_error"] = str(error).strip()
                 meta["failure_reason"] = self._classify_module_b_rerun_failure_reason(error)
+            # 自愈模块级状态（部分单元可能已更新）
+            try:
+                self.state_store.reconcile_bcd_module_statuses_by_units(task_id)
+            except Exception as reconcile_error:
+                self.logger.warning(
+                    "[监督服务] 模块B续跑失败后自愈状态时出错，task_id=%s，错误=%s",
+                    task_id, reconcile_error,
+                )
             self.logger.error(
                 "[监督服务] 后台模块B 断点续跑失败，task_id=%s，错误=%s",
                 task_id,
@@ -1528,3 +1657,130 @@ def _clear_role_streaming_file(task_dir: Path, role_name: str, segment_id: str, 
             stream_path.write_text("", encoding="utf-8")
         except Exception:
             pass
+
+
+def _update_b_seg_statuses_from_streaming(
+    *,
+    state_store: Any,
+    task_id: str,
+    role4_streaming_dir: Path,
+    logger: Any,
+    artifacts_dir: Path | None = None,
+) -> None:
+    """扫描 role4 streaming 文件，为每个 seg 标记 SQL done，再按 big_xxx 聚合。"""
+    import re as _re
+    seg_done: dict[str, int] = {}
+    seg_total: dict[str, int] = {}
+    for fp in role4_streaming_dir.glob("role4_prompt_output.streaming.*.md"):
+        if fp.stat().st_size == 0:
+            continue
+        m = _re.match(r"role4_prompt_output\.streaming\.shot_(\d+)_\d+\.md", fp.name)
+        if m:
+            seg_id = f"seg_{m.group(1)}"
+            seg_total[seg_id] = seg_total.get(seg_id, 0) + 1
+            seg_done[seg_id] = seg_done.get(seg_id, 0) + 1
+    done_seg_ids: list[str] = []
+    for seg_id, total in seg_total.items():
+        done = seg_done.get(seg_id, 0)
+        if done >= total:
+            state_store.set_module_unit_status(
+                task_id=task_id, module_name="B", unit_id=seg_id, status="done",
+            )
+            done_seg_ids.append(seg_id)
+            logger.info("续跑后写入 seg 状态：%s = done，task_id=%s", seg_id, task_id)
+
+    # 按 big_xxx 聚合：从 module_a_output 读取映射
+    if done_seg_ids and artifacts_dir is not None:
+        try:
+            ma_path = artifacts_dir / "module_a_output.json"
+            if ma_path.exists():
+                import json as _json
+                ma = _json.loads(ma_path.read_text(encoding="utf-8"))
+                big_to_segs: dict[str, list[str]] = {}
+                seg_to_big: dict[str, str] = {}
+                for s in (ma.get("segments") or []):
+                    bid = str(s.get("big_segment_id", "")).strip()
+                    sid = str(s.get("segment_id", "")).strip()
+                    if bid and sid:
+                        big_to_segs.setdefault(bid, []).append(sid)
+                        seg_to_big[sid] = bid
+                # 统计每个 big_xxx 下 done 的 seg
+                big_done: dict[str, int] = {}
+                for seg_id in done_seg_ids:
+                    bid = seg_to_big.get(seg_id)
+                    if bid:
+                        big_done[bid] = big_done.get(bid, 0) + 1
+                for bid, child_segs in big_to_segs.items():
+                    if big_done.get(bid, 0) >= len(child_segs):
+                        state_store.set_module_unit_status(
+                            task_id=task_id, module_name="B", unit_id=bid, status="done",
+                        )
+                        logger.info("续跑后写入 big 状态：%s = done，task_id=%s", bid, task_id)
+        except Exception:
+            logger.warning("续跑后聚合 big_xxx 失败", exc_info=True)
+
+
+def _rebuild_b_artifact_json(
+    *,
+    state_store: Any,
+    task_id: str,
+    artifacts_dir: Path,
+    logger: Any,
+) -> None:
+    """扫描 role4 streaming 文件，批量生成 artifact JSON 并写入 artifact_path 到 DB。"""
+    import re as _re
+    from pathlib import Path as _Path
+    r3_dir = _Path(artifacts_dir) / "module_b_work" / "role3" / "streaming"
+    r4_dir = _Path(artifacts_dir) / "module_b_work" / "role4" / "streaming"
+    unit_dir = _Path(artifacts_dir) / "module_b_units"
+    if not r3_dir.exists() or not r4_dir.exists():
+        logger.warning("重建 artifact JSON 跳过：缺少 role3/role4 streaming 目录")
+        return
+    from music_video_pipeline.modules.module_b.markdown_contracts import parse_shot_plans
+    from music_video_pipeline.modules.module_b.orchestrator import (
+        _build_shot_id, _build_segment_b_artifact_json, _parse_subject_descriptions,
+    )
+    # 收集 shot_tasks 和 shot_plans
+    all_shot_plans = []
+    all_shot_tasks = []
+    seg_shot_counts: dict[str, int] = {}
+    for _fp in sorted(r3_dir.glob("role3_segment_output.streaming.*.md")):
+        if _fp.name.endswith(".meta.json"):
+            continue
+        try:
+            _plans = parse_shot_plans(_fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        all_shot_plans.extend(_plans)
+        for _sp in _plans:
+            _sid = str(_sp.segment_id).strip()
+            _rid = str(_sp.remotion_id).strip()
+            _scd = str(_sp.scene_desc_zh).strip()
+            _subs = _parse_subject_descriptions(_scd, _rid)
+            seg_shot_counts[_sid] = seg_shot_counts.get(_sid, 0) + len(_subs)
+            for _sji, _sjd in enumerate(_subs, start=1):
+                all_shot_tasks.append({"sp": _sp, "subj_idx": _sji, "subject_desc": _sjd})
+    # 从 streaming 文件填充 output_parts_map
+    _opm: dict[int, str] = {}
+    for _ti, _tk in enumerate(all_shot_tasks):
+        _sid = str(_tk["sp"].segment_id).strip()
+        _shid = _build_shot_id(_sid, _tk["subj_idx"])
+        _sp = r4_dir / f"role4_prompt_output.streaming.{_shid}.md"
+        if _sp.exists() and _sp.stat().st_size > 0:
+            _opm[_ti] = _sp.read_text(encoding="utf-8")
+    # 为每个 seg 构建 artifact JSON + 写 DB
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    _written = 0
+    for _seg_id in sorted(seg_shot_counts):
+        _ap = _build_segment_b_artifact_json(
+            unit_outputs_dir=unit_dir, seg_id=_seg_id,
+            shot_tasks=all_shot_tasks, output_parts_map=_opm,
+            shot_plans=all_shot_plans, segment_shot_count_map={},
+        )
+        if _ap:
+            state_store.set_module_unit_status(
+                task_id=task_id, module_name="B", unit_id=_seg_id, status="done",
+                artifact_path=_ap,
+            )
+            _written += 1
+    logger.info("重建 artifact JSON 完成：%s segs written to DB，task_id=%s", _written, task_id)

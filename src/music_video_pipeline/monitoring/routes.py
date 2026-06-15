@@ -37,6 +37,8 @@ TASK_MODULE_A_SEARCH_LYRICS_WS_PATH = "/ws/module-a/search-lyrics"
 TASK_MODULE_A_SELECT_LYRICS_API_PATH = "/api/module-a/select-lyrics"
 # 常量：模块 A 候选歌词详情接口路径
 TASK_MODULE_A_CANDIDATE_LYRICS_API_PATH = "/api/module-a/candidate-lyrics"
+# 常量：模块 A 状态重置接口路径
+TASK_MODULE_A_RESET_STATUS_API_PATH = "/api/module-a/reset-status"
 # 常量：模块 A 已保存歌词保存接口路径
 TASK_MODULE_A_SAVE_LYRICS_API_PATH = "/api/module-a/save-lyrics"
 # 常量：模块 A 已保存歌词列表接口路径
@@ -63,6 +65,8 @@ TASK_MODULE_C_RERUN_SHOT_API_PATH = "/api/module-c/rerun-shot"
 TASK_MODULE_C_RERUN_FRAME_API_PATH = "/api/module-c/rerun-frame"
 # 常量：模块 C 单元重建接口路径（从 module_b_output.json 重建 Module C 单元列表）
 TASK_MODULE_C_REBUILD_UNITS_API_PATH = "/api/module-c/rebuild-units"
+# 常量：模块 C 断点续跑接口路径
+TASK_MODULE_C_RESUME_API_PATH = "/api/module-c/resume"
 # 常量：模块 D 页面数据接口路径
 TASK_MODULE_D_API_PATH = "/api/module-d"
 # 常量：模块 D segment 视频文件元数据接口路径（直接扫描 segments 目录）
@@ -89,7 +93,21 @@ TOONCRAFTER_MODE_FILE_NAME = "tooncrafter_mode.json"
 TASK_MODULE_D_REBUILD_FINAL_API_PATH = "/api/module-d/rebuild-final"
 # 常量：模块 D 输出成片音频候选列表
 TASK_MODULE_D_REBUILD_AUDIO_CANDIDATES_API_PATH = "/api/module-d/rebuild-audio-candidates"
+# 常量：模块 D 断点续跑接口路径
+TASK_MODULE_D_RESUME_API_PATH = "/api/module-d/resume"
+# 常量：模块 D 批量重渲接口路径（支持逐 segment 指定 mode/transition_bg）
+TASK_MODULE_D_BATCH_RERENDER_API_PATH = "/api/module-d/batch-rerender"
 # 常量：模块 B 活跃重跑子进程状态文件名
 ACTIVE_MODULE_B_RERUN_PROCESS_FILE_NAME = "active_module_b_rerun_process.json"
 # 常量：模块 B 已完成重跑元数据文件名（持久化 duration_ms 等）
 COMPLETED_MODULE_B_RERUN_META_FILE_NAME = "completed_module_b_rerun_meta.json"
+# 常量：公共配置接口路径
+CONFIG_DEFAULT_API_PATH = "/api/config/default"
+# 常量：任务配置接口路径
+TASK_CONFIG_API_PATH = "/api/task/config"
+# 常量：任务状态重置接口路径
+TASK_STATUS_RESET_API_PATH = "/api/task/reset-status"
+# 常量：任务配置覆盖文件名
+TASK_CONFIG_OVERRIDES_FILE_NAME = "config_overrides.json"
+# 常量：任务全链路续跑接口路径
+TASK_RESUME_API_PATH = "/api/task/resume"

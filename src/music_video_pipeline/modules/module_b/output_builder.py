@@ -145,6 +145,19 @@ def build_module_b_output(
                 "end_time": float(rec.get("end_time", 0) or 0),
             }
 
+    # 4b. 构建 segment → lyric_units 映射（仅当 module_a_output 存在 lyric_units 时）
+    seg_lyric_units: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(module_a_output, dict):
+        raw_lyrics = module_a_output.get("lyric_units", [])
+        if isinstance(raw_lyrics, list):
+            for lu in raw_lyrics:
+                if not isinstance(lu, dict):
+                    continue
+                sid = str(lu.get("segment_id", "")).strip()
+                if not sid:
+                    continue
+                seg_lyric_units.setdefault(sid, []).append(lu)
+
     # 5. 合并：遍历 prompt_map（shot-level），从 shot_id 提取 seg_number 匹配 segment_meta
     output: list[dict[str, Any]] = []
 
@@ -173,6 +186,7 @@ def build_module_b_output(
             "keyframe_prompt_end_en": fields.get("keyframe_prompt_end_en", ""),
             "video_prompt_zh": fields.get("video_prompt_zh", ""),
             "video_prompt_en": fields.get("video_prompt_en", ""),
+            "lyric_units": seg_lyric_units.get(seg_key, []),
         })
 
     return output

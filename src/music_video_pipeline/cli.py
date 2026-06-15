@@ -136,10 +136,10 @@ def main() -> None:
     参数说明：无（读取命令行参数）。
     返回值：无。
     异常说明：发生异常时输出中文错误并以非零码退出。
-    边界条件：默认配置文件为 t1/configs/music_yby/default.json。
+    边界条件：默认配置文件为 configs/common.json。
     """
     workspace_root = Path(__file__).resolve().parents[2]
-    default_config_path = workspace_root / "configs" / "music_yby" / "default.json"
+    default_config_path = workspace_root / "configs" / "common.json"
     parser = _build_parser(workspace_root=workspace_root, default_config_path=default_config_path)
     args = parser.parse_args()
 
@@ -209,12 +209,12 @@ def _build_parser(workspace_root: Path, default_config_path: Path | None = None)
     返回值：
     - argparse.ArgumentParser: 配置完成的解析器。
     异常说明：无。
-    边界条件：默认配置固定为 configs/music_yby/default.json。
+    边界条件：默认配置固定为 configs/common.json。
     """
     resolved_default_config_path = (
         default_config_path
         if default_config_path is not None
-        else workspace_root / "configs" / "music_yby" / "default.json"
+        else workspace_root / "configs" / "common.json"
     )
     parser = argparse.ArgumentParser(description="MVP 音画同步流水线 CLI")
     parser.add_argument(

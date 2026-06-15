@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 # 标准库：用于路径处理。
 from pathlib import Path
+# 标准库：用于计时。
+import time
 # 标准库：用于类型提示。
 from typing import Any
 
@@ -35,13 +37,14 @@ except ImportError:
     Image = None  # type: ignore[assignment]
 
 
-# 常量：模板画布固定宽高（1920×1200 16:10），与 Remotion 模板工程对齐。
-_TEMPLATE_WIDTH = 1920
-_TEMPLATE_HEIGHT = 1200
+# 常量：模板画布固定宽高（1344×840），与 C 模块单主体帧尺寸对齐。
+_TEMPLATE_WIDTH = 1344
+_TEMPLATE_HEIGHT = 840
 # 常量：符号占画布比例（多主体模板，基于单格宽度 visible_cell_count=3，格子比例 3:4）。
-# 每个格子宽度 = 1920/3 = 640，取 0.28 ≈ 538px 留边距；高度按 3:4 比例 = 538/(3/4) ≈ 717px
-_GRID_WIDTH_RATIO = 0.28   # 每格约 1920*0.28 ≈ 538px
-_GRID_HEIGHT_RATIO = round(0.28 / (3.0 / 4.0), 2)  # 538/717 ≈ 0.37，按 3:4 比例
+# 每个格子宽度 = 1344/3 = 448，取 0.28 ≈ 376px 留边距；高度按 3:4 比例 = 376*4/3 ≈ 501px
+_GRID_WIDTH_RATIO = 0.30   # 每格约 1344*0.30 ≈ 403px
+# height_ratio 相对于 TEMPLATE_HEIGHT(840)，需换算：501/840 ≈ 0.60
+_GRID_HEIGHT_RATIO = round(_GRID_WIDTH_RATIO * _TEMPLATE_WIDTH * 4.0 / 3.0 / _TEMPLATE_HEIGHT, 2)  # ≈ 0.60
 # 常量：检测白底的亮度阈值（0-255），高于此值的像素视为白底。
 _WHITE_THRESHOLD = 200
 
@@ -304,12 +307,25 @@ def _render_unit_via_remotion(context: RuntimeContext, unit: ModuleDUnit) -> dic
     管道执行固定首尾帧模式；前端重跑按键通过独立 API 控制不同模式。
     """
     remotion_id = str(unit.shot.get("remotion_id", "")).strip() or "CenterTemplate"
+    t0 = time.perf_counter()
 
     if remotion_id in {"GridTemplate", "ScrollTemplate"}:
-        return _render_one_unit_remotion_template(context=context, unit=unit)
+        result = _render_one_unit_remotion_template(context=context, unit=unit)
+        elapsed = (time.perf_counter() - t0) * 1000
+        context.logger.info(
+            "[D_TIMING] unit=%s segment=%s template=%s duration_ms=%.0f model=remotion_multi",
+            unit.unit_id, unit.shot.get("segment_id", ""), remotion_id, elapsed,
+        )
+        return result
 
     if remotion_id in {"TiltUpTemplate", "TiltDownTemplate", "PanRightTemplate"}:
-        return _render_one_unit_transition_template(context=context, unit=unit, remotion_id=remotion_id)
+        result = _render_one_unit_transition_template(context=context, unit=unit, remotion_id=remotion_id)
+        elapsed = (time.perf_counter() - t0) * 1000
+        context.logger.info(
+            "[D_TIMING] unit=%s segment=%s template=%s duration_ms=%.0f model=remotion_transition",
+            unit.unit_id, unit.shot.get("segment_id", ""), remotion_id, elapsed,
+        )
+        return result
 
     # --- 单主体模板（CenterTemplate 等）：frames 数组包含首尾帧 ---
     start_path = str(unit.shot.get("frame_path_start", "")).strip()
@@ -345,6 +361,15 @@ def _render_unit_via_remotion(context: RuntimeContext, unit: ModuleDUnit) -> dic
     if sk:
         props["subject_kind"] = sk
 
+    # 传递歌词数据给 Remotion（仅当存在 lyric_units 时）
+    lyrics_payload = _build_lyrics_payload(
+        shot=unit.shot,
+        fps=int(context.config.ffmpeg.fps),
+        duration_in_frames=int(unit.exact_frames),
+    )
+    if lyrics_payload:
+        props["lyrics"] = lyrics_payload
+
     props_dir = context.artifacts_dir / "template_requests"
     props_dir.mkdir(parents=True, exist_ok=True)
     props_path = props_dir / f"{unit.unit_id}.{remotion_id}.json"
@@ -359,6 +384,11 @@ def _render_unit_via_remotion(context: RuntimeContext, unit: ModuleDUnit) -> dic
         composition_id=remotion_id,
         props_json_path=props_path,
         output_path=unit.segment_path,
+    )
+    elapsed = (time.perf_counter() - t0) * 1000
+    context.logger.info(
+        "[D_TIMING] unit=%s segment=%s template=%s duration_ms=%.0f model=remotion_single",
+        unit.unit_id, unit.shot.get("segment_id", ""), remotion_id, elapsed,
     )
     return {
         "backend": f"remotion-{remotion_id}",
@@ -389,6 +419,59 @@ def _build_symbol_payload_single(path: str, unit_id: str) -> dict[str, Any]:
         "width_ratio": 1.0,
         "height_ratio": 1.0,
     }
+
+
+def _build_lyrics_payload(
+    shot: dict[str, Any],
+    fps: int,
+    duration_in_frames: int,
+) -> list[dict[str, Any]]:
+    """
+    功能说明：从 shot 中提取歌词数据并转换为 Remotion 歌词 payload（帧坐标）。
+    参数说明：
+    - shot: 当前 shot 载荷（含 lyric_units 列表）。
+    - fps: 输出帧率。
+    - duration_in_frames: 当前单元总帧数。
+    返回值：
+    - list[dict[str, Any]]: Remotion 歌词 payload（text/translated_text/start_frame/end_frame）。
+    异常说明：无。
+    边界条件：仅保留与 shot 时间范围有交集的歌词；无歌词时返回空列表。
+    """
+    lyric_units = shot.get("lyric_units", [])
+    if not lyric_units or not isinstance(lyric_units, list):
+        return []
+
+    shot_start = float(shot.get("start_time", 0.0))
+
+    lyrics_payload: list[dict[str, Any]] = []
+    for unit_item in lyric_units:
+        if not isinstance(unit_item, dict):
+            continue
+        text = str(unit_item.get("text", "")).strip()
+        if not text:
+            continue
+
+        unit_start = float(unit_item.get("start_time", shot_start))
+        unit_end = float(unit_item.get("end_time", unit_start))
+
+        start_frame = max(0, round((unit_start - shot_start) * fps))
+        end_frame = min(duration_in_frames, max(start_frame + 1, round((unit_end - shot_start) * fps)))
+
+        if start_frame >= duration_in_frames or end_frame <= 0:
+            continue
+
+        item: dict[str, Any] = {
+            "text": text,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+        }
+        translated_text = str(unit_item.get("translated_text", "")).strip()
+        if translated_text:
+            item["translated_text"] = translated_text
+
+        lyrics_payload.append(item)
+
+    return lyrics_payload
 
 
 def _is_multi_subject_template_unit(unit: ModuleDUnit) -> bool:
@@ -454,6 +537,15 @@ def _render_one_unit_remotion_template(context: RuntimeContext, unit: ModuleDUni
         props["motion"] = {"active_ratio": 0.45, "overshoot_ratio": 0.08, "enter_distance": 72}
     else:
         props["motion"] = {"loop": False}
+
+    # 传递歌词数据给 Remotion
+    lyrics_payload = _build_lyrics_payload(
+        shot=unit.shot,
+        fps=int(context.config.ffmpeg.fps),
+        duration_in_frames=int(unit.exact_frames),
+    )
+    if lyrics_payload:
+        props["lyrics"] = lyrics_payload
 
     props_dir = context.artifacts_dir / "template_requests"
     props_dir.mkdir(parents=True, exist_ok=True)
@@ -525,9 +617,18 @@ def _render_one_unit_transition_template(
             for fp in tc_files:
                 uri = fp.resolve().as_uri()
                 extra_frames.append({"src": uri, "width_ratio": 1.0, "height_ratio": 1.0})
+        context.logger.info(
+            "模块D ToonCrafter 帧读取: unit=%s shot=%s path=%s frame_count=%s",
+            unit_id_text, shot_id, tc_base, len(tc_files),
+        )
+    else:
+        context.logger.info(
+            "模块D ToonCrafter 帧目录不存在，跳过插值: unit=%s shot=%s path=%s",
+            unit_id_text, shot_id, tc_base,
+        )
 
-    # travel_px：TiltUp/TiltDown 使用高度 1200，PanRight 使用宽度 1920
-    travel_px = 1920 if remotion_id == "PanRightTemplate" else 1200
+    # travel_px：TiltUp/TiltDown 使用高度 840，PanRight 使用宽度 1344
+    travel_px = 1344 if remotion_id == "PanRightTemplate" else 840
 
     props: dict[str, Any] = {
         "template": remotion_id,
@@ -546,6 +647,15 @@ def _render_one_unit_transition_template(
     }
     if extra_frames:
         props["frames"] = extra_frames
+
+    # 传递歌词数据给 Remotion
+    lyrics_payload = _build_lyrics_payload(
+        shot=unit.shot,
+        fps=int(context.config.ffmpeg.fps),
+        duration_in_frames=int(unit.exact_frames),
+    )
+    if lyrics_payload:
+        props["lyrics"] = lyrics_payload
 
     props_dir = context.artifacts_dir / "template_requests"
     props_dir.mkdir(parents=True, exist_ok=True)
@@ -651,8 +761,8 @@ def _build_symbol_payload(slot: dict[str, Any], frame_key: str, unit_id: str,
         }
     return {
         "src": src.resolve().as_uri(),
-        "width_ratio": 0.26,
-        "height_ratio": 0.52,
+        "width_ratio": 0.30,
+        "height_ratio": 0.85,
     }
 
 

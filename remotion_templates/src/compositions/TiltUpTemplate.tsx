@@ -9,10 +9,11 @@ import {AbsoluteFill, useCurrentFrame} from "remotion";
 import type {ReactElement} from "react";
 import {BackgroundLayer} from "../shared/BackgroundLayer";
 import {SymbolLayer} from "../shared/SymbolLayer";
+import {LyricsOverlay} from "../shared/LyricsOverlay";
 import type {TiltUpTemplateRequest} from "../types";
 
-const W = 1920;
-const H = 1200;
+const W = 1344;
+const H = 840;
 const NATURAL_FRAMES = 12;
 
 const easingFns: Record<string, (t: number) => number> = {
@@ -64,6 +65,7 @@ export const TiltUpTemplate = (props: TiltUpTemplateRequest): ReactElement => {
           <SymbolLayer src={props.scene_before.symbol.src} widthRatio={props.scene_before.symbol.width_ratio} heightRatio={props.scene_before.symbol.height_ratio} />
         </AbsoluteFill>
       </AbsoluteFill>
+      <LyricsOverlay lyrics={props.lyrics} />
     </AbsoluteFill>
   );
 };

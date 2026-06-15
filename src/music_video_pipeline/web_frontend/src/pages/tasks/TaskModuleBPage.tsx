@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   ExportOutlined,
@@ -41,11 +41,17 @@ function getImplementationTag(role: TaskModuleBRole) {
   if (role.implementation_status === "implemented") {
     return <Tag color="success">已生成</Tag>;
   }
+  if (role.implementation_status === "landed") {
+    return <Tag color="warning">已落盘</Tag>;
+  }
+  if (role.implementation_status === "streaming") {
+    return <Tag color="processing">输出中</Tag>;
+  }
   if (role.implementation_status === "placeholder") {
     return <Tag color="warning">占位中</Tag>;
   }
   if (role.implementation_status === "missing") {
-    return <Tag color="error">当前未生成结果</Tag>;
+    return <Tag color="error">未生成</Tag>;
   }
   return <Tag>待确认</Tag>;
 }
@@ -138,6 +144,8 @@ export function TaskModuleBPage() {
   const [segmentSelection, setSegmentSelection] = useState<Record<string, string>>({});
   const [streamViewerRoleName, setStreamViewerRoleName] = useState("");
 
+  const pollingPrevRef = useRef(0);
+
   useEffect(() => {
     appLogger.info("模块B页面", "模块 B 观察页已进入", { taskId });
   }, [taskId]);
@@ -149,23 +157,84 @@ export function TaskModuleBPage() {
     placeholderData: (previousData: any) => previousData,
     refetchInterval: (query) => {
       const payload = query.state.data;
-      if (payload?.roles?.some((r) => r.active_rerun?.active)) {
-        return 1000;
+      const hasActiveRerun = payload?.roles?.some((r) => r.active_rerun?.active);
+      const oldInterval = pollingPrevRef.current;
+
+      let newInterval: number | false = false;
+      if (hasActiveRerun) {
+        newInterval = 1000;
+      } else if (streamViewerRoleName) {
+        newInterval = 1500;
+      } else if (payload?.task_status === "running" || payload?.module_b_status === "running") {
+        newInterval = 2000;
       }
-      // 流式查看器打开时持续轮询，避免后端未确认时 stop polling
-      if (streamViewerRoleName) {
-        return 1500;
+
+      if (oldInterval !== (newInterval || 0)) {
+        appLogger.info("模块B页面", `轮询间隔变化: ${oldInterval}ms → ${newInterval || "停止"}ms`, {
+          taskId,
+          hasActiveRerun,
+          streamViewerOpen: Boolean(streamViewerRoleName),
+          streamViewerRoleName,
+          taskStatus: payload?.task_status,
+          moduleBStatus: payload?.module_b_status,
+          rolesActiveMap: payload?.roles?.map((r) => ({
+            name: r.role_name,
+            active: r.active_rerun?.active,
+            status: r.active_rerun?.status,
+            mode: r.active_rerun?.mode,
+          })),
+        });
+        pollingPrevRef.current = newInterval || 0;
       }
-      if (payload?.task_status === "running" || payload?.module_b_status === "running") {
-        return 2000;
-      }
-      return false;
+      return newInterval;
     },
   });
+
   const queryErrorText = error instanceof Error ? error.message : "";
 
   const roles = data?.roles || [];
   const roleMap = Object.fromEntries(roles.map((role) => [role.role_name, role]));
+
+  // ========== 日志：每个角色的 active_rerun 数据变化（放在 roles 定义之后） ==========
+  const prevActiveRerunRef = useRef<string>("");
+  useEffect(() => {
+    const currentSnapshot = JSON.stringify(
+      roles.map((r) => ({
+        name: r.role_name,
+        active: r.active_rerun?.active,
+        status: r.active_rerun?.status,
+        mode: r.active_rerun?.mode,
+        submitted_at_ms: r.active_rerun?.submitted_at_ms,
+        started_at_ms: r.active_rerun?.started_at_ms,
+        finished_at_ms: r.active_rerun?.finished_at_ms,
+        duration_ms: r.active_rerun?.duration_ms,
+        implementation_status: r.implementation_status,
+        streamPreviewLen: r.stream_preview_segments?.length || 0,
+        resultTextLen: r.result_text?.content?.length || 0,
+      }))
+    );
+    if (prevActiveRerunRef.current !== currentSnapshot) {
+      appLogger.info("模块B页面", "角色 active_rerun 数据更新", {
+        taskId,
+        roles: roles.map((r) => ({
+          name: r.role_name,
+          active: r.active_rerun?.active,
+          status: r.active_rerun?.status,
+          mode: r.active_rerun?.mode,
+          submitted_at_ms: r.active_rerun?.submitted_at_ms,
+          started_at_ms: r.active_rerun?.started_at_ms,
+          finished_at_ms: r.active_rerun?.finished_at_ms,
+          duration_ms: r.active_rerun?.duration_ms,
+          implementation_status: r.implementation_status,
+          impl_detail: r.implementation_detail?.slice(0, 100),
+          streamPreviewLen: r.stream_preview_segments?.length || 0,
+          resultTextAvail: r.result_text?.available,
+          resultAvail: r.result?.available,
+        })),
+      });
+      prevActiveRerunRef.current = currentSnapshot;
+    }
+  }, [roles, taskId]);
 
   // 初始化 role3/role4 默认选中（已有选中值则保留）
   useEffect(() => {
@@ -228,6 +297,11 @@ export function TaskModuleBPage() {
     mutationFn: ({ roleName, replaceRunning }: { roleName: string; replaceRunning?: boolean }) =>
       rerunModuleBRole(taskId, roleName, { replaceRunning }),
     onMutate: async (variables) => {
+      appLogger.info("模块B页面", `[计时器] Role重跑 onMutate - 乐观更新开始`, {
+        taskId,
+        roleName: variables.roleName,
+        replaceRunning: variables.replaceRunning,
+      });
       queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
         if (!old?.roles) return old;
         return {
@@ -262,19 +336,43 @@ export function TaskModuleBPage() {
           }),
         };
       });
+      appLogger.info("模块B页面", `[计时器] Role重跑 onMutate - 乐观更新完成`, {
+        taskId,
+        roleName: variables.roleName,
+        submitted_at_ms: Date.now(),
+      });
     },
     onSuccess: async (payload, variables) => {
+      appLogger.info("模块B页面", `[计时器] Role重跑 onSuccess - API成功`, {
+        taskId,
+        roleName: variables.roleName,
+        message: payload?.message,
+      });
       // 失效其他查询范围（list/detail/snapshot/webData），保留 moduleB 手动控制
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
       // 重新拉取 moduleB，如果后端还没确认重跑，重填乐观状态保持轮询不中断
+      appLogger.info("模块B页面", `[计时器] Role重跑 onSuccess - 开始 refetchQueries`, { taskId, roleName: variables.roleName });
       await queryClient.refetchQueries({ queryKey: taskQueryKeys.moduleB(taskId) });
+      const refetchedData: any = queryClient.getQueryData(taskQueryKeys.moduleB(taskId));
+      appLogger.info("模块B页面", `[计时器] Role重跑 onSuccess - refetchQueries 完成`, {
+        taskId,
+        roleName: variables.roleName,
+        dataFetched: !!refetchedData,
+        resultActiveRerun: refetchedData?.roles?.find((r: any) => r.role_name === variables.roleName)?.active_rerun,
+      });
       queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
         if (!old?.roles) return old;
         const targetRole = old.roles.find((r: any) => r.role_name === variables.roleName);
-        if (targetRole && !targetRole.active_rerun?.active) {
+        const needsPatch = targetRole && !targetRole.active_rerun?.active;
+        if (needsPatch) {
+          appLogger.info("模块B页面", `[计时器] Role重跑 onSuccess - 后端未确认，重新打补丁 active=true`, {
+            taskId,
+            roleName: variables.roleName,
+            backendActiveRerun: targetRole.active_rerun,
+          });
           return {
             ...old,
             roles: old.roles.map((r: any) =>
@@ -289,6 +387,13 @@ export function TaskModuleBPage() {
                 : r
             ),
           };
+        }
+        if (targetRole) {
+          appLogger.info("模块B页面", `[计时器] Role重跑 onSuccess - 后端已确认重跑，无需补丁`, {
+            taskId,
+            roleName: variables.roleName,
+            backendActiveRerun: targetRole.active_rerun,
+          });
         }
         return old;
       });
@@ -313,6 +418,12 @@ export function TaskModuleBPage() {
     mutationFn: ({ roleName, segmentId, replaceRunning }: { roleName: string; segmentId: string; replaceRunning?: boolean }) =>
       rerunModuleBRoleSegment(taskId, roleName, segmentId, { replaceRunning }),
     onMutate: async (variables) => {
+      appLogger.info("模块B页面", `[计时器] Segment重跑 onMutate - 乐观更新开始`, {
+        taskId,
+        roleName: variables.roleName,
+        segmentId: variables.segmentId,
+        replaceRunning: variables.replaceRunning,
+      });
       queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
         if (!old?.roles) return old;
         return {
@@ -347,17 +458,42 @@ export function TaskModuleBPage() {
           }),
         };
       });
+      appLogger.info("模块B页面", `[计时器] Segment重跑 onMutate - 乐观更新完成`, {
+        taskId,
+        roleName: variables.roleName,
+        submitted_at_ms: Date.now(),
+      });
     },
     onSuccess: async (payload, variables) => {
+      appLogger.info("模块B页面", `[计时器] Segment重跑 onSuccess - API成功`, {
+        taskId,
+        roleName: variables.roleName,
+        segmentId: variables.segmentId,
+        message: payload?.message,
+      });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.snapshot(taskId) });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.webData(taskId) });
+      appLogger.info("模块B页面", `[计时器] Segment重跑 onSuccess - 开始 refetchQueries`, { taskId, roleName: variables.roleName });
       await queryClient.refetchQueries({ queryKey: taskQueryKeys.moduleB(taskId) });
+      const refetchedDataSeg: any = queryClient.getQueryData(taskQueryKeys.moduleB(taskId));
+      appLogger.info("模块B页面", `[计时器] Segment重跑 onSuccess - refetchQueries 完成`, {
+        taskId,
+        roleName: variables.roleName,
+        dataFetched: !!refetchedDataSeg,
+        resultActiveRerun: refetchedDataSeg?.roles?.find((r: any) => r.role_name === variables.roleName)?.active_rerun,
+      });
       queryClient.setQueryData(taskQueryKeys.moduleB(taskId), (old: any) => {
         if (!old?.roles) return old;
         const targetRole = old.roles.find((r: any) => r.role_name === variables.roleName);
-        if (targetRole && !targetRole.active_rerun?.active) {
+        const needsPatch = targetRole && !targetRole.active_rerun?.active;
+        if (needsPatch) {
+          appLogger.info("模块B页面", `[计时器] Segment重跑 onSuccess - 后端未确认，重新打补丁 active=true`, {
+            taskId,
+            roleName: variables.roleName,
+            backendActiveRerun: targetRole.active_rerun,
+          });
           return {
             ...old,
             roles: old.roles.map((r: any) =>
@@ -373,6 +509,13 @@ export function TaskModuleBPage() {
                 : r
             ),
           };
+        }
+        if (targetRole) {
+          appLogger.info("模块B页面", `[计时器] Segment重跑 onSuccess - 后端已确认重跑，无需补丁`, {
+            taskId,
+            roleName: variables.roleName,
+            backendActiveRerun: targetRole.active_rerun,
+          });
         }
         return old;
       });
@@ -414,11 +557,27 @@ export function TaskModuleBPage() {
     },
   });
 
-  const resumeMutation = useMutation({
-    mutationFn: () => resumeModuleB(taskId),
+  const bResumeMutation = useMutation({
+    mutationFn: () => resumeModuleB(taskId, "b"),
     onSuccess: async (payload) => {
       await invalidateTaskScopes();
-      message.success(payload.message || "断点续跑已开始");
+      message.success(payload.message || "B 续跑已开始");
+    },
+    onError: (error) => {
+      const errorText = error instanceof Error ? error.message : String(error);
+      if (isActiveRerunConflictMessage(errorText)) {
+        message.warning(errorText);
+        return;
+      }
+      message.warning(errorText);
+    },
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: () => resumeModuleB(taskId, "bcd"),
+    onSuccess: async (payload) => {
+      await invalidateTaskScopes();
+      message.success(payload.message || "BCD 续跑已开始");
     },
     onError: (error) => {
       const errorText = error instanceof Error ? error.message : String(error);
@@ -468,6 +627,7 @@ export function TaskModuleBPage() {
   })();
 
   const openRoleStreamViewer = (roleName: string) => {
+    appLogger.info("模块B页面", `[计时器] 打开流式查看器`, { roleName, taskId });
     setStreamViewerRoleName(roleName);
   };
 
@@ -492,11 +652,19 @@ export function TaskModuleBPage() {
   };
 
   const submitRoleRerun = (roleName: string, replaceRunning = false) => {
+    appLogger.info("模块B页面", `[计时器] submitRoleRerun 调用`, {
+      roleName, replaceRunning, taskId,
+      viewerAlreadyOpen: Boolean(streamViewerRoleName),
+    });
     openRoleStreamViewer(roleName);
     roleRerunMutation.mutate({ roleName, replaceRunning });
   };
 
   const submitSegmentRerun = (roleName: string, segmentId: string, replaceRunning = false) => {
+    appLogger.info("模块B页面", `[计时器] submitSegmentRerun 调用`, {
+      roleName, segmentId, replaceRunning, taskId,
+      viewerAlreadyOpen: Boolean(streamViewerRoleName),
+    });
     segmentRerunMutation.mutate({ roleName, segmentId, replaceRunning });
   };
 
@@ -603,16 +771,29 @@ export function TaskModuleBPage() {
             </Button>
             <Button
               icon={<ReloadOutlined />}
+              loading={bResumeMutation.isPending}
+              onClick={() => {
+                Modal.confirm({
+                  title: "B 续跑",
+                  content: "将重新执行模块 B 全流程（role1→role2→role3→role4），覆盖所有角色产出。不影响 C/D。",
+                  onOk: () => bResumeMutation.mutate(),
+                });
+              }}
+            >
+              B 续跑
+            </Button>
+            <Button
+              icon={<ReloadOutlined />}
               loading={resumeMutation.isPending}
               onClick={() => {
                 Modal.confirm({
-                  title: "断点续跑 Role 4",
-                  content: "将扫描 role3 输出的所有 shot，对缺少 role4 产物的 shot 逐个补跑。已有产物的 shot 会跳过。",
+                  title: "BCD 续跑",
+                  content: "将自动扫描 B→C→D 链路，检查各 role、big segment、shot 和 segment 的完成状态，仅补充缺失环节。已有成果的环节自动跳过，不会重复生成。",
                   onOk: () => resumeMutation.mutate(),
                 });
               }}
             >
-              断点续跑
+              BCD 续跑
             </Button>
           </Space>
         </div>
@@ -707,7 +888,7 @@ export function TaskModuleBPage() {
                 ))}
               </div>
               <Typography.Paragraph type="secondary" className="page-paragraph">
-                {roleResultStatusText}
+                {role.implementation_detail || roleResultStatusText}
               </Typography.Paragraph>
               {rerunStatusMessage ? <Alert type={rerunStatusMessage.type} showIcon message={rerunStatusMessage.text} /> : null}
 

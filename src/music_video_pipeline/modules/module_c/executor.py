@@ -10,6 +10,8 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 # 标准库：用于路径处理
 from pathlib import Path
+# 标准库：用于计时
+import time
 # 标准库：用于类型提示
 from typing import Any
 
@@ -53,6 +55,7 @@ def execute_units_with_retry(
         if not pending_units:
             break
         attempt_no = attempt_index + 1
+        round_start = time.perf_counter()
         context.logger.info(
             "模块C单元执行轮次开始，task_id=%s，attempt=%s/%s，pending_count=%s，workers=%s",
             context.task_id,
@@ -90,10 +93,20 @@ def execute_units_with_retry(
             )
 
         if not failed_units:
+            round_elapsed = (time.perf_counter() - round_start) * 1000
+            context.logger.info(
+                "[C_TIMING] round=%s/%s pending_count=%s round_duration_ms=%.0f status=all_done",
+                attempt_no, retry_times + 1, len(pending_units), round_elapsed,
+            )
             pending_units = []
             continue
 
         if attempt_index < retry_times:
+            round_elapsed = (time.perf_counter() - round_start) * 1000
+            context.logger.warning(
+                "[C_TIMING] round=%s/%s pending_count=%s round_duration_ms=%.0f status=partial_fail failed_count=%s",
+                attempt_no, retry_times + 1, len(pending_units), round_elapsed, len(failed_units),
+            )
             context.logger.warning(
                 "模块C单元执行有失败，准备重试，task_id=%s，attempt=%s/%s，failed_count=%s",
                 context.task_id,
@@ -107,6 +120,11 @@ def execute_units_with_retry(
         for failed_unit, failed_error in failed_units:
             hard_fail_messages.append(f"{failed_unit.unit_id}: {failed_error}")
         pending_units = []
+        round_elapsed = (time.perf_counter() - round_start) * 1000
+        context.logger.error(
+            "[C_TIMING] round=%s/%s pending_count=%s round_duration_ms=%.0f status=hard_fail fail_count=%s",
+            attempt_no, retry_times + 1, len(pending_units), round_elapsed, len(failed_units),
+        )
 
     if hard_fail_messages:
         error_text = "\n".join(hard_fail_messages)
@@ -147,6 +165,7 @@ def execute_one_unit_with_retry(
     last_error: Exception | None = None
     for attempt_index in range(normalized_retry_times + 1):
         attempt_no = attempt_index + 1
+        attempt_start = time.perf_counter()
         context.state_store.set_module_unit_status(
             task_id=context.task_id,
             module_name="C",
@@ -167,10 +186,20 @@ def execute_one_unit_with_retry(
                 frame_type=normalized_frame_type,
             )
             _mark_unit_done(context=context, unit=unit, frame_item=frame_item)
+            attempt_elapsed = (time.perf_counter() - attempt_start) * 1000
+            context.logger.info(
+                "[C_TIMING] shot=%s attempt=%s/%s total_duration_ms=%.0f status=done",
+                unit.unit_id, attempt_no, normalized_retry_times + 1, attempt_elapsed,
+            )
             return frame_item
         except Exception as error:  # noqa: BLE001
             last_error = error
             _mark_unit_failed(context=context, unit=unit, error=error)
+            attempt_elapsed = (time.perf_counter() - attempt_start) * 1000
+            context.logger.warning(
+                "[C_TIMING] shot=%s attempt=%s/%s total_duration_ms=%.0f status=failed error=%s",
+                unit.unit_id, attempt_no, normalized_retry_times + 1, attempt_elapsed, error,
+            )
             if attempt_index < normalized_retry_times:
                 context.logger.warning(
                     "模块C单元重试中，task_id=%s，unit_id=%s，attempt=%s/%s，错误=%s",
@@ -311,8 +340,9 @@ def _generate_one_frame_item(
     边界条件：frame_item 结构需兼容模块 D 消费字段。
     """
     normalized_frame_type = str(frame_type or "").strip().lower()
+    t0 = time.perf_counter()
     if normalized_frame_type in {"start", "end"}:
-        return generator.generate_one_frame(
+        result = generator.generate_one_frame(
             shot=unit.shot,
             output_dir=frames_dir,
             width=width,
@@ -320,13 +350,23 @@ def _generate_one_frame_item(
             shot_index=unit.unit_index,
             frame_type=normalized_frame_type,
         )
-    return generator.generate_one(
-        shot=unit.shot,
-        output_dir=frames_dir,
-        width=width,
-        height=height,
-        shot_index=unit.unit_index,
+    else:
+        result = generator.generate_one(
+            shot=unit.shot,
+            output_dir=frames_dir,
+            width=width,
+            height=height,
+            shot_index=unit.unit_index,
+        )
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    shot_id = str(unit.shot.get("shot_id", unit.unit_id))
+    seg_id = unit.segment_id or ""
+    ft = normalized_frame_type if normalized_frame_type in ("start", "end") else "both"
+    context.logger.info(
+        "[C_TIMING] shot=%s segment=%s frame_type=%s duration_ms=%.0f width=%s height=%s",
+        shot_id, seg_id, ft, elapsed_ms, width, height,
     )
+    return result
 
 
 def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict[str, Any]) -> None:
@@ -390,6 +430,8 @@ def _mark_unit_done(context: RuntimeContext, unit: ModuleCUnit, frame_item: dict
         artifact_path=frame_path,
         error_message="",
     )
+    # 自愈：全部 C shot done → C module done
+    _try_heal_module_c_done(context=context)
     context.logger.info(
         "模块C单元执行完成，task_id=%s，unit_id=%s，frame_start=%s，frame_end=%s",
         context.task_id,
@@ -461,3 +503,15 @@ def _normalize_module_c_retry_times(unit_retry_times: int) -> int:
     if normalized > 5:
         return 5
     return normalized
+
+
+def _try_heal_module_c_done(context: RuntimeContext) -> None:
+    """检查全部 C shot 是否 done → 自愈 C module 状态。"""
+    summary = context.state_store.get_module_unit_status_summary(task_id=context.task_id, module_name="C")
+    total = int(summary.get("total_units", 0))
+    done = int(summary.get("status_counts", {}).get("done", 0))
+    if total > 0 and done >= total:
+        context.state_store.set_module_status(
+            task_id=context.task_id, module_name="C", status="done",
+        )
+        context.logger.info("模块C 自愈为 done（全部 %s shot 完成），task_id=%s", total, context.task_id)

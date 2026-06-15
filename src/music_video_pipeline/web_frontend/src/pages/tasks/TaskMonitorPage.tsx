@@ -44,13 +44,6 @@ export function TaskMonitorPage() {
       ellipsis: true,
     },
     {
-      title: "shot_id",
-      dataIndex: "shot_id",
-      key: "shot_id",
-      width: 180,
-      ellipsis: true,
-    },
-    {
       title: "B",
       dataIndex: "b_status",
       key: "b_status",

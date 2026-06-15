@@ -10,6 +10,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
+import subprocess as _subprocess
 
 from music_video_pipeline.monitoring.routes import (
     TASK_COPY_API_PATH,
@@ -18,6 +19,7 @@ from music_video_pipeline.monitoring.routes import (
     TASK_LIST_API_PATH,
     TASK_RENAME_API_PATH,
     TASK_RERUN_API_PATH,
+    TASK_STATUS_RESET_API_PATH,
 )
 
 
@@ -59,6 +61,11 @@ class TaskHandlers:
         if task_record is None:
             return {"ok": False, "error": f"任务不存在：{normalized_task_id}", "task": None}
         module_status_map = self.state_store.list_task_module_status_map([normalized_task_id]).get(normalized_task_id, {})
+        # 尝试加载合并配置；失败时返回空
+        try:
+            merged_config = self._merge_task_config(task_id=normalized_task_id, task_record=task_record)
+        except Exception:  # noqa: BLE001
+            merged_config = {}
         return {
             "ok": True,
             "task": {
@@ -71,6 +78,8 @@ class TaskHandlers:
                 "created_at": str(task_record.get("created_at", "")),
                 "error_message": str(task_record.get("error_message", "")),
                 "module_status": module_status_map,
+                "config": merged_config,
+                "save_lyrics_port": int(getattr(self, "_save_lyrics_post_port", 0)),
             },
         }
 
@@ -136,13 +145,15 @@ class TaskHandlers:
         }, HTTPStatus.OK
 
     def _handle_rerun_task_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
-        """处理主页"生成"按钮触发的强制全链路重跑请求。"""
+        """处理主页"生成"按钮触发的强制全链路重跑请求。支持 force=true 参数跳过 running 检查。"""
         query = parse_qs(parsed.query)
         task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        force = str(query.get("force", ["false"])[0]).strip().lower() == "true"
         return self._submit_task_rerun_request(
             task_id=task_id,
             success_message=f"任务已开始生成，task_id={task_id}，模式=强制从A模块开始覆盖式重跑",
             log_reason="manual_rerun",
+            force=force,
         )
 
     def _submit_task_rerun_request(
@@ -151,19 +162,47 @@ class TaskHandlers:
         task_id: str,
         success_message: str,
         log_reason: str,
+        force: bool = False,
     ) -> tuple[dict[str, Any], HTTPStatus]:
-        """提交一次"从模块A开始"的后台重跑请求。"""
+        """提交一次"从模块A开始"的后台重跑请求。
+
+        当 force=True 时自动重置过期 running 状态，跳过检查直接提交。
+        """
         if self.rerun_handler is None:
             return {"ok": False, "error": "当前监督服务未配置生成能力。"}, HTTPStatus.NOT_IMPLEMENTED
         task_record = self.state_store.get_task(task_id=task_id)
         if task_record is None:
             return {"ok": False, "error": f"生成失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
-        active_thread = self._rerun_threads.get(task_id)
-        if active_thread is not None and active_thread.is_alive():
-            return {"ok": False, "error": f"生成失败：任务已在后台启动中，task_id={task_id}"}, HTTPStatus.CONFLICT
-        task_status = str(task_record.get("status", "")).strip().lower()
-        if task_status == "running":
-            return {"ok": False, "error": f"生成失败：任务当前正在运行，task_id={task_id}"}, HTTPStatus.CONFLICT
+        if not force:
+            active_thread = self._rerun_threads.get(task_id)
+            if active_thread is not None and active_thread.is_alive():
+                return {"ok": False, "error": f"生成失败：任务已在后台启动中，task_id={task_id}"}, HTTPStatus.CONFLICT
+            task_status = str(task_record.get("status", "")).strip().lower()
+            if task_status == "running":
+                return {"ok": False, "error": f"生成失败：任务当前正在运行，task_id={task_id}"}, HTTPStatus.CONFLICT
+        else:
+            # force 模式：自动重置过期 running 状态
+            task_status = str(task_record.get("status", "")).strip().lower()
+            if task_status == "running":
+                self.state_store.update_task_status(
+                    task_id=task_id, status="failed",
+                    error_message="自动重置：用户触发强制重跑",
+                )
+                self.logger.warning(
+                    "[监督服务] 强制重跑检测到过期running状态，已自动重置为failed，task_id=%s",
+                    task_id,
+                )
+            # 重置模块 A 状态为 pending（确保从 A 开始重新跑）
+            try:
+                module_status_map = self.state_store.get_module_status_map(task_id=task_id)
+                if module_status_map.get("A") == "running":
+                    self.state_store.set_module_status(task_id=task_id, module_name="A", status="pending")
+                    self.logger.warning(
+                        "[监督服务] 强制重跑检测到模块A running状态，已重置为pending，task_id=%s",
+                        task_id,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
 
         rerun_thread = threading.Thread(
             target=self._run_rerun_task_in_background,
@@ -202,6 +241,82 @@ class TaskHandlers:
                 self._rerun_threads.pop(task_id, None)
                 self._rerun_thread_meta.pop(task_id, None)
 
+    def _handle_resume_task_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """处理详情页"全链路续跑"请求：从断点恢复任务（A→B→C→D），不强制重置。"""
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        if self.rerun_handler is None:
+            return {"ok": False, "error": "当前监督服务未配置生成能力。"}, HTTPStatus.NOT_IMPLEMENTED
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"续跑失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        active_thread = self._rerun_threads.get(task_id)
+        if active_thread is not None and active_thread.is_alive():
+            return {"ok": False, "error": f"续跑失败：任务已在后台启动中，task_id={task_id}"}, HTTPStatus.CONFLICT
+        task_status = str(task_record.get("status", "")).strip().lower()
+        if task_status == "running":
+            return {"ok": False, "error": f"续跑失败：任务当前正在运行，task_id={task_id}"}, HTTPStatus.CONFLICT
+
+        rerun_thread = threading.Thread(
+            target=self._run_resume_task_in_background,
+            name=f"task-resume-{task_id}",
+            args=(task_id,),
+            daemon=True,
+        )
+        self._rerun_threads[task_id] = rerun_thread
+        rerun_thread.start()
+        self.logger.info(
+            "[监督服务] 任务全链路续跑已提交，task_id=%s",
+            task_id,
+        )
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "message": f"全链路续跑已提交，task_id={task_id}，后台从断点继续执行。",
+        }, HTTPStatus.OK
+
+    def _run_resume_task_in_background(self, task_id: str) -> None:
+        """在后台线程中执行任务全链路续跑（通过 CLI resume 子进程）。"""
+        import sys
+        from pathlib import Path
+        try:
+            self.logger.info("[监督服务] 后台开始执行全链路续跑，task_id=%s", task_id)
+            task_record = self.state_store.get_task(task_id=task_id) or {}
+            config_path_text = str(task_record.get("config_path", "")).strip()
+            workspace_root = self._resolve_project_root()
+            command = [
+                sys.executable,
+                "-m",
+                "music_video_pipeline.cli",
+                "resume",
+                "--task-id",
+                task_id,
+                "--config",
+                config_path_text,
+            ]
+            completed = _subprocess.run(
+                command,
+                cwd=str(workspace_root),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=7200,
+            )
+            if completed.returncode != 0:
+                error_excerpt = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+                raise RuntimeError(f"全链路续跑子进程退出码={completed.returncode}，{error_excerpt[:500]}")
+            self.logger.info("[监督服务] 后台全链路续跑执行结束，task_id=%s", task_id)
+        except Exception as error:  # noqa: BLE001
+            self.logger.error("[监督服务] 后台全链路续跑失败，task_id=%s，错误信息=%s", task_id, error)
+            try:
+                self.state_store.update_task_status(task_id=task_id, status="failed", error_message=str(error)[:500])
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            current_thread = self._rerun_threads.get(task_id)
+            if current_thread is threading.current_thread():
+                self._rerun_threads.pop(task_id, None)
+                self._rerun_thread_meta.pop(task_id, None)
     def _submit_task_rerun_lyrics_only_request(
         self,
         *,
@@ -289,3 +404,22 @@ class TaskHandlers:
                     f"任务改名失败：目录改名出错且数据库回滚失败，dir_error={error}，rollback_error={rollback_error}"
                 ) from rollback_error
             raise RuntimeError(f"任务改名失败：目录改名出错，已回滚数据库，error={error}") from error
+
+    def _handle_task_status_reset_request(self, parsed: Any) -> tuple[dict[str, Any], HTTPStatus]:
+        """处理任务状态手动重置请求，支持 pending / running / done / failed。"""
+        query = parse_qs(parsed.query)
+        task_id = str(query.get("task_id", [self.task_id])[0]).strip() or self.task_id
+        target_status = str(query.get("status", ["pending"])[0]).strip()
+        task_record = self.state_store.get_task(task_id=task_id)
+        if task_record is None:
+            return {"ok": False, "error": f"重置失败：任务不存在，task_id={task_id}"}, HTTPStatus.NOT_FOUND
+        try:
+            self.state_store.update_task_status(task_id=task_id, status=target_status)
+            self.logger.info(
+                "[任务] 手动重置任务状态（调试），task_id=%s，status=%s",
+                task_id,
+                target_status,
+            )
+            return {"ok": True, "task_id": task_id, "status": target_status}, HTTPStatus.OK
+        except Exception as error:
+            return {"ok": False, "error": f"重置任务状态失败：{error}"}, HTTPStatus.INTERNAL_SERVER_ERROR

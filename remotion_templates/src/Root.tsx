@@ -32,10 +32,10 @@ import {
   panRightTemplateSchema
 } from "./schema";
 
-// 常量：模板画布固定宽度，1920×1200 16:10 宽屏。
-const TEMPLATE_WIDTH = 1920;
-// 常量：模板画布固定高度，1920×1200 16:10 宽屏。
-const TEMPLATE_HEIGHT = 1200;
+// 常量：模板画布固定宽度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_WIDTH = 1344;
+// 常量：模板画布固定高度，1344×840，与 C 模块单主体帧尺寸对齐。
+const TEMPLATE_HEIGHT = 840;
 /**
  * 功能说明：注册当前模板工程的全部 Composition。
  * 参数说明：无。
@@ -76,9 +76,9 @@ export const Root = (): ReactElement => {
           bpm: 130,
           background: {kind: "solid" as const, color: "#FFFFFF"},
           slots: [
-            {frames: [{src: "/fixtures/grid-a.svg", width_ratio: 0.26, height_ratio: 0.52}]},
-            {frames: [{src: "/fixtures/grid-b.svg", width_ratio: 0.26, height_ratio: 0.52}]},
-            {frames: [{src: "/fixtures/grid-c.svg", width_ratio: 0.26, height_ratio: 0.52}]}
+            {frames: [{src: "/fixtures/grid-a.svg", width_ratio: 0.30, height_ratio: 0.85}]},
+            {frames: [{src: "/fixtures/grid-b.svg", width_ratio: 0.30, height_ratio: 0.85}]},
+            {frames: [{src: "/fixtures/grid-c.svg", width_ratio: 0.30, height_ratio: 0.85}]}
           ],
           layout: {visible_cell_count: 3},
           motion: {active_ratio: 0.45, overshoot_ratio: 0.08, enter_distance: 240}

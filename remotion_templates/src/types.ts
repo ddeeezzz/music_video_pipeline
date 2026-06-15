@@ -80,6 +80,20 @@ export type SymbolRequest = {
 };
 
 /**
+ * 功能说明：定义单行歌词数据。
+ * 参数说明：无。
+ * 返回值：不适用。
+ * 异常说明：不适用。
+ * 边界条件：start_frame/end_frame 为相对模板时间轴的帧序号。
+ */
+export type LyricItem = {
+  text: string;
+  translated_text?: string;
+  start_frame: number;
+  end_frame: number;
+};
+
+/**
  * 功能说明：定义 CenterTemplate 运动参数。
  * 参数说明：无。
  * 返回值：不适用。
@@ -107,6 +121,8 @@ export type CenterTemplateRequest = {
   motion: CenterMotionRequest;
   energy_level?: "low" | "mid" | "high";
   rhythm_tension?: number;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };
 
 /**
@@ -149,6 +165,8 @@ export type GridTemplateRequest = {
   slots: Array<{frames: SymbolRequest[]}>;
   layout: GridLayoutRequest;
   motion: GridMotionRequest;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };
 
 /**
@@ -190,6 +208,8 @@ export type ScrollTemplateRequest = {
   slots: Array<{frames: SymbolRequest[]}>;
   layout: ScrollLayoutRequest;
   motion: ScrollMotionRequest;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };
 
 /**
@@ -227,6 +247,8 @@ export type TiltUpTemplateRequest = {
   frames?: SymbolRequest[];
   energy_level?: "low" | "mid" | "high";
   rhythm_tension?: number;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };
 
 /**
@@ -244,6 +266,8 @@ export type TiltDownTemplateRequest = {
   frames?: SymbolRequest[];
   energy_level?: "low" | "mid" | "high";
   rhythm_tension?: number;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };
 
 /**
@@ -261,4 +285,6 @@ export type PanRightTemplateRequest = {
   frames?: SymbolRequest[];
   energy_level?: "low" | "mid" | "high";
   rhythm_tension?: number;
+  lyrics?: LyricItem[];
+  font_path?: string;
 };

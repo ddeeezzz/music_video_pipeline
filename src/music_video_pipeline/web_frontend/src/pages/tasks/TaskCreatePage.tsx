@@ -1,17 +1,18 @@
 import { useEffect } from "react";
 
 import { App, Button, Card, Form, Input, Space, Typography } from "antd";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 
-import { createTask, taskQueryKeys } from "@/api/taskApi";
+import { configQueryKeys, createTask, getDefaultConfig, saveTaskConfig, taskQueryKeys } from "@/api/taskApi";
 import { appLogger } from "@/app/logger";
 import { routes } from "@/app/routes";
 
 type TaskCreateFormValues = {
   taskId: string;
   audioPath: string;
-  configPath: string;
+  runsDir: string;
+  storyboardTemplateFile: string;
 };
 
 export function TaskCreatePage() {
@@ -24,8 +25,43 @@ export function TaskCreatePage() {
     appLogger.info("任务创建", "创建任务页已进入");
   }, []);
 
-  const createTaskMutation = useMutation({
-    mutationFn: createTask,
+  const { data: defaultConfigData } = useQuery({
+    queryKey: configQueryKeys.default,
+    queryFn: getDefaultConfig,
+  });
+
+  const cfg = (defaultConfigData?.config || {}) as Record<string, Record<string, unknown>>;
+  const defaultRunsDir = (cfg.paths?.runs_dir as string) ?? "runs";
+  const defaultStoryboardTemplateFile = (cfg.module_b?.storyboard_template_file as string) ?? "";
+
+  useEffect(() => {
+    if (defaultConfigData) {
+      form.setFieldsValue({
+        runsDir: defaultRunsDir,
+        storyboardTemplateFile: defaultStoryboardTemplateFile,
+      });
+    }
+  }, [defaultConfigData, form, defaultRunsDir, defaultStoryboardTemplateFile]);
+
+  const createAndSaveMutation = useMutation({
+    mutationFn: async (values: TaskCreateFormValues) => {
+      const createResult = await createTask({
+        taskId: values.taskId.trim(),
+        audioPath: values.audioPath.trim(),
+        configPath: "configs/common.json",
+      });
+      const overrides: Record<string, unknown> = {};
+      if (values.runsDir?.trim() && values.runsDir.trim() !== defaultRunsDir) {
+        overrides.paths = { runs_dir: values.runsDir.trim() };
+      }
+      if (values.storyboardTemplateFile?.trim() && values.storyboardTemplateFile.trim() !== defaultStoryboardTemplateFile) {
+        overrides.module_b = { storyboard_template_file: values.storyboardTemplateFile.trim() };
+      }
+      if (Object.keys(overrides).length > 0) {
+        await saveTaskConfig(values.taskId.trim(), overrides);
+      }
+      return createResult;
+    },
     onSuccess: async (payload) => {
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list });
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(payload.task_id || "") });
@@ -45,8 +81,7 @@ export function TaskCreatePage() {
           创建任务
         </Typography.Title>
         <Typography.Paragraph type="secondary" className="page-paragraph">
-          第一阶段先严格对齐现有后端创建接口，只提交 `task_id`、`audio_path` 和 `config_path`。
-          额外业务字段等后端契约确认后再往前接。
+          填写任务信息和配置项。配置默认值来自公共配置，可按需修改。
         </Typography.Paragraph>
       </Card>
 
@@ -55,11 +90,7 @@ export function TaskCreatePage() {
           layout="vertical"
           form={form}
           onFinish={(values) => {
-            createTaskMutation.mutate({
-              taskId: values.taskId.trim(),
-              audioPath: values.audioPath.trim(),
-              configPath: values.configPath.trim(),
-            });
+            createAndSaveMutation.mutate(values);
           }}
         >
           <Form.Item
@@ -77,15 +108,20 @@ export function TaskCreatePage() {
             <Input placeholder="例如 resources/juebieshu.m4a" />
           </Form.Item>
           <Form.Item
-            label="配置路径"
-            name="configPath"
-            rules={[{ required: true, message: "请输入配置路径" }]}
+            label="运行目录 (runs_dir)"
+            name="runsDir"
           >
-            <Input placeholder="例如 configs/music_wsl/default.json" />
+            <Input placeholder={`默认: ${defaultRunsDir}`} />
+          </Form.Item>
+          <Form.Item
+            label="故事板模板文件 (storyboard_template_file)"
+            name="storyboardTemplateFile"
+          >
+            <Input placeholder={`默认: ${defaultStoryboardTemplateFile || "未设置"}`} />
           </Form.Item>
           <Space>
             <Button onClick={() => navigate(routes.taskList)}>取消</Button>
-            <Button type="primary" htmlType="submit" loading={createTaskMutation.isPending}>
+            <Button type="primary" htmlType="submit" loading={createAndSaveMutation.isPending}>
               创建任务
             </Button>
           </Space>

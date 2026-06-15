@@ -8,7 +8,7 @@
 
 import os
 # 标准库：用于路径处理
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 # 标准库：用于轻量 JSON 读取
 import json
 # 标准库：用于正则判断 Windows 盘符绝对路径
@@ -66,6 +66,12 @@ def find_task_audio_path(
             _append_candidate(candidate_paths, workspace_root / raw_candidate)
         if raw_candidate.name:
             _append_candidate(candidate_paths, workspace_root / "resources" / raw_candidate.name)
+        # Linux 上无法直接提取 Windows 路径的文件名，改用 PureWindowsPath
+        if is_explicit_absolute or raw_candidate.is_absolute():
+            win_name = PureWindowsPath(str(raw_candidate)).name
+            if win_name and win_name != str(raw_candidate):
+                _append_candidate(candidate_paths, workspace_root / "resources" / win_name)
+                _append_candidate(candidate_paths, workspace_root / win_name)
         if "resources" in raw_parts_lower:
             resources_index = max(index for index, part_text in enumerate(raw_parts_lower) if part_text == "resources")
             tail_parts = raw_parts[resources_index + 1 :]

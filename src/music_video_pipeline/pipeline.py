@@ -30,10 +30,7 @@ from music_video_pipeline.constants import MODULE_ORDER, TASK_WEB_ENTRY_PAGE_FIL
 # 项目内模块：目录工具
 from music_video_pipeline.io_utils import ensure_dir
 # 项目内模块：任务监督服务
-from music_video_pipeline.monitoring import TaskMonitorService
-# 项目内模块：模块 B role 重跑产物备份清理工具
-from music_video_pipeline.modules.module_b.artifact_paths import backup_and_clear_module_b_role_outputs_from
-# 项目内模块：状态存储
+from music_video_pipeline.monitoring import TaskMonitorService# 项目内模块：状态存储
 from music_video_pipeline.state_store import StateStore
 # 项目内模块：任务音频路径回映射
 from music_video_pipeline.task_audio_path import remap_windows_absolute_path, resolve_task_audio_path, resolve_workspace_path
@@ -817,50 +814,59 @@ class PipelineRunner:
                     f"模块B角色级重试被拒绝：上游模块A未完成，task_id={task_id}，status={module_status_map.get('A')}"
                 )
 
-            removed_paths = backup_and_clear_module_b_role_outputs_from(context.artifacts_dir, normalized_role_name)
-            self.state_store.reset_from_module(task_id=task_id, module_name="B")
+            # 标记 B 模块为运行中，重置当前 role 单元状态
             self.state_store.set_module_status(task_id=task_id, module_name="B", status="running")
             self.state_store.update_task_status(task_id=task_id, status="running")
+            self.state_store.reset_module_unit(task_id=task_id, module_name="B", unit_id=normalized_role_name)
             self.logger.info(
-                "模块B角色级重试已备份并清理旧产物，task_id=%s，role_name=%s，removed_count=%s",
+                "模块B角色级重试开始，task_id=%s，role_name=%s",
                 task_id,
                 normalized_role_name,
-                len(removed_paths),
             )
 
+            # 先清理当前 role 及下游产物，避免旧产物干扰重跑
+            from music_video_pipeline.modules.module_b.artifact_paths import (
+                backup_and_clear_module_b_role_outputs_from,
+            )
+            cleared = backup_and_clear_module_b_role_outputs_from(
+                artifacts_dir=context.artifacts_dir,
+                role_name=normalized_role_name,
+            )
+            self.logger.info(
+                "模块B角色级重试已清理旧产物，role_name=%s，cleared_paths=%s",
+                normalized_role_name, [str(p) for p in cleared],
+            )
+
+            # 只跑这一个 role，不管其他任何东西
             if normalized_role_name == "role1":
                 from music_video_pipeline.modules.module_b import run_module_b_role1
-
                 role_output_path = run_module_b_role1(context)
-                self.state_store.set_module_unit_status(
-                    task_id=task_id, module_name="B", unit_id="role1", status="done"
-                )
             elif normalized_role_name == "role2":
                 from music_video_pipeline.modules.module_b import run_module_b_role2
-
                 role_output_path = run_module_b_role2(context)
-                self.state_store.set_module_unit_status(
-                    task_id=task_id, module_name="B", unit_id="role2", status="done"
-                )
             elif normalized_role_name == "role3":
                 from music_video_pipeline.modules.module_b import run_module_b_role3
-
                 role_output_path = run_module_b_role3(context)
-                self.state_store.set_module_unit_status(
-                    task_id=task_id, module_name="B", unit_id="role3", status="done"
-                )
             elif normalized_role_name == "role4":
                 from music_video_pipeline.modules.module_b import run_module_b_role4
-
-                role_output_path = run_module_b_role4(context)
-                self.state_store.set_module_unit_status(
-                    task_id=task_id, module_name="B", unit_id="role4", status="done"
-                )
-                self.state_store.set_module_status(
-                    task_id=task_id, module_name="B", status="done", artifact_path=str(role_output_path)
+                unit_outputs_dir = context.artifacts_dir / "module_b_units"
+                unit_outputs_dir.mkdir(parents=True, exist_ok=True)
+                role_output_path = run_module_b_role4(
+                    context,
+                    unit_outputs_dir=unit_outputs_dir,
+                    segment_shot_count_map={},
                 )
             else:
                 raise RuntimeError(f"未知模块B角色：{normalized_role_name}")
+
+            self.state_store.set_module_unit_status(
+                task_id=task_id, module_name="B", unit_id=normalized_role_name, status="done"
+            )
+            # role4 跑完才能把模块 B 标记为 done
+            if normalized_role_name == "role4":
+                self.state_store.set_module_status(
+                    task_id=task_id, module_name="B", status="done", artifact_path=str(role_output_path)
+                )
 
             self.logger.info(
                 "模块B角色级重试完成，旧聚合输出已失效，task_id=%s，role_name=%s，artifact=%s",
@@ -1590,7 +1596,10 @@ class PipelineRunner:
         self._execute_one_module(context=context, module_name=module_name)
         module_d_record = self.state_store.get_module_record(task_id=context.task_id, module_name="D")
         output_video_path = Path(module_d_record["artifact_path"]) if module_d_record and module_d_record["artifact_path"] else Path("")
-        self.state_store.mark_task_done_if_possible(task_id=context.task_id, output_video_path=str(output_video_path))
+        # 仅当执行模块 D（流水线最后一环）时才可能标记任务 done；
+        # 单跑 A/B/C 时不应因其他模块历史状态均为 done 而误标记任务终态。
+        if module_name == "D":
+            self.state_store.mark_task_done_if_possible(task_id=context.task_id, output_video_path=str(output_video_path))
 
         task_record = self.state_store.get_task(task_id=context.task_id)
         if task_record and task_record["status"] != "done":

@@ -18,6 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 logger = logging.getLogger(__name__)
 
+# 辅助字段（LLM 自用，不下发下游，解析时静默忽略）
+SILENT_FIELDS = frozenset({"narrative_rationale"})
+
 # 常量：role1 当前使用的固定字段名。
 ROLE1_FIELDS = ("pos_zh", "pos_en")
 # 常量：role2 当前使用的固定字段名。
@@ -131,10 +134,14 @@ def parse_scene_plans(markdown_text: str) -> list[ScenePlan]:
     )
     results: list[ScenePlan] = []
     for heading, field_map in parsed_sections:
+        raw_imagery = field_map.get("imagery_used", "")
+        story_text = field_map.get("story_outline_zh", "")
+        # 过滤 imagery_used：只保留 story_outline_zh 中实际出现的词
+        filtered_imagery = _filter_imagery_used(raw_imagery, story_text)
         results.append(ScenePlan(
             big_segment_id=heading,
-            imagery_used=field_map.get("imagery_used", ""),
-            story_outline_zh=field_map.get("story_outline_zh", ""),
+            imagery_used=filtered_imagery,
+            story_outline_zh=story_text,
         ))
     logger.debug("role2 成功提取 %d 条场景规划。", len(results))
     return results
@@ -364,6 +371,11 @@ def _parse_sections(markdown_text: str, contract_name: str) -> list[_MarkdownSec
             stripped = line.strip()
             if stripped.startswith('- '):
                 list_items.append(stripped[2:].strip())
+            elif list_items:
+                # 非 - 开头的行视为上一个字段的续行（缩进换行值），追加到最后一条 item
+                last = list_items[-1]
+                if stripped:
+                    list_items[-1] = last + "\n" + stripped
 
         sections.append(_MarkdownSection(heading=heading, list_items=list_items))
 
@@ -424,12 +436,27 @@ def _warn_missing_fields(
             )
 
 
+def _filter_imagery_used(raw_imagery: str, story_text: str) -> str:
+    """过滤 imagery_used：只保留在 story_outline_zh 中实际出现的意象词。"""
+    if not raw_imagery or not story_text:
+        return ""
+    raw_items = [item.strip() for item in re.split(r"[、,，]", raw_imagery) if item.strip()]
+    kept = [item for item in raw_items if item in story_text]
+    if len(kept) != len(raw_items):
+        logger.info(
+            "过滤 imagery_used：%d/%d 项保留，移除 %s",
+            len(kept), len(raw_items),
+            [item for item in raw_items if item not in story_text],
+        )
+    return "、".join(kept)
+
+
 def _warn_extra_fields(
     field_map: dict[str, str], *, expected: tuple[str, ...], contract_name: str, heading: str
 ) -> None:
-    """对未识别的额外字段发出 warning。"""
+    """对未识别的额外字段发出 warning（SILENT_FIELDS 除外）。"""
     for field_name in field_map:
-        if field_name not in expected:
+        if field_name not in expected and field_name not in SILENT_FIELDS:
             logger.warning(
                 "%s 条目 '%s' 包含未识别字段 '%s'，已忽略。",
                 contract_name, heading, field_name,

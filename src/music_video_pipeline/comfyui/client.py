@@ -47,7 +47,7 @@ class ComfyUIServiceOptions:
     server_url: str = "http://127.0.0.1:8188"
     request_timeout_seconds: float = 30.0
     poll_interval_seconds: float = 1.0
-    execution_timeout_seconds: float = 600.0
+    execution_timeout_seconds: float = 7200.0
 
     @property
     def input_dir(self) -> Path:
@@ -154,6 +154,9 @@ class ComfyUIClient:
             )
             response.raise_for_status()
             payload = response.json()
+            node_errors = payload.get("node_errors", {})
+            if node_errors:
+                logger.warning("ComfyUI prompt 提交成功但存在 node_errors=%s", node_errors)
             logger.info("ComfyUI prompt 提交成功，status=%s payload_keys=%s", response.status_code, sorted(payload.keys()))
         except requests.exceptions.HTTPError as error:
             response_body = error.response.text if error.response is not None else ""
