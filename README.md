@@ -1,280 +1,286 @@
-# AI-Director：基于结构化上下文与 LLM 编排的自动化卡点视频生产工作流
+# 音乐视频自动生成流水线 (Music Video Pipeline)
 
-本项目从输入音频出发，先做结构理解，再生成分镜、关键帧、视频片段与最终成片。它是一个带有状态持久化、交互式 CLI、跨模块波前调度、定向重试与任务监督页面的可恢复多模态生成流水线。
+基于音频结构驱动的多模态音画同步生成系统。输入一段音频，自动分析音乐结构、生成分镜脚本、渲染关键帧与视频片段，最终合成与节拍高度对齐的连贯视频。
 
-## 核心能力
+## 核心设计原则
 
-- 模块 A V2 会结合 Demucs、FunASR、all-in-one 特征与 librosa 特征，产出 `big_segments`、`segments`、`beats`、`lyric_units`、`energy_features` 等结构化结果。
-- 模块 B（现已升级为 V2 架构）负责把音频结构转成可执行的视觉脚本，通过“视觉总监 -> 大段落导演 -> 镜头分镜师 -> Prompt构建师”的多角色协作链路，支持结构化 Markdown 解析、增量重试与复杂的剧本拆解。
-- 模块 C 负责关键帧生成，并记录 LoRA / base model 绑定信息，便于追踪生成来源。
-- 模块 D 当前已收口为 ComfyUI 单元渲染路径：支持 shot 级并行渲染、单元重试、双关键帧契约校验、运镜后处理，以及基于 FFmpeg 的终拼策略切换与 copy 失败后的回退重编码。
-- B/C/D 已经接入跨模块波前并行调度；在真实生成链路下，可以边出分镜、边出关键帧、边渲染视频片段，并根据 GPU 负载动态收缩/放宽并发窗口。
-- 全流程状态写入 SQLite，支持 `resume`、单模块调试、segment / shot 定向补跑、监督页面、产物上传与评测脚本。
+- **结构优先**：先建立可靠时间轴，再做视觉生成
+- **节拍驱动**：所有关键切点必须受音频时间戳约束
+- **模块松耦合**：模块间仅通过标准化 JSON 交换数据
+- **状态可恢复**：全链路状态写入 SQLite，支持断点续传与定向重试
 
-## 主流程
+## 流水线总览
 
-![主流程](docs/images/architecture/p1.png)
-
-## 模块 A：结构理解链路
-
-![模块 A 结构理解链路](docs/images/architecture/p2.png)
-
-- 感知层会并行抽取 Demucs 音源分离结果、Allin1 曲式分析结果和 Fun-ASR 歌词识别结果。
-- 算法层会把这些基础信号继续整理成可交给下游的结构化时间轴，而不是只保留原始检测结果。
-- 最终输出是稳定 JSON 契约，供模块 B 做视觉脚本生成。
-
-## 模块 B：视觉策略转化链路
-
-- 模块 B（V2）以模块 A 的 JSON 契约为输入，采用多角色级联（Visual Director / Big Segment Director / Segment Director / Prompt Builder）进行结构化拆解。
-- 输出为规范的 Markdown 脚本，随后被解析为结构化的 `scene_desc`、`keyframe_prompt` 和 `video_prompt`。
-- 这些结果分别服务于模块 C（关键帧）、模块 D（视频生成），并支持通过大纲修订或微调方式进行干预。
-
-## 项目结构
-
-```text
-.
-├── src/music_video_pipeline/
-│   ├── cli.py / interactive_cli.py / command_service.py
-│   ├── pipeline.py / state_store.py / monitoring/
-│   ├── generators/                     # 分镜与关键帧生成器工厂
-│   ├── comfyui/                        # ComfyUI 调度封装
-│   ├── modules/
-│   │   ├── module_a_v2/               # 音频理解、内容角色、可视化
-│   │   ├── module_b/                  # 早期分镜生成
-│   │   ├── module_b_v2/               # 基于新框架的结构化分镜生成
-│   │   ├── module_c/                  # 关键帧生成
-│   │   ├── module_d/                  # 片段渲染与终拼
-│   │   └── cross_bcd/                 # B/C/D 跨模块波前调度
-│   └── upload/                        # 百度网盘上传链路
-├── configs/
-│   ├── comfyui/                       # ComfyUI 工作流配置
-│   ├── music_wsl/                     # 本地 WSL 配置档
-│   ├── music_yby/                     # 云显卡服务器配置档
-│   ├── prompts/                       # 模块 B prompt 模板
-│   ├── storyboard_templates/          # 分镜预设模板
-│   └── *.json                         # 模型绑定、默认配置
-├── docs/
-│   ├── cli/                           # CLI 说明
-│   ├── module_a_v2/                   # 模块 A V2 文档
-│   ├── B模块升级/                     # 模块 B 升级架构文档
-│   ├── 环境/                          # 环境部署备忘
-│   ├── 会话列表/                      # AI Agent 对话历史与需求文档
-│   └── images/architecture/           # 架构图
-├── scripts/
-│   ├── model_assets/                  # 模型资源下载同步
-│   ├── clip_eval/                     # CLIP 评测脚本
-│   ├── comf                           # ComfyUI 环境管理小工具
-│   ├── check_bypy_whitelist_vs_remote.py
-│   └── _module_a_v2_visualize.py      # 模块 A 可视化
-├── resources/
-├── tests/                             # 测试用例
-└── README.md
 ```
+音频输入 → [A] 音乐理解 → [B] 视觉脚本 → [C] 图像生成 → [D] 视频合成 → 最终成片
+              ↑                ↑              ↑              ↑
+              └─────────────── [E] 状态管理（贯穿全链路） ───────────────┘
+```
+
+### 模块 A：音乐理解
+
+解析音频文件，提取结构化时间轴信息：
+
+- **感知层**：并行调用 Demucs（音源分离）、Allin1（曲式分析）、FunASR（歌词识别）、Librosa（节拍/能量）
+- **算法层**：融合多源信号，产出分段、节拍、歌词对齐、能量特征等结构化数据
+- **输出**：符合 `ModuleAOutput` 契约的 JSON，包含 `segments`（段落）、`beats`（节拍点）、`lyric_units`（歌词片段）、`energy_features`（能量曲线）
+
+### 模块 B：视觉脚本
+
+将音频结构转化为可执行的分镜脚本：
+
+- 采用多角色 LLM 协作链路：**视觉总监 → 大段落导演 → 镜头分镜师 → Prompt 构建师**
+- 支持结构化 Markdown 解析、增量重试与用户自定义视觉指令
+- 可接入分镜预设模板，按音乐段落自动匹配视觉风格
+
+### 模块 C：图像生成
+
+根据分镜脚本生成关键帧图像：
+
+- 通过 ComfyUI 后端驱动 Stable Diffusion 模型（SD 1.5 / SDXL / Flux）
+- 支持 LoRA 风格绑定与 base model 注册表管理
+- 记录每帧的生成参数（模型、LoRA、seed），便于追溯
+
+### 模块 D：视频合成
+
+将关键帧渲染为视频片段并最终拼接：
+
+- 通过 ComfyUI 后端（AnimateDiff / ToonCrafter 等）生成视频片段
+- 支持 shot 级并行渲染、单元重试、双关键帧契约校验
+- 基于 FFmpeg 终拼，支持 copy 模式与回退重编码，GPU 加速编码
+- 同时支持 Remotion 模板渲染路径
+
+### 模块 E：状态管理
+
+贯穿全链路的状态持久化与恢复：
+
+- SQLite 存储任务、模块、单元三级状态（`pending / running / done / failed`）
+- 断点续传：重启后自动从第一个非 `done` 模块恢复
+- 定向重试：支持按 segment、shot、frame 粒度重跑失败单元
+
+### 跨模块波前调度 (cross_bcd)
+
+B/C/D 模块的并行编排引擎：
+
+- 按 segment 链路实现波前并行：边出分镜、边生成关键帧、边渲染视频
+- 根据 GPU 负载动态调整并发窗口
+- 失败仅阻断对应链路，其他链路继续执行
 
 ## 环境要求
 
-- Python `3.11.x`
-- `uv`
-- `ffmpeg` / `ffprobe`
-- 推荐 Linux / WSL2；当前依赖和现成配置档主要围绕 Linux x86_64 环境组织
-- 建议显存 24G
-
-### 依赖安装
-
-**Linux / WSL 环境（全链路执行，推荐）**：
-```bash
-uv sync                # 生成跨平台锁文件并安装核心依赖
-uv sync --extra test   # 含测试依赖
-```
-
-**Windows 环境（仅执行模块 B/C/D 或局部开发）**：
-`uv sync` 默认会跨平台统一解析依赖。在 Windows 下，它依然会去拉取 `FunASR` 等 Linux 专属依赖的元数据以生成完整的 `uv.lock`。若遇到网络超时，您可以彻底绕过跨平台锁定机制，仅针对当前系统极速安装：
-
-```powershell
-uv venv
-.venv\Scripts\activate
-# 跳过跨平台解析，直接安装当前环境所需依赖（可添加国内镜像源加速）
-uv pip install -e . --index-url https://mirrors.aliyun.com/pypi/simple/
-```
-
-### natten 安装说明
-
-`natten` 是模块 A 依赖的 `all-in-one-fix` 所需的 Linux 专用包，没有 PyPI 上的通用 wheel。如果 `uv sync` 时 natten 下载失败或超时，可以先在浏览器手动下载 wheel 再本地导入：
-
-1. 在浏览器下载：[natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl](https://github.com/SHI-Labs/NATTEN/releases/download/v0.17.5/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl)
-2. 将下载的 `.whl` 文件放到项目目录 `.cache/wheels/` 下：
-   ```bash
-   mkdir -p .cache/wheels
-   mv ~/Downloads/natten-0.17.5+torch250cu121-cp311-cp311-linux_x86_64.whl .cache/wheels/
-   ```
-3. 再执行 `uv sync`，uv 会从本地 wheel 安装 natten
-
-### 跨平台使用说明
-
-模块 A 的核心依赖（`natten`、`all-in-one-fix`、`demucs`、`funasr`、`madmom`）仅在 Linux 上安装。Windows 上执行 `uv sync` 时会自动跳过这些包。
-
-如果需要在 Windows 上运行 B/C/D 模块：
-
-1. 先在 Linux 环境完成模块 A，产出 `module_a_output.json`
-2. 将任务目录（含产物和状态库）复制到 Windows
-3. 在 Windows 上使用 `uv run --no-sync` 继续执行 B/C/D
-
-## CLI 命令
-
-当前提供四个命令入口：
-
-| 命令 | 说明 |
+| 依赖 | 说明 |
 |------|------|
-| `mvpl` / `music-video-pipeline` | 主流水线 |
-| `model_assets` | 模型资产下载与同步 |
-| `eval` | CLIP Score 评估 |
-
-### 全链路执行
-
-```bash
-uv run --no-sync mvpl run --task-id demo --config configs/music_yby/default.json
-```
+| Python | 3.11.x |
+| 包管理器 | uv |
+| FFmpeg | ffmpeg + ffprobe（模块 D 必需） |
+| 操作系统 | 推荐 Linux / WSL2（模块 A Allin1-fix 需要 natten, 官方whl仅有Linux，windows需自行编译） |
+| GPU | 建议显存 ≥ 24G（模块 C/D 图像视频生成） |
 
 ## 快速开始
 
-### 推荐入口：交互式 CLI
-
-`mvpl` 现在默认就是交互式入口；对于人类使用，推荐直接走菜单流。
+### 1. 安装依赖
 
 ```bash
-uv run --no-sync mvpl
+# Linux / WSL2（全链路）
+uv sync
+
+# Windows（仅 B/C/D 模块）
+uv venv
+.venv\Scripts\activate
+uv pip install -e .
 ```
 
-如果你不在项目根目录，可以显式指定项目路径：
+### 2. 准备模型
 
-```bash
-uv run --project /path/to/t1 --no-sync mvpl
-```
-
-交互模式里可以直接完成这些操作：
-
-- 首次运行时创建任务：填写 `task_id`、配置文件、输入音频，然后直接发起全链路执行。
-- 继续已有任务：从状态库里挑选最近任务，不必重新手敲 `task_id`、`config`、`audio_path`。
-- 单模块调试：只执行指定模块，适合排查 A/B/C/D 某一段逻辑。
-- 常规排障：查看模块 B、C、D 单元状态，以及跨模块 B/C/D 链路状态。
-- 高级重跑：在高级菜单里执行 `run-force`、`resume-force`、`run-module --force`，或对指定 `segment_id` / `shot_id` 做定向重试。
-- 交互式补充视觉指令：当命令会触发模块 B 时，可以临时覆盖用户提示词，不必改配置文件。
-- 人工观察：按需手动启动任务监督页面，查看任务实时状态与落盘产物。
-
-### 保留入口：非交互式命令
-
-CLI 当前默认配置已切到 `configs/music_yby/default.json`。仓库当前提供的可用配置档主要在 `configs/music_wsl/`、`configs/music_yby/` 和 `configs/music_windows_4060/`：
-- `configs/music_wsl/`: 本地 WSL 环境
-- `configs/music_yby/`: 在云显卡服务器上的环境
-- `configs/music_windows_4060/`: Windows 本地单卡 4060 慢跑验证环境
-
-下例统一显式传配置路径：
-
-```bash
-uv run --no-sync mvpl run --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl run --task-id demo_20s --audio-path resources/juebieshu.m4a --config configs/music_wsl/default.json
-uv run --no-sync mvpl resume --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl run-module --task-id demo_20s --module A --audio-path resources/juebieshu.m4a --config configs/music_wsl/default.json
-uv run --no-sync mvpl b-task-status --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl c-task-status --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl d-task-status --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl bcd-task-status --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl monitor
-uv run --no-sync mvpl monitor --task-id demo_20s --config configs/music_wsl/default.json
-uv run --no-sync mvpl resume --task-id demo_20s --config configs/music_windows_4060/default.json
-```
-
-其中 `uv run --no-sync mvpl monitor` 现在支持无参快速启动：若未显式传 `--task-id`，会自动选择状态库中 `updated_at` 最新的任务，并启动对应的监督页面。
-
-定向重试命令保留不变；实际使用时请先通过状态命令确认目标 ID：
-
-```bash
-uv run --no-sync mvpl b-retry-segment --task-id demo_20s --segment-id <segment_id> --config configs/music_wsl/default.json
-uv run --no-sync mvpl c-retry-shot --task-id demo_20s --shot-id <shot_id> --config configs/music_wsl/default.json
-uv run --no-sync mvpl d-retry-shot --task-id demo_20s --shot-id <shot_id> --config configs/music_wsl/default.json
-uv run --no-sync mvpl bcd-retry-segment --task-id demo_20s --segment-id <segment_id> --config configs/music_wsl/default.json
-```
-
-## 常见产物
-
-一次任务通常会在 `<runs_dir>/<task_id>/` 下生成这些内容：
-
-- `artifacts/module_a_output.json`
-- `artifacts/module_b_output.json`
-- `artifacts/module_c_output.json`
-- `artifacts/module_d_output.json`
-- `final_output.mp4`
-- `<task_id>_module_a_v2_visualization.html`
-- `task_monitor.html`
-
-状态数据库默认位于 `<runs_dir>/pipeline_state.sqlite3`，其中会同时记录任务级、模块级、单元级状态。
-
-## 模型资产与路径说明
-
-模块 C（图像生成）和模块 D（视频生成）重度依赖于本地存储的图像/视频生成模型。项目默认会在根目录下的 `models/` 文件夹中寻找这些模型文件。
-建议的目录结构及配置文件映射如下：
-
-```text
-models/
-├── audio/                    # 音频分析模型缓存目录（通过劫持环境变量实现自闭环）
-│   ├── hf_cache/             # HuggingFace 缓存目录
-│   ├── modelscope/           # ModelScope 缓存目录（如 FunASR, VAD 模型）
-│   └── torch/                # Torch Hub 缓存目录（如 Demucs 的 htdemucs 模型）
-├── base_model/               # 基础大模型，按架构版本分类
-│   ├── 15/                   # SD 1.5 模型
-│   │   ├── diffusers/        # Diffusers 格式目录 (如 revAnimated_v122)
-│   │   └── single/           # 单文件格式 (如 anything-v5.safetensors)
-│   ├── xl/                   # SDXL 模型 (如 stable-diffusion-xl-base-1.0)
-│   └── fl/                   # Flux 模型
-├── lora/                     # 风格或角色的 LoRA 模型
-│   ├── 15/                   # 对应 SD 1.5 的 LoRA (如 xiantiao_style)
-│   └── fl/                   # 对应 Flux 的 LoRA
-└── tooncrafter/              # 视频动态化所需的检查点
-    └── checkpoints/          # ComfyUI/ToonCrafter 后端调用的模型存放处
-```
-
-> **相关配置说明**：
-> - 模型与架构的注册表详见 `configs/base_model_registry.json`
-> - 风格与角色的 LoRA 绑定信息详见 `configs/lora_bindings.json`
-> - 模块 A 所需的音频模型（如 FunASR、VAD、Demucs 等）由于在代码中强行设置了离线模式（`OFFLINE="1"`），框架将拒绝进行网络下载。因此模型资产的本地化存放是**强制要求**。
-> - **必须执行的模型迁移**：如果您之前在全局环境中已经下载过这些模型，**必须手动将系统默认缓存的内容剪切/复制至本项目的 `models/audio/` 目录下**（否则运行时会因离线模式找不到模型而崩溃报错）。请执行迁移：将 `~/.cache/modelscope/hub/` 移动至 `models/audio/modelscope/hub/`；将 `~/.cache/torch/hub/` 移动至 `models/audio/torch/hub/`。如果此前未下载过，请先临时关闭 `__init__.py` 中的 `OFFLINE` 变量完成首次自动下载。
-
-## 关键配置
-
-重点关注这些字段：
-
-- `paths.runs_dir`: 运行输出根目录
-- `paths.default_audio_path`: 默认输入音频
-- `module_b.storyboard_template_file`: 模块 B V2 分镜预设模板
-- `module_b.llm.output_retry_times`: 模块 B 输出校验重试次数
-- `module_b.llm.user_custom_prompt`: 交互式临时覆盖 prompt
-- `module_c.render_backend`: 当前固定为 `comfyui`
-- `module_d.render_backend`: 当前固定为 `comfyui`
-- `comfyui.root_dir` / `comfyui.server_url`: ComfyUI 根目录与 API 地址
-- `cross_module.global_render_limit` / `cross_module.adaptive_window.*`: 跨模块并发与自适应窗口
-- `bypy_upload.*`: 任务产物上传开关与远端路径
-
-## 测试与辅助命令
-
-运行测试：
-
-```bash
-uv run --no-sync pytest
-```
-
-评测入口：
-
-```bash
-uv run --no-sync eval
-```
-
-模型资源管理入口（个人网盘）：
+模块 C/D 需要本地模型文件，默认存放在 `models/` 目录下。通过 `model_assets` 命令管理模型资源的下载与同步：
 
 ```bash
 uv run --no-sync model_assets
 ```
 
+### 3. 运行流水线
+
+> 提示：`uv run --no-sync` 可简写为 `uv run`，以下示例均省略 `--no-sync`。
+
+**Web 监督页面（最推荐）**：
+
+```bash
+uv run mvpl web --task-id my_task --config configs/music_yby/common.json
+```
+
+在浏览器中查看任务实时状态、产物预览，并支持定向重跑、自定义视觉指令等操作。
+
+**交互式 CLI**：
+
+```bash
+uv run mvpl
+```
+
+交互菜单支持：创建任务、全链路执行、单模块调试、定向重试、查看状态、启动监督页面。
+
+**命令行模式**：
+
+```bash
+# 全链路执行
+uv run mvpl run --task-id my_task --config configs/music_yby/common.json
+
+# 断点续传
+uv run mvpl resume --task-id my_task --config configs/music_yby/common.json
+
+# 单模块调试
+uv run mvpl run-module --task-id my_task --module A --config configs/music_yby/common.json
+```
+
+## CLI 命令参考
+
+| 命令 | 说明 |
+|------|------|
+| `mvpl` / `music-video-pipeline` | 主流水线入口（默认进入交互模式） |
+| `mvpl run` | 全链路执行 |
+| `mvpl resume` | 从断点恢复 |
+| `mvpl run-module` | 单模块调试 |
+| `mvpl web` | 启动任务 Web 监督服务 |
+| `mvpl b-task-status` | 查看模块 B 单元状态 |
+| `mvpl c-task-status` | 查看模块 C 单元状态 |
+| `mvpl d-task-status` | 查看模块 D 单元状态 |
+| `mvpl bcd-task-status` | 查看跨模块 B/C/D 链路状态 |
+| `mvpl b-retry-segment` | 按 segment 重试模块 B |
+| `mvpl b-retry-role` | 按 role 重试模块 B |
+| `mvpl c-retry-shot` | 按 shot 重试模块 C |
+| `mvpl c-retry-frame` | 按帧重试模块 C |
+| `mvpl d-retry-shot` | 按 shot 重试模块 D |
+| `mvpl bcd-retry-segment` | 按 segment 重试跨模块链路 |
+| `model_assets` | 模型资产下载与同步管理 |
+| `eval` | CLIP Score 评测入口 |
+
+## 项目结构
+
+```
+t1/
+├── src/music_video_pipeline/       # 核心源码
+│   ├── cli.py                      # CLI 命令行入口
+│   ├── interactive_cli.py          # 交互式 CLI
+│   ├── command_service.py          # 命令服务层
+│   ├── pipeline.py                 # 流水线调度器
+│   ├── state_store.py              # SQLite 状态存储
+│   ├── config.py                   # 配置加载与类型定义
+│   ├── monitoring/                 # 任务 Web 监督服务
+│   ├── comfyui/                    # ComfyUI 调度封装
+│   │   ├── client.py               # ComfyUI API 客户端
+│   │   ├── contracts.py            # 工作流契约加载与渲染
+│   │   └── custom_nodes/           # 自定义节点（Anima/Res4lyf 等）
+│   └── modules/
+│       ├── module_a_v2/            # 音乐理解（感知层/算法层/歌词/时间轴）
+│       ├── module_b/               # 视觉脚本（多角色 LLM 协作）
+│       ├── module_c/               # 图像生成（ComfyUI 关键帧）
+│       ├── module_d/               # 视频合成（渲染/终拼/Remotion 模板）
+│       └── cross_bcd/              # 跨模块波前并行调度
+├── configs/                        # 配置文件
+│   ├── music_yby/                  # 云显卡环境配置
+│   ├── music_wsl/                  # 本地 WSL 环境配置
+│   ├── music_windows_4060/         # Windows 本地环境配置
+│   ├── comfyui/                    # ComfyUI 工作流与契约
+│   ├── prompts/                    # 模块 B LLM prompt 模板
+│   ├── storyboard_templates/       # 分镜预设模板
+│   ├── base_model_registry.json    # 基础模型注册表
+│   └── lora_bindings.json          # LoRA 绑定表
+├── scripts/                        # 辅助工具
+│   ├── model_assets/               # 模型资源下载/同步/管理
+│   ├── clip_eval/                  # CLIP Score 评估
+│   └── setup_windows_4060_comfyui.ps1
+├── docs/                           # 项目文档
+│   ├── cli/                        # CLI 使用说明
+│   ├── module_a_v2/                # 模块 A 设计文档
+│   ├── images/architecture/        # 架构图
+│   └── 环境/                       # 环境部署备忘
+├── remotion_templates/             # Remotion 视频模板（TypeScript）
+├── tests/                          # 测试用例
+├── pyproject.toml                  # 项目依赖与入口定义
+└── AGENTS.md                       # AI Agent 开发指南
+```
+
+## 数据契约
+
+### ModuleAOutput（模块 A 输出）
+
+```json
+{
+  "task_id": "string",
+  "audio_path": "string",
+  "segments": [
+    {
+      "segment_id": "string",
+      "start_time": 0.0,
+      "end_time": 12.34,
+      "label": "intro|verse|chorus|bridge|outro|inst"
+    }
+  ],
+  "beats": [
+    {
+      "time": 1.23,
+      "type": "major|minor",
+      "source": "onset|beat|lyric_align"
+    }
+  ],
+  "lyric_units": [
+    {
+      "start_time": 2.10,
+      "end_time": 3.40,
+      "text": "歌词片段",
+      "confidence": 0.95
+    }
+  ],
+  "energy_features": [
+    {
+      "start_time": 0.00,
+      "end_time": 1.00,
+      "energy_level": "low|mid|high",
+      "trend": "up|down|flat",
+      "rhythm_tension": 0.77
+    }
+  ]
+}
+```
+
+### ModuleBOutput（模块 B 输出）
+
+```json
+[
+  {
+    "shot_id": "string",
+    "start_time": 0.00,
+    "end_time": 2.50,
+    "scene_desc": "场景描述",
+    "image_prompt": "用于图像生成的提示词",
+    "camera_motion": "slow_pan|zoom_in|shake|push_pull|none",
+    "transition": "hard_cut|crossfade|flash",
+    "constraints": {
+      "must_keep_style": true,
+      "must_align_to_beat": true
+    }
+  }
+]
+```
+
+## 状态机
+
+```
+pending → running → done
+                  → failed（可重试）
+```
+
+- 每个模块开始前必须检查上游是否 `done`
+- 每个模块结束后必须写入 `done` 或 `failed`
+- 重启后仅从第一个非 `done` 模块恢复
+- 失败模块可单独重试，不回溯上游
+
+## 运行测试
+
+```bash
+uv run --no-sync pytest
+```
+
 ## 相关文档
 
-- `docs/` 目录下的各细分设计方案与升级记录
-- `AGENTS.md` (AI Agent 开发与协同维护指南)
+- `AGENTS.md`：AI Agent 开发与协同维护指南
+- `docs/`：各模块设计文档、升级方案与环境部署备忘
